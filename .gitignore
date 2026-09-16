@@ -1,0 +1,65 @@
+# CapsuleTODO .gitignore
+
+## 密钥与本地配置
+.env
+.env.*
+*.key
+key.json
+
+## Rust 构建产物
+target/
+**/*.rs.bk
+
+## Node / 前端
+node_modules/
+dist/
+
+## Tauri / 打包产物
+*.dmg
+*.msi
+
+## Tauri 生成（schema 与平台文件）
+core/gen/
+
+## 日志
+*.log
+.logs/
+
+## 备份
+backups/
+*.bak
+
+## 临时与缓存
+.temp/
+*.tmp
+.cache/
+
+## 测试与覆盖率
+coverage/
+
+## 运行时数据（双落址，沿系列定案：dev 落项目根 configs/ 与 data/，release 落 exe 同级；内容不入仓库，.gitkeep 保目录）
+configs/config.json
+*.db
+*.db.bak
+*.db.corrupt
+data/todo.log
+
+## IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.history/
+
+## Agent 工具本地目录（不入库）
+.claude/
+.agents/
+.mimosa/
+.zcode/
+!.zcode/config.json
+
+## Git worktrees
+.worktrees/
