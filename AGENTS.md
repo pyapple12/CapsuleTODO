@@ -2,7 +2,7 @@
 
 玻璃质感的桌面 Todo 看板：固定在桌面、以玻璃为基底，只呈现 Todo 清单供用户勾选的极简互动小程序；二期规划临时剪贴板（玻璃板上以气泡提示 + 白板，满 5 个气泡提醒清理），三期规划 AI 规范 Todo 与临时内容（均仅记录待细化）。总体规划见 `CapsuleTODO_plan.md`。
 
-**当前状态**：立项（V0.1.0.1，2026-09-17）——项目规范与文档骨架就位（README / AGENTS / 计划书 / wxyz 四件 / `.agents/skills/` 三件 / .gitignore），代码未落地，一期工程（玻璃 Todo 勾选闭环）待用户讨论立项。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
+**当前状态**：一期已立项（V0.1.0.2，2026-09-17 定案）——决策点全部定案（置顶 + 全屏让位 / 300×400 固定尺寸 / 位置记忆 / 勾选折叠"已完成"区 + 删除线 / 最小增删编辑缓 / 自启缓），三个任务组（PL001 玻璃壳与最小清单闭环 → PL002 清单持久化与内容管理 → PL003 桌面固定与一期收口）共 25 条任务清单细化完成，待执行，代码未落地；PL003 收口后触发首轮全量审计。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
 
 ## 技术栈
 

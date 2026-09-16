@@ -1,6 +1,6 @@
 # CapsuleTODO — 玻璃质感的桌面 Todo 看板
 
-[![Version](https://img.shields.io/badge/Version-0.1.0.1-blue.svg)](core/Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.1.0.2-blue.svg)](core/Cargo.toml)
 [![Rust](https://img.shields.io/badge/Rust-1.96-orange.svg)](https://www.rust-lang.org)
 [![Phase](https://img.shields.io/badge/Phase-规划中-yellow.svg)](CapsuleTODO_plan.md)
 
@@ -13,7 +13,7 @@
 | 玻璃基底 | 沿系列玻璃材质：平时透明常驻、聚焦真磨砂，深浅色自适应  |
 | 分期演进 | 二期剪贴板气泡 + 白板、三期 AI 规范内容（仅记录待细化） |
 
-> 当前状态：**立项（V0.1.0.1）**——项目规范与文档骨架就位（README / AGENTS / 计划书 / wxyz 四件 / `.agents/skills/` 三件 / .gitignore），代码未落地；一期工程（玻璃 Todo 勾选闭环）待立项讨论。方案与规划见 `CapsuleTODO_plan.md`。
+> 当前状态：**一期已立项（V0.1.0.2）**——决策点全部定案（置顶 + 全屏让位 / 300×400 固定尺寸 / 位置记忆 / 折叠区删除线 / 最小增删），三个任务组共 25 条任务清单细化完成，待执行；代码未落地。方案见 `z.plan.md` 附录，任务见 `x.progress.md`，规划见 `CapsuleTODO_plan.md`。
 
 ## 技术栈
 
