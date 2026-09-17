@@ -1,11 +1,15 @@
 //! Tauri 命令层：共享上下文与错误封装（命令按职责分文件）。
 
+pub mod bubble;
 pub mod todo;
+pub mod whiteboard;
 
 use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
 
+use crate::bubble::BubbleError;
 use crate::storage::{Storage, StorageError};
 use crate::todo::TodoError;
+use crate::whiteboard::WhiteboardError;
 
 /// 应用共享上下文：清单存储（单一事实源 = db；锁序 todo → storage 单向禁反向）
 pub struct AppContext {
@@ -24,13 +28,17 @@ pub(crate) fn poison<T>(result: LockResult<T>) -> Result<T, CommandError> {
     result.map_err(|_: PoisonError<T>| CommandError::Poisoned)
 }
 
-/// 命令层错误（跨 IPC 序列化为可读纯字符串，前端 String(err) 直显）：业务/存储错误透传可读原因 + 锁中毒
+/// 命令层错误（跨 IPC 序列化为可读纯字符串，前端 String(err) 直显）：业务/存储/剪贴板错误透传可读原因 + 锁中毒
 #[derive(Debug)]
 pub enum CommandError {
     /// 业务规则拒绝（文本非法），承载错误说明
     Todo(String),
     /// 存储层失败（SQLite/IO/条目不存在），承载错误说明
     Storage(String),
+    /// 剪贴板读写失败或剪贴板内容不可用，承载错误说明
+    Clipboard(String),
+    /// 白板内容非法，承载错误说明
+    Whiteboard(String),
     /// 共享锁中毒（持锁线程 panic 后遗症，不可恢复）
     Poisoned,
 }
@@ -40,7 +48,10 @@ pub enum CommandError {
 impl serde::Serialize for CommandError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            CommandError::Todo(msg) | CommandError::Storage(msg) => serializer.serialize_str(msg),
+            CommandError::Todo(msg)
+            | CommandError::Storage(msg)
+            | CommandError::Clipboard(msg)
+            | CommandError::Whiteboard(msg) => serializer.serialize_str(msg),
             CommandError::Poisoned => serializer.serialize_str("共享锁中毒"),
         }
     }
@@ -55,6 +66,18 @@ impl From<TodoError> for CommandError {
 impl From<StorageError> for CommandError {
     fn from(err: StorageError) -> Self {
         CommandError::Storage(err.to_string())
+    }
+}
+
+impl From<BubbleError> for CommandError {
+    fn from(err: BubbleError) -> Self {
+        CommandError::Clipboard(err.to_string())
+    }
+}
+
+impl From<WhiteboardError> for CommandError {
+    fn from(err: WhiteboardError) -> Self {
+        CommandError::Whiteboard(err.to_string())
     }
 }
 
@@ -80,6 +103,16 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&CommandError::Poisoned).expect("序列化必须成功"),
             "\"共享锁中毒\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CommandError::Clipboard("剪贴板无文本内容".into()))
+                .expect("序列化必须成功"),
+            "\"剪贴板无文本内容\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CommandError::Whiteboard("白板内容过长".into()))
+                .expect("序列化必须成功"),
+            "\"白板内容过长\""
         );
     }
 }

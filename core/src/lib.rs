@@ -2,12 +2,14 @@
 //! 材质定案（沿 CapsulePulse PL010/PL011）：平时纯 alpha 透明常驻（不挂背板），
 //! 聚焦瞬间挂 DWM Acrylic 真磨砂（DWMSBT_TRANSIENTWINDOW），失焦即刻撤回（DWMSBT_NONE）。
 
+pub mod bubble;
 pub mod commands;
 pub mod fullscreen;
 pub mod paths;
 pub mod settings;
 pub mod storage;
 pub mod todo;
+pub mod whiteboard;
 
 use std::sync::Mutex;
 
@@ -119,6 +121,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }))
+        // 剪贴板（PL004）：仅 Rust 侧读写，不经 ACL
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppContext {
             storage: Mutex::new(storage),
         })
@@ -127,6 +131,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_toggle,
             commands::todo::todo_remove,
             commands::todo::todo_list,
+            commands::bubble::bubble_capture,
+            commands::bubble::bubble_list,
+            commands::bubble::bubble_copy,
+            commands::bubble::bubble_remove,
+            commands::bubble::bubble_clear,
         ])
         .setup(|app| {
             let window = app

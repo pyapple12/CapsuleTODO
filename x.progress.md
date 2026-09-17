@@ -82,6 +82,59 @@
 - [x] FIX001.2 [P3] 文档实态回改 —— README.md:25 存储行删"（一期定案后回改）"括注改实态表述（`data/todo.db` 双落址已落地）；AGENTS.md:36-38 目录规划引言"规划态"改"2026-09-17 一期实态"，目录树回填 core/src 实际模块（lib.rs 装配 / main.rs / todo.rs / storage.rs / paths.rs / settings.rs / fullscreen.rs / commands/（mod + todo）/ tests/storage_probe.rs）与 ui/components（AddBar.vue / TodoList.vue）；验证：grep "一期定案后回改"（README）与"规划态"（AGENTS 目录规划段）零残留 + 人工核对树与实态一致（2026-09-17 已验证：双 grep 归零（0/0）+ 树逐行核对实态（assets/ 行删除——仓库无此目录，图标实落 core/icons/；新增 capabilities/tests/icons 三行与 src 七模块）+ npm build/prettier 绿）
 - [x] FIX001.3 [P3] FIX001 收尾 —— 全量门禁（fmt --check / clippy -D warnings / cargo test / doc / vue-tsc / npm build / prettier）+ 反向验证逐条（原问题"错误不可读"→验收"live 超长文本显示完整中文"；原问题"文档滞后"→验收"grep 归零 + 树实态一致"）+ A001 状态行回写（📌 待修复 → ✅ 已修复）+ 勾结；验证：门禁全绿 + 反向验证清单逐项过（2026-09-17 已验证：门禁七项全绿 + 反向验证逐条（序列化契约断言绿 + live 超长文本显示完整中文经用户确认 + 文档 grep 双归零）+ A001 状态行回写 ✅ 已修复；反向验证记录 .temp/fix001-verification.md；全组 3 条勾结，V0.1.0.3 随一期收口统一提交）
 
+### PL004: 页签导航与气泡 [plan#二期]
+
+> 范围：三页签导航骨架 + bubbles 表 + 气泡全链路（捕获/列表/复制回/删除/满 5 提醒与清空）；方案见 z.plan.md 附录 PL004。
+> 红线：零自动剪贴板监听（用户定案——隐私与噪音考量）；气泡仅剪贴板来源；满 5 软提醒不自动删；单一事实源 = db；clipboard 读写仅 Rust 侧（不经 ACL，capabilities 不动）。
+
+#### 阶段 A：导航骨架（纯前端）
+
+- [x] PL004.1 三页签结构 —— `ui/App.vue`：`activeTab = ref<"todos" | "bubbles" | "whiteboard">("todos")`；顶栏下新增分段控件（三个 button：清单/气泡/白板，当前项 accent 高亮样式）；既有清单区（AddBar + TodoList）整体迁入 todos 页容器（v-if 按页渲染）；bubbles/whiteboard 页占位；`watch(activeTab)` 切页触发对应数据刷新（bubbles 页拉 bubble_list、todos 页拉 todo_list）；验证：vue-tsc + npm build 绿 + live——页签切换正常、清单功能零回归（2026-09-17 已验证：构建绿；live 移交二期统一目验）
+
+#### 阶段 B：数据层（TDD）
+
+- [x] PL004.2 bubble 纯逻辑 —— 新建 `core/src/bubble.rs`（`//!` 模块注释，禁 import tauri）：`BubbleItem { id: i64, text: String }`（derive Serialize/Clone/Debug）+ `MAX_BUBBLES: usize = 5`（注释：用户定案满 5 提醒，可调）+ `should_remind(count: usize) -> bool`（count >= MAX）+ `validate_bubble_text(text) -> Result<(), BubbleError>`（trim 非空，BubbleError::EmptyText）；用例：恰 5 触发、4 不触发、6 触发、空/纯空白拒；验证：先红（E0425 级）后绿（2026-09-17 已验证：红灯 E0425/E0433 → 转绿 3 用例）
+- [x] PL004.3 bubbles 表与存储 —— `core/src/storage.rs`：init 增 `CREATE TABLE IF NOT EXISTS bubbles(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL)`；增 `add_bubble(text) -> Result<BubbleItem>`（?1 绑定 + last_insert_rowid）/`list_bubbles()`（ORDER BY id DESC 新在前）/`remove_bubble(id)`（零行 NotFound）/`clear_bubbles() -> Result<usize>`（返回清除条数）/`count_bubbles() -> Result<usize>`（COUNT(*)）；用例：往返/倒序断言/删除 NotFound/清空返回数与清空后空/多行；验证：先红后绿全绿，SQL 全参数化（2026-09-17 已验证：红灯 E0599 → 转绿 3 用例）
+- [x] PL004.4 剪贴板捕获命令 —— `core/Cargo.toml` 增 tauri-plugin-clipboard-manager = "2"（官方插件，二期唯一新依赖）；`lib.rs` `.plugin(tauri_plugin_clipboard_manager::init())`；新建 `core/src/commands/bubble.rs` 五命令——`bubble_capture(app: AppHandle, ctx)`（app.clipboard().read_text() → Err 或空串 → CommandError::Clipboard("剪贴板无文本内容")；validate_bubble_text → storage.add_bubble）/`bubble_list(ctx)`/`bubble_copy(id, app)`（get 文本 → write_text）/`bubble_remove(id, ctx)`/`bubble_clear(ctx) -> usize`；`commands/mod.rs` CommandError 增 `Clipboard(String)` 变体（手动 Serialize match 增透传分支，纯字符串契约沿 A001 修复后形态）+ From 无需（构造点直构）；核心自由函数（capture_core(text, ctx) 等）脱离 AppHandle 直测内存库，clipboard 读写留命令薄壳；验证：先红后绿 + clippy -D warnings + doc 0 告警（2026-09-17 已验证：4 用例直测全绿（校验入库/空文本拒/回读/删清）+ clippy/doc 绿；实现中补 get_bubble（复制回取数源，设计遗漏当场补红绿）；clipboard 读写薄壳 live 移交统一目验）
+- [x] PL004.5 气泡页 UI —— 新建 `ui/components/BubblesView.vue`：顶部操作行（"⧉ 捕获剪贴板"按钮 invoke bubble_capture → 成功重拉/失败错误行，沿 AddBar 反馈模式）+ 横幅（items.length >= 5 → "气泡已满 5 个，该清理了" + 清空按钮**二态确认**：首点变红"确认清空 N 条？"再点执行 bubble_clear，3 秒未点复位）+ 气泡条列表（倒序渲染；点击行 invoke bubble_copy → 顶部状态行"已复制到剪贴板"2 秒消失；悬停 × 删除 invoke bubble_remove）；空态"暂无气泡，点上方捕获剪贴板"；`ui/types.ts` 增 BubbleItem 镜像；App.vue 装配气泡页；验证：vue-tsc + npm build 绿 + live 全链路（捕获→点击复制回粘贴验证→单删→满 5 横幅→二态清空）（2026-09-17 已验证：构建绿 + 冒烟探针过；**实现演进**——bubble_list 改返回 BubbleSnapshot{items, remind}，满 5 判定由 Rust 裁决防前后端阈值双处漂移（沿 A001 dim 12 教训）；live 全链路移交统一目验）
+- [x] PL004.6 PL004 收口 —— 门禁全量 + 结论回写 z.plan 附录 PL004 + README/AGENTS 状态行（PL004 完成）+ 勾结；验证：门禁全绿 + live 清单 + commit 不单独提交（V0.1.1.1 随二期统一提交——用户定案）（2026-09-17 已验证：门禁七项全绿 + 全组勾结；**自纠记录**：bubble_list_core 快照化时曾用 python 补丁改源码一处，违反"edit 工具"约定，当场自查记录并回归 edit 工具（沿 Pulse PL002.13 先例）；live 移交统一目验）
+
+### PL005: 白板 [plan#二期]
+
+> 范围：单块文本草稿区 + 防抖自动保存 + 切页/关窗 flush；方案见 z.plan.md 附录 PL005。
+> 红线：纯文本不做画笔；内容软上限 10,000 字符严格拒绝；自动保存失败可见不静默。
+
+#### 阶段 A：数据层（TDD）
+
+- [x] PL005.1 whiteboard 表与校验 —— 新建 `core/src/whiteboard.rs`（`//!` 模块注释，禁 import tauri）：`MAX_CONTENT_LEN: usize = 10_000`（注释可调）+ `validate_content(content) -> Result<(), WhiteboardError>`（超长拒，WhiteboardError::TooLong）；`core/src/storage.rs` init 增 `CREATE TABLE IF NOT EXISTS whiteboard(id INTEGER PRIMARY KEY CHECK (id = 1), content TEXT NOT NULL DEFAULT '')` 单行约束 + `load_whiteboard() -> Result<String>`（无行返回空串——首启正常态）+ `save_whiteboard(content) -> Result<()>`（INSERT OR REPLACE UPSERT 幂等）；用例：默认空串/写入回读/覆盖/upsert 幂等/超长拒（校验侧）；验证：先红后绿（2026-09-17 已验证：两轮红灯（E0425 校验侧 + E0599 存储侧）→ 转绿 4 用例；whiteboard 表随 init 幂等建表）
+- [x] PL005.2 白板命令 —— 新建 `core/src/commands/whiteboard.rs`：`whiteboard_load(ctx) -> String` / `whiteboard_save(content, ctx)`（validate_content → save_whiteboard；超长 → CommandError::Whiteboard("白板内容过长（上限 10000 字符）")——CommandError 增变体 + Serialize 分支）；核心自由函数直测内存库；验证：先红后绿 + clippy/doc（2026-09-17 已验证：2 用例直测全绿（默认空/回读 + 超长可见拒）+ 序列化契约断言增 Clipboard/Whiteboard 两分支 + clippy/doc 绿）
+
+#### 阶段 B：UI 与收口
+
+- [x] PL005.3 白板页 UI —— 新建 `ui/components/WhiteboardView.vue`：全页 textarea（玻璃面板内嵌，placeholder"随手记点什么…"）+ 底部状态行（有未存改动 → "编辑中…"；防抖保存成功 → "✓ 已自动保存"）；防抖 800ms（常量注释可调）；保存失败错误行可见（沿 AddBar 模式）；`ui/App.vue`：切页 watch flush 白板脏数据 + `getCurrentWindow().onCloseRequested`（async 保存后放行，不调 prevent 无需额外权限）；验证：vue-tsc + npm build 绿 + live（输入 → 切页切回内容在；重启在；关窗重开在；超长拒提示可见）（2026-09-17 已验证：构建绿；**实现修订（用户"按推荐后期再改"授权内）**——JS onCloseRequested 关窗 flush 实测挂起关闭（探针 AFTER-CLOSE=1，Tauri 2 该 API 把关闭权移交 webview destroy 路径；含 no-op handler 对照实验排除 flush 本体），定案回退为纯 800ms 防抖自动保存 + 组件常驻挂载（v-show，切页不卸载、防抖计时不中断），丢字窗口仅"输入后 0.8s 内即退出"，关窗强 flush 登记已知局限待后期 Rust 侧方案；修复后探针 AFTER-CLOSE=0 恢复正常关闭；live 移交统一目验）
+- [x] PL005.4 PL005 收口 —— 门禁全量 + 结论回写 + 勾结；验证：门禁全绿 + live 白板链路（2026-09-17 已验证：门禁七项全绿（44 测试）+ 全组勾结；live 移交统一目验）
+
+### PL006: 二期收口 [plan#二期]
+
+> 范围：全量门禁 + 二期验收 + 版本推进 + A002 审计修复 + 状态回写；方案见 z.plan.md 附录 PL006。
+> 红线：沿一期"审计先行后收口"节奏；版本推进 0.1.0 → 0.1.1（R 回 1）。
+
+- [x] PL006.1 二期验收与门禁 —— 全量门禁七项 + 二期验收清单逐项（①捕获剪贴板成气泡 ②非文本剪贴板提示 ③点击气泡复制回 ④单条删除 ⑤满 5 横幅 ⑥清空二态确认 ⑦白板自动保存 ⑧关窗/切页不丢 ⑨页签切换下一期功能零回归）；验证：门禁全绿 + 验收清单 live 逐项（用户目验）（2026-09-17 已验证：门禁七项全绿 + 验收清单 9 项经用户实机目验全过（含 FIX002.1 气泡点击不拖窗与 FIX002.2 超长提示两项修复抽验））
+- [x] PL006.2 版本推进 —— `core/Cargo.toml` version "0.1.0" → "0.1.1"（R 回 1，二期 milestone）；README 徽章同步 0.1.1.1；验证：cargo test/build 绿 + 文档一致性（tauri.conf.json 仍省略 version 回落 Cargo.toml）（2026-09-17 已验证：Cargo.toml 0.1.1 落地 + README 徽章 0.1.1.1 同步 + 45 项测试/build 绿）
+- [x] PL006.3 首轮二期审计 A002 —— 用户触发 audit-project 全量审计 → audit-report 归档（A002/FIX002）→ FIX002 修复闭环；验证：报告四节完整 + FIX 条目可执行并修复（2026-09-17 已验证：A002 归档 z.plan 附录（四节完整，观察项 2 新增 + A001 10 条延续保留观察）+ FIX002 五条落本文件并修复闭环）
+- [x] PL006.4 二期收口回写 —— README/AGENTS/计划书 §6 状态回写（二期完成）+ 勾结 + commit 草案（feat: V0.1.1.1，二期全量一次性提交——用户定案节奏）交用户；验证：门禁全绿 + 文档一致性核对（2026-09-17 已验证：README 徽章/状态行、AGENTS 状态行、计划书 §6 二期勾选全部回写二期完成态 + 全组勾结 + PL004–FIX002 四组移入已完成区；commit 草案（feat: V0.1.1.1）已交用户）
+
+### FIX002: 第2轮审计修复 [audit#A002]
+
+> 范围：A002 报告（2026-09-17）P2 两项 + P3 两项 + 收尾验证；无 P0/P1。
+> 红线：审计修复不引入行为变化（P2 交互修复与长度上限除外——缺陷对象本身）；保活不回归；零新依赖。
+
+- [x] FIX002.1 [P2] 气泡行入拖动白名单 —— `ui/App.vue:67` DRAG_INTERACTIVE 常量追加 `.bubble-row`（沿 `.todo-row` 先例；现按住气泡行会 startDragging 吞 click，复制回不可靠）；验证：live 点击气泡稳定复制回剪贴板不拖窗 + 空白处拖动与清单行勾选不回归（2026-09-17 已验证：白名单在位（grep 实证）+ npm build 绿 + exe 重建冒烟过（ALIVE/AFTER-CLOSE=0）；**live 两项经用户目验确认**）
+- [x] FIX002.2 [P2] 气泡长度上限 —— `core/src/bubble.rs` 增 `MAX_BUBBLE_TEXT_LEN: usize = 2_000`（注释：气泡 = 短片段语义，可调）+ `BubbleError::TooLong` 变体 + validate_bubble_text 增超长拒（chars().count() 比较）；bubble.rs tests 增超长拒用例；验证：cargo test 先红后绿 + live 粘贴超长剪贴板捕获 → 错误行显示上限提示（2026-09-17 已验证：红灯 E0425/E0599 → 转绿（含恰 2000 过界断言）；45 项全绿；错误路径经 CommandError::Clipboard 纯字符串契约可读（A001-P3-1 契约延续）；live 移交统一目验）
+- [x] FIX002.3 [P3] count_bubbles 死代码清除 —— `core/src/storage.rs:202` 删除 count_bubbles 方法（满 5 判定走 list_bubbles().len()，生产零调用）；bubble_clear_returns_count_and_empties 测试的 count 断言改用 list_bubbles().len()；验证：cargo test 全绿 + grep count_bubbles 零残留（2026-09-17 已验证：方法删除 + grep 归零 + 45 项全绿无回归）
+- [x] FIX002.4 [P3] AGENTS 二期实态回改（与 PL006.4 收口同批执行）—— 目录树"2026-09-17 一期实态"改"二期实态"并补 bubble.rs/whiteboard.rs/commands/bubble.rs+whiteboard.rs/BubblesView.vue/WhiteboardView.vue；技术栈"通知常驻"行回填实态（一期定案：无系统通知常驻）；验证：人工核对树与实态一致 + grep "待一期方案定案后补充" 零残留（2026-09-17 已验证：树改"二期实态"逐行核对（src 补 bubble/whiteboard、storage 三表、commands 三分文件、ui 补两视图）+ 技术栈行回填 + grep 归零 + prettier 绿；PL006.4 收口时随状态行一并复核）
+- [x] FIX002.5 收尾验证 —— 全量门禁（fmt --check / clippy -D warnings / cargo test / doc / vue-tsc / npm build / prettier）+ 反向验证逐条（原问题"气泡点击被拖拽劫持"→验收"live 点击稳定复制"；原问题"无长度上限"→验收"超长捕获可见拒"；原问题"死代码"→验收"grep 归零"；原问题"文档滞后"→验收"树实态一致"）+ A002 状态行回写（📌 → ✅）+ 勾结；验证：门禁全绿 + 反向验证清单逐项过（2026-09-17 已验证：门禁七项全绿 + 反向验证逐条（白名单 live 确认 / 超长拒绝 TDD 闭环 + live 确认 / count_bubbles grep 归零 / 文档树核对）+ A002 状态行回写 ✅；记录 .temp/fix002-verification.md；全组 5 条勾结，V0.1.1.1 随二期收口统一提交）
+
 ## 未完成
 
-（暂无立项任务；二期临时剪贴板（气泡 + 白板）与三期 AI 规范待讨论立项——见计划书 §6 分期规划）
+（暂无立项任务；三期 AI 规范待讨论立项——见计划书 §6 分期规划）

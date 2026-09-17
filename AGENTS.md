@@ -2,7 +2,7 @@
 
 玻璃质感的桌面 Todo 看板：固定在桌面、以玻璃为基底，只呈现 Todo 清单供用户勾选的极简互动小程序；二期规划临时剪贴板（玻璃板上以气泡提示 + 白板，满 5 个气泡提醒清理），三期规划 AI 规范 Todo 与临时内容（均仅记录待细化）。总体规划见 `CapsuleTODO_plan.md`。
 
-**当前状态**：**一期完成（PL001–PL003 + FIX001 全部收口，2026-09-17）**——玻璃壳与清单闭环（PL001）、清单持久化与增删管理（PL002，数据单一来源 = db，`data/todo.db` 双落址）、桌面固定（PL003：置顶 + 全屏让位逐边包含法 + 位置记忆 configs/config.json + 单实例）用户目验全过；A001 首轮审计已归档并修复闭环（FIX001 三条，观察项 10 条保留观察），28 项测试全绿、门禁七项绿；**一次性提交推送 V0.1.0.3 待执行（用户定案）**，二期剪贴板（气泡 + 白板）与三期 AI 规范待立项（仅记录见计划书 §6）。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
+**当前状态**：**二期完成（PL004–PL006 + FIX002 全部收口，2026-09-17）**——页签导航与气泡（PL004：手动捕获剪贴板/点击复制回/满 5 软提醒 Rust 裁决/二态清空）、白板（PL005：纯文本草稿 800ms 防抖自动保存）用户目验全过；A002 第 2 轮审计归档并修复闭环（FIX002 五条：拖动白名单/长度上限/死代码/文档实态/收尾；观察项延续保留观察），45 项测试全绿、门禁七项绿、版本 0.1.1；**一次性提交推送 V0.1.1.1 待执行（用户定案）**，三期 AI 规范待立项讨论（仅记录见计划书 §6）。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
 
 ## 技术栈
 
@@ -13,7 +13,7 @@
 | 核心逻辑 | 纯 Rust（状态机/持久化/业务规则，cargo test 直测）                                                                             |
 | 存储     | rusqlite（SQLite，`data/` 双落址沿系列基线，一期定案后回改）                                                                   |
 | 玻璃效果 | DWM 焦点联动材质（extern dwmapi 直连：平时 alpha 透明、聚焦 DWMSBT_TRANSIENTWINDOW Acrylic；macOS vibrancy / Linux blur 延后） |
-| 通知常驻 | 待一期方案定案后补充                                                                                                           |
+| 通知常驻 | 一期定案：无系统通知常驻（板子常驻桌面即所见）；系统通知随后续需求另议                                                         |
 
 ## 启动命令（规划）
 
@@ -35,7 +35,7 @@ npm run build          # 前端构建校验（含 vue-tsc；产物 dist/ 内嵌�
 
 ## 目录规划
 
-（2026-09-17 一期实态）
+（2026-09-17 二期实态）
 
 ```
 core/             # Tauri 2 后端（框架文件须与 Cargo.toml 同住）
@@ -48,12 +48,14 @@ core/             # Tauri 2 后端（框架文件须与 Cargo.toml 同住）
     lib.rs        # 应用装配：玻璃挂载 + 桌面固定（置顶/全屏让位/位置记忆/单实例）+ 模块注册
     main.rs       # 薄入口（调 capsule_todo::run()）
     todo.rs       # 业务纯逻辑：TodoItem DTO + 文本校验（禁 import tauri）
-    storage.rs    # SQLite Repository（todos 表增删勾查，参数化 SQL）
+    bubble.rs     # 业务纯逻辑：气泡 DTO/快照 + 满 5 阈值 + 捕获文本校验
+    whiteboard.rs # 业务纯逻辑：白板内容长度校验
+    storage.rs    # SQLite Repository（todos/bubbles/whiteboard 表，参数化 SQL）
     paths.rs      # 运行时数据双落址解析（data/ 与 configs/，目录自建）
     settings.rs   # 窗口位置持久化（JSON 原子写）
     fullscreen.rs # 全屏让位（逐边包含判定纯函数 + user32 轮询线程）
-    commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs 增删勾查）
-ui/               # Vue 前端（App.vue + components/AddBar.vue、TodoList.vue；types.ts 镜像 IPC DTO）
+    commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs / bubble.rs / whiteboard.rs）
+ui/               # Vue 前端（App.vue 三页签骨架 + components/AddBar、TodoList、BubblesView、WhiteboardView；types.ts 镜像 IPC DTO）
 configs/          # 程序读的固定参数与用户参数（config.json 窗口位置，运行时写入，gitignore）
 data/             # 运行时数据（todo.db，gitignore，运行时自建）
 .agents/skills/   # 项目自建 skill（audit-project / audit-report / progress-task）

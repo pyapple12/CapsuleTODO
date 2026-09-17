@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
+use crate::bubble::BubbleItem;
 use crate::todo::TodoItem;
 
 /// 存储层错误：SQLite 透传 / IO（目录自建失败）/ 指定条目不存在
@@ -47,13 +48,22 @@ impl Storage {
         Ok(storage)
     }
 
-    /// 建表（幂等：CREATE TABLE IF NOT EXISTS；不做 created_at——排序按 id 即创建序）
+    /// 建表（幂等：CREATE TABLE IF NOT EXISTS；todos 不做 created_at——排序按 id 即创建序；
+    /// bubbles 同理，新在前按 id 倒序）
     pub fn init(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS todos (
                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
                 done INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS bubbles (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS whiteboard (
+                id      INTEGER PRIMARY KEY CHECK (id = 1),
+                content TEXT NOT NULL DEFAULT ''
             );",
         )?;
         Ok(())
@@ -126,6 +136,87 @@ impl Storage {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目
+    pub fn add_bubble(&self, text: &str) -> Result<BubbleItem, StorageError> {
+        self.conn
+            .execute("INSERT INTO bubbles(text) VALUES (?1)", [text])?;
+        Ok(BubbleItem {
+            id: self.conn.last_insert_rowid(),
+            text: text.to_string(),
+        })
+    }
+
+    /// 气泡列表：新在前（id 倒序）
+    pub fn list_bubbles(&self) -> Result<Vec<BubbleItem>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, text FROM bubbles ORDER BY id DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(BubbleItem {
+                id: row.get(0)?,
+                text: row.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 读取单条气泡（复制回剪贴板的取数源）；不存在返回 NotFound
+    pub fn get_bubble(&self, id: i64) -> Result<BubbleItem, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT id, text FROM bubbles WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(BubbleItem {
+                        id: row.get(0)?,
+                        text: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(id),
+                other => StorageError::Sqlite(other),
+            })
+    }
+
+    /// 删除单条气泡；零行删除返回 NotFound
+    pub fn remove_bubble(&self, id: i64) -> Result<(), StorageError> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM bubbles WHERE id = ?1", rusqlite::params![id])?;
+        if changed == 0 {
+            return Err(StorageError::NotFound(id));
+        }
+        Ok(())
+    }
+
+    /// 一键清空气泡，返回清除条数
+    pub fn clear_bubbles(&self) -> Result<usize, StorageError> {
+        let removed = self.conn.execute("DELETE FROM bubbles", [])?;
+        Ok(removed)
+    }
+
+    /// 白板内容（单行表；无行返回空串——首启正常态，非错误）
+    pub fn load_whiteboard(&self) -> Result<String, StorageError> {
+        let content: Option<String> = self
+            .conn
+            .query_row("SELECT content FROM whiteboard WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(content.unwrap_or_default())
+    }
+
+    /// 保存白板内容（单行表 UPSERT，幂等覆盖）
+    pub fn save_whiteboard(&self, content: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "INSERT INTO whiteboard(id, content) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET content = excluded.content",
+            [content],
+        )?;
+        Ok(())
     }
 }
 
@@ -210,5 +301,61 @@ mod tests {
         }
         // 先 drop 关闭连接再清理（Windows 下持有句柄时目录删不掉）
         std::fs::remove_dir_all(&root).expect("清理必须成功");
+    }
+
+    #[test]
+    fn bubble_add_list_roundtrip_desc() {
+        let st = storage();
+        let a = st.add_bubble("片段一").expect("写入必须成功");
+        let b = st.add_bubble("片段二").expect("写入必须成功");
+        assert_eq!(a.id, 1);
+        assert_eq!(b.id, 2);
+        let ids: Vec<i64> = st
+            .list_bubbles()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        // 新在前（id 倒序）
+        assert_eq!(ids, vec![b.id, a.id]);
+    }
+
+    #[test]
+    fn bubble_remove_missing_is_error() {
+        let st = storage();
+        assert!(matches!(
+            st.remove_bubble(9),
+            Err(StorageError::NotFound(9))
+        ));
+        assert!(matches!(st.get_bubble(9), Err(StorageError::NotFound(9))));
+    }
+
+    #[test]
+    fn bubble_clear_returns_count_and_empties() {
+        let st = storage();
+        st.add_bubble("一").expect("写入必须成功");
+        st.add_bubble("二").expect("写入必须成功");
+        let removed = st.clear_bubbles().expect("清空必须成功");
+        assert_eq!(removed, 2);
+        assert_eq!(st.list_bubbles().expect("读取必须成功").len(), 0);
+    }
+
+    #[test]
+    fn whiteboard_default_empty_and_roundtrip() {
+        let st = storage();
+        // 首启无行 = 空串（正常态，非错误）
+        assert_eq!(st.load_whiteboard().expect("读取必须成功"), "");
+        st.save_whiteboard("草稿一").expect("保存必须成功");
+        assert_eq!(st.load_whiteboard().expect("读取必须成功"), "草稿一");
+    }
+
+    #[test]
+    fn whiteboard_upsert_idempotent() {
+        let st = storage();
+        st.save_whiteboard("一").expect("保存必须成功");
+        st.save_whiteboard("二").expect("保存必须成功");
+        st.save_whiteboard("三").expect("保存必须成功");
+        // 单行表 UPSERT：多次保存只覆盖一行，不累积
+        assert_eq!(st.load_whiteboard().expect("读取必须成功"), "三");
     }
 }
