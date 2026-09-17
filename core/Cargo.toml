@@ -1,0 +1,16 @@
+[package]
+name = "capsule-todo"
+version = "0.1.0"
+edition = "2021"
+description = "CapsuleTODO——玻璃质感的桌面 Todo 看板"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+thiserror = "2.0.20"

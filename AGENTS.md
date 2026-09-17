@@ -2,7 +2,7 @@
 
 玻璃质感的桌面 Todo 看板：固定在桌面、以玻璃为基底，只呈现 Todo 清单供用户勾选的极简互动小程序；二期规划临时剪贴板（玻璃板上以气泡提示 + 白板，满 5 个气泡提醒清理），三期规划 AI 规范 Todo 与临时内容（均仅记录待细化）。总体规划见 `CapsuleTODO_plan.md`。
 
-**当前状态**：一期已立项（V0.1.0.2，2026-09-17 定案）——决策点全部定案（置顶 + 全屏让位 / 300×400 固定尺寸 / 位置记忆 / 勾选折叠"已完成"区 + 删除线 / 最小增删编辑缓 / 自启缓），三个任务组（PL001 玻璃壳与最小清单闭环 → PL002 清单持久化与内容管理 → PL003 桌面固定与一期收口）共 25 条任务清单细化完成，待执行，代码未落地；PL003 收口后触发首轮全量审计。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
+**当前状态**：**一期完成（PL001–PL003 + FIX001 全部收口，2026-09-17）**——玻璃壳与清单闭环（PL001）、清单持久化与增删管理（PL002，数据单一来源 = db，`data/todo.db` 双落址）、桌面固定（PL003：置顶 + 全屏让位逐边包含法 + 位置记忆 configs/config.json + 单实例）用户目验全过；A001 首轮审计已归档并修复闭环（FIX001 三条，观察项 10 条保留观察），28 项测试全绿、门禁七项绿；**一次性提交推送 V0.1.0.3 待执行（用户定案）**，二期剪贴板（气泡 + 白板）与三期 AI 规范待立项（仅记录见计划书 §6）。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + DWM 焦点联动玻璃材质（配方沿 CapsulePulse PL010/PL011 定案）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
 
 ## 技术栈
 
@@ -35,21 +35,27 @@ npm run build          # 前端构建校验（含 vue-tsc；产物 dist/ 内嵌�
 
 ## 目录规划
 
-（规划态——沿系列目录风格，业务模块随一期方案落地回改）
+（2026-09-17 一期实态）
 
 ```
 core/             # Tauri 2 后端（框架文件须与 Cargo.toml 同住）
   Cargo.toml      # 版本单一来源（version 三段式 X.Y.Z）
   tauri.conf.json # version 字段省略（回落 Cargo.toml）
+  capabilities/   # ACL 权限（core:default + 拖动白名单）
+  icons/          # 应用图标（一期占位，正式图标随打包期替换）
+  tests/          # storage_probe.rs（rusqlite bundled 冒烟探针）
   src/
-    lib.rs        # 应用装配：玻璃挂载 + 模块注册
+    lib.rs        # 应用装配：玻璃挂载 + 桌面固定（置顶/全屏让位/位置记忆/单实例）+ 模块注册
     main.rs       # 薄入口（调 capsule_todo::run()）
-    …             # 业务纯逻辑平铺于此（禁 import tauri），模块随一期方案落地
-    commands/     # Tauri 命令层（按职责分文件）
-ui/               # Vue 前端（展示层，组件随一期方案落地；types.ts 镜像 IPC DTO）
-configs/          # 程序读的固定参数与用户参数（预建占位，首个实体文件出现于设置持久化落地时）
-data/             # 运行时数据（gitignore，运行时自建）
-assets/           # 图标等静态资源
+    todo.rs       # 业务纯逻辑：TodoItem DTO + 文本校验（禁 import tauri）
+    storage.rs    # SQLite Repository（todos 表增删勾查，参数化 SQL）
+    paths.rs      # 运行时数据双落址解析（data/ 与 configs/，目录自建）
+    settings.rs   # 窗口位置持久化（JSON 原子写）
+    fullscreen.rs # 全屏让位（逐边包含判定纯函数 + user32 轮询线程）
+    commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs 增删勾查）
+ui/               # Vue 前端（App.vue + components/AddBar.vue、TodoList.vue；types.ts 镜像 IPC DTO）
+configs/          # 程序读的固定参数与用户参数（config.json 窗口位置，运行时写入，gitignore）
+data/             # 运行时数据（todo.db，gitignore，运行时自建）
 .agents/skills/   # 项目自建 skill（audit-project / audit-report / progress-task）
 .temp/            # 临时脚本与文件（gitignore）；探针、验证记录放这里
 y.problems.md     # 问题与远期改进备忘录（只增不删、编号递增；任务清单以 [problems#N] 引用）
@@ -158,7 +164,10 @@ y.problems.md     # 问题与远期改进备忘录（只增不删、编号递增
 
 容错白名单（初始为空；仅产品明确允许的边界可容错，**新增容错须先在此登记**，写明场景、降级行为与理由三要素）：
 
-- （暂无登记条目——立项初期白名单为空；系列常用先例如"设置文件不存在回退默认"见 CapsulePulse 同名文档，本项目相应功能落地时按需登记）
+- **焦点联动材质切换失败维持前态**（PL001.3 登记，2026-09-17）：场景——窗口焦点切换时 DWM 背板设置失败（DwmSetWindowAttribute 非零）或 window-focus 事件发送失败；降级行为——错误落控制台日志，材质/纱态维持切换前状态；理由——材质为纯装饰层，运行时焦点事件不可中断主流程，下次焦点切换自动重试自愈（沿 CapsulePulse FIX003.7 同款先例）。
+- **全屏监视轮询失败维持置顶态**（PL003.3 登记，2026-09-17）：场景——全屏让位后台线程的 Win32 轮询（GetWindowRect/GetMonitorInfoW）失败或前台窗句柄为空；降级行为——错误落日志（失败态翻转时只报一次防刷屏），置顶态维持不变，下轮轮询自动重试；理由——让位为体验增强层，轮询失败不该抖动常驻行为，恢复正常后自动收敛。
+- **窗口设置文件不存在回默认位**（PL003.4 登记，2026-09-17）：场景——首启或用户删除 configs/config.json，载入 NotFound；降级行为——返回默认落位（主屏右下距边 40px）不报错；理由——首启无设置文件是正常态而非错误，回默认即"开箱即用"；JSON 损坏等其余错误仍严格报错不在此列。
+- **窗口位置保存失败不阻断关闭**（PL003.4 登记，2026-09-17）：场景——关闭窗口时读取/保存 config.json 失败；降级行为——错误落日志，关闭照常进行；理由——退出意图优先，位置丢失代价小（可再拖一次），不能因保存失败把用户困在应用里（沿 Pulse"退出前落库失败仍退出"先例）。
 
 ## 素材与环境陷阱
 

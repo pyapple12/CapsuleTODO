@@ -1,8 +1,8 @@
 # CapsuleTODO — 玻璃质感的桌面 Todo 看板
 
-[![Version](https://img.shields.io/badge/Version-0.1.0.2-blue.svg)](core/Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.1.0.3-blue.svg)](core/Cargo.toml)
 [![Rust](https://img.shields.io/badge/Rust-1.96-orange.svg)](https://www.rust-lang.org)
-[![Phase](https://img.shields.io/badge/Phase-规划中-yellow.svg)](CapsuleTODO_plan.md)
+[![Phase](https://img.shields.io/badge/Phase-一期完成-brightgreen.svg)](CapsuleTODO_plan.md)
 
 极简的桌面 Todo 小程序：固定在桌面、以玻璃为基底，只呈现 Todo 清单供用户勾选，随手查看随手勾选。二期规划临时剪贴板（玻璃板上以气泡提示 + 白板，满 5 个气泡提醒清理），三期规划 AI 规范 Todo 与临时内容（均仅记录待细化）。三端（Windows / macOS / Linux）通用，技术栈沿系列项目 CapsulePulse。
 
@@ -13,7 +13,7 @@
 | 玻璃基底 | 沿系列玻璃材质：平时透明常驻、聚焦真磨砂，深浅色自适应  |
 | 分期演进 | 二期剪贴板气泡 + 白板、三期 AI 规范内容（仅记录待细化） |
 
-> 当前状态：**一期已立项（V0.1.0.2）**——决策点全部定案（置顶 + 全屏让位 / 300×400 固定尺寸 / 位置记忆 / 折叠区删除线 / 最小增删），三个任务组共 25 条任务清单细化完成，待执行；代码未落地。方案见 `z.plan.md` 附录，任务见 `x.progress.md`，规划见 `CapsuleTODO_plan.md`。
+> 当前状态：**一期完成（V0.1.0.3）**——PL001 玻璃壳与最小清单闭环、PL002 清单持久化、PL003 桌面固定（置顶 + 全屏让位 + 位置记忆 + 单实例）三任务组 + FIX001 审计修复全部收口（用户目验全过，28 项测试全绿，门禁七项绿）；一次性提交 V0.1.0.3 待执行。方案见 `z.plan.md` 附录，任务见 `x.progress.md`。
 
 ## 技术栈
 
@@ -22,7 +22,7 @@
 | 框架 | Tauri 2（Rust + 系统 WebView） | 三端玻璃插件成熟、包体小（~10MB）                                            |
 | 语言 | Rust（后端全部业务逻辑）       | 学习目标：状态机/SQLite 表达自然、可单测                                     |
 | 前端 | Vue 3 + TypeScript + Vite      | 与系列一致，只做展示                                                         |
-| 存储 | rusqlite（SQLite）             | 零配置本地库，`data/` 双落址沿系列基线（一期定案后回改）                     |
+| 存储 | rusqlite（SQLite）             | 零配置本地库，`data/todo.db` 双落址（dev=项目根 / release=exe 同级）         |
 | 玻璃 | DWM 焦点联动材质               | 沿 CapsulePulse 配方：平时 alpha 透明常驻、聚焦 Acrylic 真磨砂，深浅色自适应 |
 
 ## 项目目标（除产品外）
