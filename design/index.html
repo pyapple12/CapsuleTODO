@@ -151,6 +151,12 @@
           display: none;
         }
 
+        /* 归档板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
+        #board-overlay,
+        #board-overlay .board-glass {
+          transition: none;
+        }
+
         /* 霓虹勾选框：动效全关（粒子/流光/爆闪 + 对勾描画），勾选态瞬时呈现 */
         .neon-checkbox,
         .neon-checkbox * {
@@ -764,6 +770,16 @@
         stroke: #fff;
       }
 
+      .deleteButton.open {
+        background-color: #1e90ff; /* 归档板打开期间保持蓝底（用户定案：开时保持、收板经 0.2s 褪去） */
+        overflow: visible;
+      }
+
+      .deleteButton.open .bin path {
+        fill: #fff; /* 图标随板开保持全白，收板褪回 #B5BAC1 */
+        stroke: #fff;
+      }
+
       .deleteButton:active {
         transform: scale(0.98);
       }
@@ -796,32 +812,77 @@
 
       .tooltip::before {
         position: absolute;
-        width: 5px; /* 箭头随气泡 1/2 缩放（原 10px） */
-        height: 5px;
-        transform: rotate(45deg);
         content: "";
-        background-color: var(--tooltip-color);
-        top: -2.5px; /* 箭头随翻转移到气泡上缘，指向按钮（原在 bottom） */
+        left: 50%;
+        top: -4px; /* 三角整体悬在气泡上缘外：菱形方块与气泡重叠会叠出一层黑透（用户定案换三角） */
+        transform: translateX(-50%);
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-bottom: 5px solid var(--tooltip-color); /* 指向上方按钮的实心三角 */
       }
 
       .deleteButton:hover .tooltip {
         opacity: 1;
       }
 
-      .done-head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
+      /* 归档板 = 卡片同款玻璃卡（用户定案）：glass-bg 纱底 + 玻璃描边/棱光/落影整套配方，磨砂 3px。
+         揭示动画只能用 transform scale——clip-path 加在玻璃本体上磨砂层不吃逐帧裁切（瞬跳），
+         加在父层上会切割 backdrop 采样范围（毛玻璃失效），两条路均被 Chromium 渲染层合并否决；
+         scale 加在玻璃自身则磨砂与动画兼得，origin 定在归档图标中心即"从图案处飞出"。
+         左右下各留 14px、上越页签顶 4px（用户定案：18px 基础外扩 4px） */
+      #board-overlay {
+        position: absolute;
+        top: 54px; /* 兜底值：开板时 JS 按页签实测再上扩 4px 覆盖 */
+        left: 14px;
+        right: 14px;
+        bottom: 14px;
+        z-index: 1;
+        color: var(--ink);
+        visibility: hidden;
+        transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
+      }
+
+      #board-overlay.open {
+        visibility: visible;
+        transition: none;
+      }
+
+      /* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从归档图标中心缩放飞出（带轻微回弹） */
+      .board-glass {
+        box-sizing: border-box;
         width: 100%;
-        padding: 4px;
-        border: none;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 12px;
+        height: 100%;
+        padding: 12px;
+        overflow-y: auto;
+        border-radius: var(--radius-board);
+        background: var(--glass-bg);
+        /* 贴边落影对齐页签家族（--panel-shadow，14px 缝里也可见，用户定案）；candy 留作环境柔影垫底 */
+        box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
+        -webkit-backdrop-filter: blur(3px);
+        backdrop-filter: blur(3px);
+        transform-origin: var(--archive-x, 6px) var(--archive-y, -34px);
+        transform: scale(0);
+        /* 收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
+           变负值、以图标为轴镜像闪动（2026-09-18 目验发现，用户确认修） */
+        transition: transform 0.35s ease;
+      }
+
+      #board-overlay.open .board-glass {
+        transform: scale(1);
+        transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
+      }
+
+      .board-title {
+        margin: 0 0 10px;
+        font-size: 13px;
         font-weight: 600;
-        opacity: 0.6;
-        cursor: pointer;
+        opacity: 0.85;
+      }
+
+      .board-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
       }
 
       .empty,
@@ -1043,12 +1104,6 @@
           </div>
           <p id="todo-empty" class="empty" hidden>暂无待办，添加一条吧</p>
           <ul id="todo-active" class="group"></ul>
-          <div id="todo-done-wrap" hidden>
-            <button id="todo-done-head" class="done-head">
-              <span id="todo-done-caret">▸</span> 已完成 <span id="todo-done-count">0</span>
-            </button>
-            <ul id="todo-done" class="group" hidden></ul>
-          </div>
         </div>
 
         <!-- 气泡页 -->
@@ -1077,7 +1132,17 @@
           <p id="wb-status" class="status" hidden></p>
         </div>
 
-        <!-- 左上角归档按钮（收拢/展开"已完成"，用户定案）：布局移植自 uiverse slippery-fox-79
+        <!-- 归档板：已完成条目在此管理（勾选退回清单 / 删除彻底移除），盖住页签与三页内容（用户定案）。
+             外层做揭示动画，玻璃本体在内层 .board-glass（分层原因见样式注释） -->
+        <div id="board-overlay">
+          <div class="board-glass">
+            <p class="board-title">已完成 <span id="archive-count">0</span></p>
+            <p id="archive-empty" class="empty" hidden>暂无已完成，去清单勾一条吧</p>
+            <ul id="archive-list" class="board-list"></ul>
+          </div>
+        </div>
+
+        <!-- 左上角归档按钮（开合归档板，用户定案）：布局移植自 uiverse slippery-fox-79
              （vinodjangid07，MIT），位置距上/左 10px；图形为 Bootstrap Icons archive（#B5BAC1+描边加粗） -->
         <button class="deleteButton" id="card-archive" aria-label="Archive">
           <svg
@@ -1135,7 +1200,6 @@
         "示例片段： conferences 关键词清单，稍后整理",
       ];
       const MAX_BUBBLES = 5; // 与 APP 常量一致（满 5 提醒）
-      let doneOpen = false;
       let confirmingClear = false;
       let confirmTimer = 0;
       let copiedTimer = 0;
@@ -1154,11 +1218,8 @@
         });
       });
 
-      // ===== 清单（勾选/增删/折叠） =====
-      function renderTodos() {
-        const active = todos.filter((t) => !t.done);
-        const done = todos.filter((t) => t.done);
-        const row = (t) => `
+      // ===== 清单与归档板共用行模板（is-done 勾选态由数据驱动） =====
+      const todoRowHtml = (t) => `
           <li class="todo-row ${t.done ? "is-done" : ""}" data-id="${t.id}">
             <div class="neon-checkbox" aria-hidden="true">
               <input type="checkbox" tabindex="-1" ${t.done ? "checked" : ""} />
@@ -1195,19 +1256,28 @@
               </svg>
             </button>
           </li>`;
-        $("todo-active").innerHTML = active.map(row).join("");
-        $("todo-done").innerHTML = done.map(row).join("");
-        updateTodoChrome(done.length);
+
+      function renderTodos() {
+        $("todo-active").innerHTML = todos
+          .filter((t) => !t.done)
+          .map(todoRowHtml)
+          .join("");
+        updateTodoChrome();
       }
 
-      // 折叠头/空态/计数等外壳状态（全量渲染与勾选就地归组共用）
-      function updateTodoChrome(doneCount) {
-        $("todo-empty").hidden = todos.length > 0;
-        $("todo-active").hidden = todos.length === 0;
-        $("todo-done-wrap").hidden = doneCount === 0;
-        $("todo-done").hidden = !doneOpen;
-        $("todo-done-count").textContent = String(doneCount);
-        $("todo-done-caret").textContent = doneOpen ? "▾" : "▸";
+      // 归档板渲染：已完成条目陈列（勾选退回清单 / 删除彻底移除）
+      function renderBoard() {
+        const done = todos.filter((t) => t.done);
+        $("archive-list").innerHTML = done.map(todoRowHtml).join("");
+        $("archive-empty").hidden = done.length > 0;
+        $("archive-count").textContent = String(done.length);
+      }
+
+      // 空态外壳（未完成条目驱动；"已完成"已迁入归档板）
+      function updateTodoChrome() {
+        const undone = todos.filter((t) => !t.done).length;
+        $("todo-empty").hidden = undone > 0;
+        $("todo-active").hidden = undone === 0;
       }
 
       $("todo-add").addEventListener("click", addTodo);
@@ -1241,25 +1311,33 @@
           const idx = todos.findIndex((t) => t.id === id);
           if (idx >= 0) todos.splice(idx, 1);
           renderTodos();
+          renderBoard(); // 板内彻底删除时同步收敛
           return;
         }
         const row = e.target.closest(".todo-row");
         if (row) {
           const t = todos.find((x) => x.id === Number(row.dataset.id));
-          if (t) {
-            t.done = !t.done;
-            // 勾选动效就地播放（组件靠 :checked 过渡，整页重渲染会打断），播完再归入对应分组
-            row.querySelector(".neon-checkbox input").checked = t.done;
-            row.classList.toggle("is-done", t.done);
-            clearTimeout(row._moveTimer);
-            row._moveTimer = setTimeout(() => {
-              // 全量重渲染/删除会换掉节点，已脱离文档则跳过
-              if (row.isConnected) {
-                (t.done ? $("todo-done") : $("todo-active")).appendChild(row);
-                updateTodoChrome(todos.filter((x) => x.done).length);
-              }
-            }, 600);
+          if (!t) return;
+          // 板内行：仅勾选框生效——退回清单（用户定案）；点文字不动作
+          if (row.closest("#board-overlay")) {
+            if (!e.target.closest(".neon-checkbox")) return;
+            t.done = false;
+            renderBoard();
+            renderTodos();
+            return;
           }
+          // 清单行：勾选即入档——动效就地播放（组件靠 :checked 过渡，整页重渲染会打断），播完离场
+          t.done = true;
+          row.querySelector(".neon-checkbox input").checked = true;
+          row.classList.add("is-done");
+          clearTimeout(row._moveTimer);
+          row._moveTimer = setTimeout(() => {
+            // 全量重渲染/删除会换掉节点，已脱离文档则跳过
+            if (row.isConnected) {
+              renderTodos();
+              renderBoard();
+            }
+          }, 600);
           return;
         }
         const brow = e.target.closest(".bubble-row");
@@ -1273,15 +1351,33 @@
         }
       });
 
-      $("todo-done-head").addEventListener("click", () => {
-        doneOpen = !doneOpen;
-        renderTodos();
+      // ===== 归档板开关（用户定案双出口：再点归档图标 / 点板空白处收回） =====
+      const boardOverlay = $("board-overlay");
+      const setBoard = (open) => {
+        if (open) {
+          // top 动态落位：页签顶再上扩 4px（用户定案）；归档图标中心的板内坐标注入 transform-origin
+          // 变量（板左缘 14px，图标中心卡内 x=20 → 板内 x=6）
+          const cr = $("board").getBoundingClientRect();
+          const tr = document.querySelector(".tabs").getBoundingClientRect();
+          const top = Math.max(0, tr.top - cr.top - 4);
+          boardOverlay.style.top = `${top}px`;
+          boardOverlay.style.setProperty("--archive-x", "6px");
+          boardOverlay.style.setProperty("--archive-y", `${20 - top}px`);
+          renderBoard();
+        }
+        boardOverlay.classList.toggle("open", open);
+        $("card-archive").classList.toggle("open", open); // 按钮随开合保色/褪色（用户定案）
+      };
+
+      $("card-archive").addEventListener("click", () => {
+        setBoard(!boardOverlay.classList.contains("open"));
       });
 
-      // 左上角归档按钮：与折叠头同款开关——收拢/展开"已完成"分组（功能用户定案）
-      $("card-archive").addEventListener("click", () => {
-        doneOpen = !doneOpen;
-        renderTodos();
+      // 点归档页外任何位置收板（用户定案）；板内点击与归档按钮自身的开合不在此列
+      document.addEventListener("click", (e) => {
+        if (!boardOverlay.classList.contains("open")) return;
+        if (e.target.closest("#board-overlay") || e.target.closest("#card-archive")) return;
+        setBoard(false);
       });
 
       // ===== 气泡（捕获/复制回/删除/满 5 横幅/二态清空） =====
