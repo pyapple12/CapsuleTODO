@@ -160,6 +160,12 @@ y.problems.md     # 问题与远期改进备忘录（只增不删、编号递增
 - **GitHub 身份与远程**：远程 `git@takechance:pyapple12/CapsuleTODO.git`（SSH 别名 `takechance` = pyapple12 账号，密钥 id_b_takechance，经 socks5 127.0.0.1:10808）；仓库级身份 `git config user.name pyapple12` + `user.email takechance_bao@188.com`（覆盖全局 YiYi 身份，与系列同款做法）
 - **流程**：每次提交前 AI 必须 `git status` + `git diff`（含 `--stat`）核对改动范围无误，再草拟完整 commit 内容（add 清单 + 标题 + 正文）交用户确认；用户审阅后自行执行 `git add`/`git commit`/`git push`（AI 不执行任何 git 写操作）
 
+## 分支处理（UI 大改，沿 CapsulePulse 系列）
+
+- **作用与应用**：长周期 UI 迭代（玻璃配方落回 ui/、实验场续调）在专属分支 `ui-1.0-feature` 进行，主线 main 期间不收中间态、保持可用；分支上每完成一个组件落点请用户浏览器目验一次
+- **版本控制**：分支提交用单序列号 `ui1.0 V0.001` 起递增，标题 `<type>: ui1.0 V<序号>，<摘要>`；不占主线 V0.1.x.R 轨道，`core/Cargo.toml` 三段式分支期间冻结
+- **合并办法**：用户目验 + 全量门禁通过后 `git merge --squash ui-1.0-feature` 回 main——单条提交进主线轨道（版本推进与 R 归一合并时定），正文按体例写全连带文档；合并后删分支（本地与远程）
+
 ## 错误策略
 
 主线：**严格抛错**——配置缺失/非法输入直接返回错误（Rust 返回 `Result` 并定义明确错误类型；TS 抛出具体 Error），不静默兜底、不降级假成功。
