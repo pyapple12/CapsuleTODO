@@ -137,4 +137,11 @@
 
 ## 未完成
 
-（暂无立项任务；三期 AI 规范待讨论立项——见计划书 §6 分期规划）
+### PL007: 界面实验场 design/ [plan#工具]
+
+> 范围：design/ 独立可交互原型（三页签复刻 + glass.css 令牌化 + README 映射表 + RESEARCH.md 同步 + 背景素材）；方案见 z.plan.md 附录 PL007。
+> 红线：不动 ui/ 一行（落地回 ui/ 属后续单独 PL）；design/ 不进 vite 构建与打包；完成后不审计（用户定案）。
+
+- [x] PL007.1 骨架与素材 —— 新建 `design/`（index.html / glass.css / README.md / RESEARCH.md / assets/）；用户两张照片（F:\Download Pool\project_avatar\avatar002/005.jpeg，2304×1728）经 PowerShell System.Drawing 转宽 1600 q80 小 jpg 入 assets/（转换脚本落 .temp/）；RESEARCH.md 自 CapsulePulse 同名文件同步（R001 uiverse galaxy 全量内容 + 出身注记）；验证：文件齐备 + jpg 体积对比源图显著缩小（2026-09-17 已验证：bg-cafe.jpg 348KB / bg-sunset.jpg 230KB（源 5.7MB/4.2MB，缩放 1600×1200 q80）+ 五文件齐备 + RESEARCH 出身注记与关联行按本项目改写）
+- [x] PL007.2 基准配方与三页复刻 —— glass.css 令牌 1:1 移植现行 App.vue（30% 分态纱/亮边/rim/落影/accent，深浅双主题）+ 背景图接管 + 聚焦态预览（backdrop-filter 近似磨砂）；index.html 三页签完整交互复刻（清单添加/勾选/折叠/删除、气泡演示捕获/复制回/满 5 横幅/二态清空、白板防抖状态行——纯客户端模拟状态，演示捕获 = 示例片段池）；验证：浏览器打开可交互 + 深浅双主题（2026-09-17 已验证：glass.css 令牌 1:1 移植 + index.html 三页复刻完成（演示捕获 = 示例片段池、聚焦态 backdrop 近似含实验场控件）；内联 JS 语法自检过（node Function 编译）+ prettier 全过；**浏览器目验移交用户**——交互观感以用户浏览器为准）
+- [x] PL007.3 映射表与收口 —— README 职责表/基准配方读数/查看方式/映射表（原型七区块 → Vue 组件 → 落点）/真实窗口可行性标注（✅⚠️❌ 三档）；勾结；不做审计（用户定案）；uiverse 组件五处引入（R001 规范：类名隔离/颜色令牌化/reduced-motion 守卫，定值经用户逐处目验收敛）：页签 heavy-dragonfly-92（glider 滑块 + 同色辉光 + 气泡徽章固定正圆）、输入框 plastic-parrot-88（聚焦环随主题 accent）、勾选框 hot-dragonfly-56（常态透明底，行 overflow:clip 裁装饰防幻影滚动）、删除按钮 smart-emu-83（25% 透明黑底、中心缩放向两侧展开覆盖文字 + 红辉光、悬停文字保留组件原文 "Delete"）、添加按钮 REC average-swan-99（Teenage Engineering EP-133 源码 100% 直引：黑方/红方/居中 REC/落影 rgba(0,0,0,0.566) 1.7px 1.7px 4px 外框标定，均用户定值）；REC 玻璃配方推广全玻璃板（--panel-bg 深度 ×2 + 新令牌 --panel-shadow，最终 rgba(0,0,0,0.35) 1.7px 1.7px 8px——模糊须盖过偏移防贴边暗环）；清单分组容器 8px 内边距 + 虚拟外框外扩（自动宽 + 左右负外边距 8px：框距卡边恒 10px、框宽 = 卡宽 − 20 随卡片动态，行宽 = 卡宽 − 36 与其他面板等宽；顶边上移 8px、底随内容）；配色基准 design/color_spark.md（暮色截图实测取色指南：色板/令牌映射建议/渐变配方，accent 分装饰与交互两层）；验证：映射表覆盖全部原型区块 + 用户浏览器目验持续进行（2026-09-17 起——实验场本身就是目验载体，目验反馈十余处均已修复收敛）

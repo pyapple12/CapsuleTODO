@@ -154,6 +154,21 @@
 >
 > 状态：🚧 执行中（2026-09-17）——版本推进 0.1.1 已落地（44 项测试全绿、门禁七项绿）；PL004/PL005 已归档勾结，live 统一目验与 FIX002 修复、收口回写待做（任务清单见 x.progress.md PL006/FIX002）
 
+## 附录 PL007：界面实验场 design/（2026-09-17 立项）
+
+> 背景：沿参考项目 CapsulePulse design/ 方法论——独立可交互原型（纯 HTML/CSS/JS，零构建）复刻 APP 完整界面与交互，玻璃配方令牌化集中一处；界面/材质/动效调整在实验场零风险试错，定稿后按映射表落回 ui/（后续单独 PL）。用户定案：**本 PL 做完不审计**，验收 = 浏览器目验。
+> 关键决策（2026-09-17 用户定案）：①配方基准 = 1:1 复刻现行 APP 观感（先"像"再"改"）；②演示背景由用户提供两张照片，转小 jpg 入 assets/（验证用，标注不随落地进 APP）；③RESEARCH.md 直接同步 CapsulePulse 同名文件（本项目同样引用 uiverse galaxy 组件库做动效/技法挖掘）。
+> 方案要点：
+>
+> - design/index.html：三页签完整交互复刻（清单添加/勾选/折叠区/删除、气泡捕获/点击复制回/满 5 横幅/二态清空、白板即写即存状态行）——纯客户端模拟状态，无 Tauri 无构建；演示捕获 = 示例片段池（剪贴板真链路属 APP，实验场只管观感）；聚焦态预览 = backdrop-filter 近似磨砂（页面内近似，真窗口仍为一期 DWM 背板）
+> - design/glass.css：玻璃引擎——现行 App.vue 令牌 1:1 移植（30% 分态纱/亮边/rim/落影/accent/accent 亮紫）+ 深浅双主题（prefers-color-scheme）+ 背景图接管；调参 = 改令牌读数
+> - design/README.md：职责表 + 基准配方读数 + 查看方式 + 映射表（原型区块 → App.vue/TodoList/AddBar/BubblesView/WhiteboardView → 落点）+ 真实窗口可行性标注（✅ 页面内效果 / ⚠️ 近似 / ❌ OS 边界）
+> - design/RESEARCH.md：自 CapsulePulse design/RESEARCH.md 同步（R001 uiverse galaxy 调研全量内容，含动效候选清单与引入改造规范）
+> - design/assets/：用户照片两张转小 jpg（宽 1600 q80，PowerShell System.Drawing 转换）
+> - 红线：不动 ui/ 一行（落地回 ui/ 属后续单独 PL）；design/ 不进 vite 构建与打包
+>
+> 状态：✅ 已完成（2026-09-17，五文件齐备 + 素材转换 + JS 语法自检过；浏览器观感目验随使用进行；不做审计——用户定案）
+
 ## 附录 A002：全量代码审计报告（第2轮，2026-09-17）
 
 > 范围：同 A001 全量范围；重点 = 二期新增（bubble.rs / whiteboard.rs / commands/bubble.rs / commands/whiteboard.rs / storage 扩展 / lib 插件接线 / App.vue 页签重构 / BubblesView.vue / WhiteboardView.vue / types.ts）。约 1900 行。

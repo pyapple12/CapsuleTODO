@@ -1,0 +1,158 @@
+/* ============================================================
+   CapsuleTODO design/ 玻璃引擎 v1（基准配方）
+   基准 = 现行 APP（V0.1.1.1）ui/App.vue 令牌 1:1 移植（2026-09-17）
+   ------------------------------------------------------------
+   基准配方读数：
+   分态纱 30%（透明态浅白/纯黑）· 聚焦磨砂近似 blur(14px)（真窗口 = DWM Acrylic）
+   亮边 1.5px/78% · rim 顶缘 1.5px/90% · 落影 16px/40%/120° · 圆角 8px（板）/10px（面板）
+   accent 紫 #7c3aed · 暗色 accent 亮紫 #c0b0fd
+   ------------------------------------------------------------
+   调参 = 改下方令牌（改完刷新浏览器即时生效）；
+   定稿后按 README.md 映射表落回 ui/App.vue 与各组件。
+   ============================================================ */
+
+:root {
+  --accent: #7c3aed;
+  --ink: #1d1d1f;
+  --ink-2: color-mix(in srgb, #1d1d1f 55%, transparent);
+  --font-stack: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --glass-bg: rgba(255, 255, 255, 0.3); /* 纱浓度 30%（基准） */
+  --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.78);
+  --panel-bg: rgba(255, 255, 255, 0.76); /* 玻璃板深度 ×2（REC 配方推广，前值 0.38） */
+  --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+  --panel-shadow: rgba(0, 0, 0, 0.35) 1.7px 1.7px 8px; /* 玻璃板落影（REC 配方推广；模糊 4→8/深度 .566→.35——模糊须盖过偏移，否则贴边成暗环似裁切，实测 2026-09-18） */
+  --text-shadow: none;
+  --glass-highlight:
+    inset 0 1px rgba(255, 255, 255, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
+  --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.9);
+  --shadow-candy: 0 16px 40px rgba(80, 60, 120, 0.25);
+  /* —— 实验场扩展令牌（APP 无，调参用） —— */
+  --focus-blur: 14px; /* 聚焦态预览磨砂（近似，真窗口 = DWM） */
+  --radius-board: 8px;
+  --radius-panel: 10px;
+  --danger: #e5484d;
+  --glider-bg: rgba(124, 58, 237, 0.21); /* 页签滑块（accent 淡染，深度 +50%，前值 0.14） */
+  --glider-glow: color-mix(
+    in srgb,
+    var(--accent) 35%,
+    transparent
+  ); /* 页签滑块同色辉光（随主题 accent 自适应） */
+  /* 输入框聚焦（uiverse plastic-parrot-88 改造）：环与柔光随主题 accent 色（聚焦色随主题，用户定案） */
+  --input-focus-ring: var(--accent);
+  --input-focus-glow: color-mix(in srgb, var(--accent) 35%, transparent);
+  /* 勾选框（uiverse hot-dragonfly-56 改造）：霓虹绿——深浅同值（组件原生暗底，不随主题换色） */
+  --check-primary: #00ffaa; /* 主色：对勾/流光/粒子/环 */
+  --check-primary-dark: #00cc88; /* 常态边框 */
+  --check-box-bg: transparent; /* 常态底（用户定案：去黑底，与勾选态同为透明系） */
+  --del-hover-glow: color-mix(
+    in srgb,
+    rgb(255, 69, 69) 35%,
+    transparent
+  ); /* 删除按钮悬停红辉光（浓度/分层参数沿输入框聚焦辉光） */
+  --check-box-bg-checked: rgba(0, 255, 170, 0.1); /* 勾选底 */
+  --rec-frame: var(--panel-bg); /* REC 外框底：已与玻璃板统一（面板深度 ×2 后同值） */
+}
+
+/* —— 主题三态（实验场控件切换）：跟随系统 / 浅色（默认基线）/ 暗色 —— */
+/* 暗色令牌（⚠️ 此块与下方 :root[data-theme="dark"] 块内容一致，改动请两处同步） */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    /* 跟随系统暗色（未手动指定主题时生效） */
+    --accent: #c0b0fd;
+    --ink: #f5f5f7;
+    --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
+    --glass-bg: rgba(0, 0, 0, 0.3);
+    --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+    --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
+    --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    --panel-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+    --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --glass-highlight:
+      inset 0 1px rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.32);
+    --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
+    --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50%，前值 0.2 */
+    --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
+  }
+}
+
+/* 手动指定暗色（覆盖系统） */
+:root[data-theme="dark"] {
+  /* ⚠️ 与上方 @media 块保持一致 */
+  --accent: #c0b0fd;
+  --ink: #f5f5f7;
+  --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
+  --glass-bg: rgba(0, 0, 0, 0.3);
+  --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+  --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
+  --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  --panel-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+  --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --glass-highlight:
+    inset 0 1px rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.32);
+  --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
+  --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50%，前值 0.2 */
+  --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
+}
+
+/* —— 演示背景接管：body[data-bg] 切换（实验场控件） —— */
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-stack);
+}
+
+body[data-bg="cafe"] {
+  background: url("assets/bg-cafe.jpg") center / cover no-repeat fixed;
+}
+
+body[data-bg="sunset"] {
+  background: url("assets/bg-sunset.jpg") center / cover no-repeat fixed;
+}
+
+/* —— 玻璃板引擎：全窗单层 + 分态纱 + 聚焦磨砂近似 —— */
+.glass-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 300px;
+  height: 400px;
+  padding: 20px 18px;
+  box-sizing: border-box;
+  border-radius: var(--radius-board);
+  box-shadow: var(--glass-stroke), var(--rim-light), var(--shadow-candy);
+  overflow: hidden;
+  text-shadow: var(--text-shadow);
+  user-select: none;
+  color: var(--ink);
+  font-family: var(--font-stack);
+  /* 聚焦态预览：backdrop 作用于页面背景（⚠️ 近似——真窗口失焦 = 纯纱，聚焦 = DWM Acrylic，README 标注） */
+  transition: backdrop-filter 0.15s ease;
+}
+
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background: var(--glass-bg);
+  pointer-events: none;
+}
+
+.glass-card.focused::before {
+  background: transparent;
+}
+
+.glass-card.focused {
+  backdrop-filter: blur(var(--focus-blur)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--focus-blur)) saturate(1.2);
+}
+
+/* 直接子件一律浮于体色层之上 */
+.glass-card > * {
+  position: relative;
+  z-index: 1;
+}
