@@ -85,6 +85,7 @@
         width: 1rem;
         height: 1rem;
         font-size: 10px;
+        line-height: 1; /* 行盒收紧到字面高，数字随 flex 真居中（用户定案） */
         border-radius: 50%;
         background-color: var(--danger);
         color: #fff;
@@ -217,7 +218,8 @@
       }
 
       .btn-add:active {
-        box-shadow: none; /* 按压时落影塌掉 */
+        /* 按压塌影（塌小塌淡，用户定案）：落影减半但轮廓始终在，玻璃板不融进亮背景 */
+        box-shadow: rgba(0, 0, 0, 0.28) 0.9px 0.9px 2px;
       }
 
       .btn-add-face {
@@ -243,8 +245,8 @@
       }
 
       .btn-add:active .btn-add-face {
-        /* 按下仅保留黑色内阴影（用户定案），落影随按压消失 */
-        box-shadow: inset 0.5px 0.5px 4px #000000;
+        /* 按下仅保留黑色内阴影（用户定案），深度 50% 透明（用户定案：压红底呈深一档红，非死黑） */
+        box-shadow: inset 0.5px 0.5px 4px rgba(0, 0, 0, 0.5);
       }
 
       .btn-add:active .btn-add-text {
@@ -258,8 +260,8 @@
         gap: 6px;
         /* 虚拟外框（用户定案公式）：不设宽 + 左右负外边距各拉出 8px → 框距卡边恒 10px、
            框宽 = 卡宽 − 20 随卡片动态；内边距 8px → 行宽 = 框宽 − 16，与其他玻璃面板等宽对齐；
-           顶边上移 8px 抵消内边距对首行的下压，底部随内容 */
-        margin: -8px -8px 0;
+           顶边 -4px（抵消内边距 8px 后再整体下移 4px，用户定案），底部随内容 */
+        margin: -4px -8px 0;
         padding: 8px; /* 组内边距（用户定案 8px）：左/右/上 8px，末行之后亦 8px */
         list-style: none;
         overflow-y: auto;
@@ -782,6 +784,7 @@
       }
 
       .bubble-row {
+        position: relative; /* 删除按钮右缘锚定基准（.del 绝对定位的宿主要求，与 .todo-row 同款） */
         display: flex;
         align-items: center;
         gap: 10px;
@@ -794,6 +797,8 @@
 
       .b-text {
         flex: 1;
+        /* 右侧预留收起态删除按钮位（收起左缘距行右缘 36px，与 .t-text 同款）；悬停展开时按钮覆盖上来 */
+        padding-right: 36px;
         font-size: 13px;
         line-height: 1.35;
         word-break: break-word;
@@ -847,6 +852,13 @@
       .lab h2 {
         margin: 0 0 8px;
         font-size: 13px;
+      }
+
+      /* 分支版本定位（用户定案：标题后空开几格） */
+      .branch-ver {
+        margin-left: 16px;
+        font-size: 10.5px;
+        opacity: 0.65;
       }
 
       /* 四按钮单行排布（flex 平分），压低面板高度 */
@@ -956,7 +968,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件</h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.001</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -1087,6 +1099,13 @@
         const del = e.target.closest("[data-del]");
         if (del) {
           const id = Number(del.dataset.del);
+          // 先查气泡再查清单：两类行共用 data-del 删除通道，命中谁删谁
+          const bi = bubbles.findIndex((x) => x.id === id);
+          if (bi >= 0) {
+            bubbles.splice(bi, 1);
+            renderBubbles();
+            return;
+          }
           const idx = todos.findIndex((t) => t.id === id);
           if (idx >= 0) todos.splice(idx, 1);
           renderTodos();
@@ -1134,7 +1153,13 @@
             (b) => `
           <li class="bubble-row" data-id="${b.id}">
             <span class="b-text">${b.text}</span>
-            <button class="del" data-del="${b.id}" title="删除">×</button>
+            <button class="del" data-del="${b.id}" aria-label="删除">
+              <svg class="del-icon" viewBox="0 0 448 512">
+                <path
+                  d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.3C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.4 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z"
+                ></path>
+              </svg>
+            </button>
           </li>`,
           )
           .join("");
