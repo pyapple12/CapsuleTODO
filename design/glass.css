@@ -116,10 +116,10 @@ body[data-bg="sunset"] {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 间距不再由容器 gap 统一发：标题→页签 10、页签→内容 12 归各子件 margin（新布局，用户定案） */
   width: 300px;
   height: 400px;
-  padding: 20px 18px;
+  padding: 18px 18px 20px; /* 顶 18 = 标题距卡顶（用户定案）；左右 18、底 20 不变 */
   box-sizing: border-box;
   border-radius: var(--radius-board);
   box-shadow: var(--glass-stroke), var(--rim-light), var(--shadow-candy);
