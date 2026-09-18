@@ -157,6 +157,13 @@
           transition: none;
         }
 
+        /* 归档按钮出入场与粒子全关（JS 侧同样跳过编排直接显隐，防粒子元素滞留） */
+        .deleteButton.leaving,
+        .deleteButton.entering,
+        .archive-particle {
+          animation: none;
+        }
+
         /* 霓虹勾选框：动效全关（粒子/流光/爆闪 + 对勾描画），勾选态瞬时呈现 */
         .neon-checkbox,
         .neon-checkbox * {
@@ -780,6 +787,95 @@
         stroke: #fff;
       }
 
+      .deleteButton[hidden] {
+        display: none; /* 类内 display:flex 会压过 UA 的 [hidden] 规则，需显式声明（归档仅清单页生效） */
+      }
+
+      /* 归档按钮换页出入场（用户定案）：离场=吸气放大→快速塌缩成点；入场=从点带回弹弹出。
+         粒子迸裂/汇聚见 .archive-particle；时序编排见 JS setArchiveVisible */
+      .deleteButton.leaving {
+        animation: archive-btn-out 0.32s forwards;
+      }
+
+      @keyframes archive-btn-out {
+        0% {
+          transform: scale(1);
+          animation-timing-function: ease-out;
+        }
+
+        28% {
+          transform: scale(1.15); /* 吸气：先放大一点点 */
+          animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4); /* 随后加速塌缩 */
+        }
+
+        100% {
+          transform: scale(0);
+        }
+      }
+
+      .deleteButton.entering {
+        animation: archive-btn-in 0.27s cubic-bezier(0.34, 1.4, 0.64, 1) both; /* 提速 50%（原 0.4s） */
+      }
+
+      @keyframes archive-btn-in {
+        from {
+          transform: scale(0);
+        }
+
+        to {
+          transform: scale(1);
+        }
+      }
+
+      /* 出入场粒子：accent 主题色小圆点，中心与 (--dx,--dy) 偏移间定向飞行，播完即删零残留 */
+      .archive-particle {
+        position: absolute;
+        left: 20px; /* 按钮中心恒定：落位10px + 半宽10px */
+        top: 20px;
+        width: 2px; /* 粒子 2px（用户定案，原 4px）；飞行距离同比缩减为 5~10px */
+        height: 2px;
+        margin: -1px;
+        border-radius: 50%;
+        background: var(--accent);
+        pointer-events: none;
+        z-index: 3; /* 盖过归档板（z1）与按钮（z2），汇聚时粒子在最前 */
+        animation: archive-particle-out 0.42s ease-out forwards;
+      }
+
+      .archive-particle.in {
+        animation-name: archive-particle-in;
+        animation-duration: 0.28s; /* 入场整体提速 50%（用户定案）：0.42→0.28s */
+        animation-timing-function: ease-in;
+      }
+
+      @keyframes archive-particle-out {
+        0% {
+          transform: translate(0, 0) scale(1);
+          opacity: 1;
+        }
+
+        100% {
+          transform: translate(var(--dx), var(--dy)) scale(0.4);
+          opacity: 0;
+        }
+      }
+
+      @keyframes archive-particle-in {
+        0% {
+          transform: translate(var(--dx), var(--dy)) scale(1);
+          opacity: 0;
+        }
+
+        30% {
+          opacity: 1;
+        }
+
+        100% {
+          transform: translate(0, 0) scale(0.5);
+          opacity: 0;
+        }
+      }
+
       .deleteButton:active {
         transform: scale(0.98);
       }
@@ -1215,6 +1311,7 @@
           for (const page of ["todos", "bubbles", "whiteboard"]) {
             $(`page-${page}`).hidden = page !== radio.dataset.page;
           }
+          setArchiveVisible(radio.dataset.page === "todos"); // 归档仅清单页生效，出入场动画编排
         });
       });
 
@@ -1378,6 +1475,56 @@
         if (!boardOverlay.classList.contains("open")) return;
         if (e.target.closest("#board-overlay") || e.target.closest("#card-archive")) return;
         setBoard(false);
+      });
+
+      // ===== 归档按钮换页出入场编排（用户定案）：离场=吸气放大→快速塌缩成点→粒子迸裂；
+      // 入场=粒子四周汇聚成点→按钮带回弹弹出。粒子为临时元素，播完即删零残留 =====
+      let archiveAnimTimer = 0;
+
+      function spawnArchiveParticles(mode) {
+        const count = 18 + Math.floor(Math.random() * 11); // 每次随机 18~28 颗（用户定案）
+        for (let i = 0; i < count; i += 1) {
+          const p = document.createElement("span");
+          p.className = `archive-particle${mode === "in" ? " in" : ""}`;
+          const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.6; // 均匀布角+抖动
+          const dist = 10 + Math.random() * 8; // 飞行距离 10~18px（用户定案）
+          p.style.left = "20px"; // 按钮中心恒定：落位10px + 半宽10px
+          p.style.top = "20px";
+          p.style.setProperty("--dx", `${Math.cos(angle) * dist}px`);
+          p.style.setProperty("--dy", `${Math.sin(angle) * dist}px`);
+          p.addEventListener("animationend", () => p.remove());
+          $("board").appendChild(p);
+        }
+      }
+
+      function setArchiveVisible(visible) {
+        const btn = $("card-archive");
+        if (btn.hidden === !visible) return; // 幂等守卫：已处目标态不再编排（修复气泡↔白板互切误喷粒子）
+        window.clearTimeout(archiveAnimTimer);
+        btn.classList.remove("leaving", "entering");
+        // reduced-motion：跳过编排直接显隐（粒子不生成，防 animation:none 下元素滞留）
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          btn.hidden = !visible;
+          return;
+        }
+        if (visible) {
+          spawnArchiveParticles("in"); // 粒子先四周汇聚成点
+          archiveAnimTimer = window.setTimeout(() => {
+            btn.hidden = false;
+            btn.classList.add("entering"); // 按钮从点带回弹弹出
+          }, 240); // 入场提速 50%（原 360ms）
+        } else {
+          btn.classList.add("leaving"); // 吸气放大→快速塌缩成点
+          archiveAnimTimer = window.setTimeout(() => {
+            btn.hidden = true;
+            btn.classList.remove("leaving");
+            spawnArchiveParticles("out"); // 塌缩触底瞬间向四周迸裂
+          }, 320);
+        }
+      }
+
+      $("card-archive").addEventListener("animationend", (e) => {
+        if (e.animationName === "archive-btn-in") $("card-archive").classList.remove("entering");
       });
 
       // ===== 气泡（捕获/复制回/删除/满 5 横幅/二态清空） =====
