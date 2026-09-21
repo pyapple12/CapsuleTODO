@@ -335,7 +335,7 @@
         border-radius: var(--radius-panel);
         background: var(--panel-bg);
         box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
-        cursor: pointer;
+        cursor: grab; /* 整条可拖拽排序（文字点击本就无动作，抓手是诚实提示） */
       }
 
       /* 勾选框：uiverse hot-dragonfly-56（00Kubi，纯 CSS，R001 规范改造）
@@ -719,6 +719,45 @@
           height 0.3s ease-in,
           transform 0.3s ease-in,
           opacity 0.3s ease-in;
+      }
+
+      /* 拖拽排序视觉（生产级重挂模型，用户定案 2026-09-21）：被拖行重挂卡片层浮起——
+         translateY 跟指针 + 放大 1.03 由 JS 内联合成（不得挂 transition，须 1:1 跟手），
+         这里只管压层/落影加深/抓手；其余行 .shifting 平移让位（只动 transform，不重排 DOM） */
+      li.todo-item.dragging {
+        z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
+        cursor: grabbing;
+      }
+
+      li.todo-item.dragging .todo-row {
+        z-index: 2; /* 行本体 position:relative，压过相邻行 */
+        cursor: grabbing;
+        box-shadow:
+          var(--panel-stroke),
+          var(--panel-shadow),
+          0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
+      }
+
+      /* 等高占位符：行本体重挂卡片层期间留在清单里的落点指示，重排时滑向目标槽 */
+      li.todo-ghost {
+        border-radius: var(--radius-panel);
+        background: var(--panel-bg);
+        opacity: 0.4;
+      }
+
+      li.todo-item.shifting {
+        transition: transform 0.2s ease; /* 让位平移的顺滑过渡 */
+      }
+
+      /* 拖拽期间锁定清单滚动：防中途滚动令布局快照失真（重挂后行本体已不在清单内） */
+      .group.drag-live {
+        overflow-y: hidden;
+      }
+
+      /* 拖拽期间删除按钮整体失效（用户定案）：不响应悬停展开、不可能误删，松手即恢复 */
+      .group.drag-live .del,
+      li.todo-item.dragging .del {
+        pointer-events: none;
       }
 
       /* 超时提醒（用户定案）：10px 加粗、真黄色、实体黑阴影且贴近字体；渲染在玻璃条外下方 */
@@ -1840,7 +1879,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.008</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.009</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -2097,6 +2136,154 @@
           }
           showCopied();
         }
+      });
+
+      // ===== 清单拖拽排序（生产级重挂模型，用户定案 2026-09-21）：按住玻璃条拖动改顺序。
+      // 起拖三步：等高占位符留槽 → 行本体重挂卡片层（absolute 锁定原位）随指针浮起 →
+      // 其余行平移让位、占位符滑向目标槽。松手一次性重排 todos 并全量重绘——数组仅落点
+      // 提交一次，行本体以新序收回。重挂让行浮起不受清单容器裁剪（滚动条/顶部裁切随之
+      // 消失）。勾选框与删除按钮不参与拖拽；阈值 6px 内松手视为点击、维持原行为 =====
+      const DRAG_THRESHOLD = 6;
+      const ROW_GAP = 6; // 与 .group 的 gap 对应：一个槽位 = 被拖行高 + 间隙
+      let dragCtx = null;
+
+      document.addEventListener("mousedown", (e) => {
+        if (e.button !== 0 || dragCtx) return;
+        const row = e.target.closest("#todo-active .todo-row");
+        if (!row || e.target.closest(".del")) return; // 删除按钮自有语义
+        const li = row.closest(".todo-item");
+        if (!li || li.classList.contains("leaving")) return; // 塌缩中不可拖
+        const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
+        const inBox =
+          e.clientX >= cb.left &&
+          e.clientX <= cb.right &&
+          e.clientY >= cb.top &&
+          e.clientY <= cb.bottom;
+        if (inBox) return; // 勾选框区域归点击切换
+        dragCtx = {
+          li,
+          row,
+          id: Number(row.dataset.id),
+          startX: e.clientX,
+          startY: e.clientY,
+          engaged: false,
+          rows: [],
+          fromIdx: 0,
+          toIdx: 0,
+        };
+      });
+
+      document.addEventListener("mousemove", (e) => {
+        const ctx = dragCtx;
+        if (!ctx) return;
+        if (!ctx.engaged) {
+          if (
+            Math.abs(e.clientY - ctx.startY) < DRAG_THRESHOLD &&
+            Math.abs(e.clientX - ctx.startX) < DRAG_THRESHOLD
+          )
+            return;
+          // 起拖：清出场动画；量取自身几何（视口坐标）作为重挂与钳制基准
+          ctx.engaged = true;
+          ctx.li.classList.remove("entering");
+          const selfRect = ctx.li.getBoundingClientRect();
+          ctx.selfTop = selfRect.top;
+          ctx.selfMid = selfRect.top + selfRect.height / 2;
+          ctx.selfHeight = selfRect.height;
+          // 等高占位符留在原槽位：布局零扰动，重排时滑向目标槽充当落点指示
+          ctx.ghost = document.createElement("li");
+          ctx.ghost.className = "todo-item todo-ghost shifting";
+          ctx.ghost.style.height = `${selfRect.height}px`;
+          ctx.li.before(ctx.ghost);
+          // 行本体重挂卡片层：absolute 锁定原位（left/top/width 取实测），随指针平移浮起
+          ctx.cardEl = $("board");
+          ctx.cardRect = ctx.cardEl.getBoundingClientRect();
+          ctx.li.classList.add("dragging");
+          ctx.li.style.position = "absolute";
+          ctx.li.style.left = `${selfRect.left - ctx.cardRect.left}px`;
+          ctx.li.style.top = `${selfRect.top - ctx.cardRect.top}px`;
+          ctx.li.style.width = `${selfRect.width}px`;
+          ctx.cardEl.appendChild(ctx.li);
+          // 清单快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）
+          ctx.listEl = document.getElementById("todo-active");
+          ctx.rows = [...ctx.listEl.querySelectorAll(".todo-item")].map((el) => {
+            const r = el.getBoundingClientRect();
+            return { el, top: r.top, mid: r.top + r.height / 2, height: r.height };
+          });
+          if (ctx.rows.length < 2) {
+            // 单行无可排序：现场还原
+            dragCtx = null;
+            ctx.ghost.remove();
+            ctx.li.remove();
+            renderTodos();
+            return;
+          }
+          ctx.fromIdx = ctx.rows.findIndex((x) => x.el === ctx.ghost);
+          ctx.rows.forEach((r, i) => {
+            if (i !== ctx.fromIdx) r.el.classList.add("shifting");
+          });
+          ctx.listEl.classList.add("drag-live"); // 拖拽中锁滚动：防布局快照失真
+          document.body.style.userSelect = "none";
+          const sel = window.getSelection();
+          if (sel) sel.removeAllRanges();
+        }
+        // 被拖行中心钳制在卡片内（上下留 12px）：行已重挂卡片层，浮起不受清单容器裁剪
+        let dy = e.clientY - ctx.startY;
+        const minCenter = ctx.cardRect.top + 12 + ctx.selfHeight / 2;
+        const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;
+        const cdy = Math.min(Math.max(ctx.selfMid + dy, minCenter), maxCenter) - ctx.selfMid;
+        ctx.li.style.transform = `translateY(${cdy}px) scale(1.03)`; // 只 Y 轴跟手，锁 X 防晃
+        // 目标槽位 = 除占位符外，行中心线在被拖中心之上的行数（越过中心线即换位）
+        const center = ctx.selfMid + cdy;
+        let to = 0;
+        ctx.rows.forEach((r, i) => {
+          if (i !== ctx.fromIdx && r.mid < center) to += 1;
+        });
+        ctx.toIdx = to;
+        const unit = ctx.selfHeight + ROW_GAP;
+        const target = ctx.rows[to]; // 目标槽相邻参照行（to === fromIdx 时即占位符自身，位移为零）
+        ctx.rows.forEach((r, i) => {
+          if (i === ctx.fromIdx) {
+            // 占位符滑向目标槽位：变高行按实测行高推算落点（to>from 取行[to]新底 + 半隙，
+            // to<from 对齐行[to]原顶），与让位行的位移严格咬合
+            let pShift = 0;
+            if (to > ctx.fromIdx)
+              pShift = target.top + target.height - ctx.selfHeight - ctx.selfTop;
+            else if (to < ctx.fromIdx) pShift = target.top - ctx.selfTop;
+            r.el.style.transform = pShift ? `translateY(${pShift}px)` : "";
+            return;
+          }
+          let shift = 0;
+          if (ctx.fromIdx < to && i > ctx.fromIdx && i <= to) shift = -unit; // 下拖：途经行上移
+          if (to < ctx.fromIdx && i >= to && i < ctx.fromIdx) shift = unit; // 上拖：途经行下移
+          r.el.style.transform = shift ? `translateY(${shift}px)` : "";
+        });
+      });
+
+      document.addEventListener("mouseup", () => {
+        const ctx = dragCtx;
+        if (!ctx) return;
+        dragCtx = null;
+        document.body.style.userSelect = "";
+        if (!ctx.engaged) return; // 阈值内松手 = 原点击行为，零动作
+        ctx.listEl.classList.remove("drag-live"); // 解锁清单滚动
+        ctx.rows.forEach((r) => r.el.classList.remove("shifting"));
+        ctx.ghost.remove(); // 占位符使命完成
+        ctx.li.remove(); // 重挂的行本体由重绘收回清单
+        if (ctx.fromIdx !== ctx.toIdx) {
+          // 一次性提交：仅活动项参与排序（done 项不进清单，保持相对次序不变）
+          const item = todos.find((t) => t.id === ctx.id);
+          const actives = todos.filter((t) => !t.done);
+          const dones = todos.filter((t) => t.done);
+          actives.splice(actives.indexOf(item), 1);
+          actives.splice(ctx.toIdx, 0, item);
+          todos.splice(0, todos.length, ...actives, ...dones);
+        }
+        renderTodos(); // 无论是否换位都重绘：行本体以（可能新）顺序收回清单
+      });
+
+      // 拖拽中窗口失焦（鼠标在窗外释放等）：按当前落点收尾，防行本体滞留卡片层
+      window.addEventListener("blur", () => {
+        if (dragCtx) document.dispatchEvent(new MouseEvent("mouseup"));
       });
 
       // ===== 归档板开关（用户定案双出口：再点归档图标 / 点板空白处收回） =====
