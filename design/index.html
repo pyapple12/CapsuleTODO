@@ -688,6 +688,39 @@
         opacity: 0.55;
       }
 
+      /* 单条目出入场（用户定案 2026-09-21）：出场=原位 60% 弹到 100%（沿归档板过冲曲线）；
+         退场=塌缩一格：缩小淡出 + 高度收到 0，下方条目上移补位。类挂 li（高度塌缩须在外层，
+         行 div 与超时提醒同住 li）；全程 transform/opacity/height，玻璃条已验证的安全路线 */
+      li.todo-item.entering {
+        animation: todo-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+      }
+
+      @keyframes todo-in {
+        from {
+          transform: scale(0.6);
+          opacity: 0;
+        }
+
+        to {
+          transform: scale(1);
+          opacity: 1;
+        }
+      }
+
+      /* 退场：JS 先钉实测高度再挂类（内联高度起步、类内收 0），transition 三通道收拢；
+         时长 0.3s 须与 JS collapseRow 定时器同步 */
+      li.todo-item.leaving {
+        overflow: hidden; /* 高度塌缩时内容不许溢出 */
+        pointer-events: none; /* 塌缩中不可再点（勾选/删除） */
+        height: 0;
+        transform: scale(0.6);
+        opacity: 0;
+        transition:
+          height 0.3s ease-in,
+          transform 0.3s ease-in,
+          opacity 0.3s ease-in;
+      }
+
       /* 超时提醒（用户定案）：10px 加粗、真黄色、实体黑阴影且贴近字体；渲染在玻璃条外下方 */
       .age-alert {
         margin: 2px 0 0 12px; /* 与玻璃条左缘内容对齐 */
@@ -1807,7 +1840,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.007</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.008</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -1933,6 +1966,32 @@
         $("archive-count").textContent = String(done.length);
       }
 
+      // ===== 单条目出入场编排（用户定案 2026-09-21）：全量重绘是唯一事实源，动画是渲染前后的覆盖层 =====
+      // 出场：重绘后在新行 li 挂 entering，320ms 后摘类（0.3s 动画 + 余量）。
+      // 不用 animationend——webview 窗口被遮挡时动画事件不派发（实测），定时器确定性成立
+      function popInRow(id) {
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        const row = $("todo-active").querySelector(`.todo-row[data-id="${id}"]`);
+        const li = row ? row.closest(".todo-item") : null;
+        if (!li) return;
+        li.classList.add("entering");
+        window.setTimeout(() => li.classList.remove("entering"), 320);
+      }
+
+      // 退场：钉住实测高度再挂 leaving（行高不一：超时提醒行更高），塌缩 0.3s 后执行 after；
+      // 时长与 CSS li.todo-item.leaving 的 transition 同步
+      function collapseRow(li, after) {
+        if (!li || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          after();
+          return;
+        }
+        li.style.height = `${li.offsetHeight}px`;
+        li.classList.add("leaving");
+        void li.offsetHeight; // 强制回流：锁定起步高度，随后收 0 才有过渡
+        li.style.height = "0";
+        window.setTimeout(after, 300);
+      }
+
       // 空态外壳（未完成条目驱动；"已完成"已迁入归档板）
       function updateTodoChrome() {
         const undone = todos.filter((t) => !t.done).length;
@@ -1955,23 +2014,32 @@
         $("todo-input").value = "";
         $("todo-add").disabled = true;
         renderTodos();
+        popInRow(todoSeq); // 新条目在末尾原位弹出（用户定案）
       }
 
       document.addEventListener("click", (e) => {
         const del = e.target.closest("[data-del]");
         if (del) {
           const id = Number(del.dataset.del);
-          // 先查气泡再查清单：两类行共用 data-del 删除通道，命中谁删谁
-          const bi = bubbles.findIndex((x) => x.id === id);
-          if (bi >= 0) {
-            bubbles.splice(bi, 1);
+          // 行内删除按所在容器分流：气泡页删气泡，清单/归档删 todo。两类行共用 data-del
+          // 通道但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删
+          // todo id=1 命中气泡 id=1），故以容器为准
+          if (del.closest("#bubble-list")) {
+            const bi = bubbles.findIndex((x) => x.id === id);
+            if (bi >= 0) bubbles.splice(bi, 1);
             renderBubbles();
             return;
           }
           const idx = todos.findIndex((t) => t.id === id);
-          if (idx >= 0) todos.splice(idx, 1);
-          renderTodos();
-          renderBoard(); // 板内彻底删除时同步收敛
+          if (idx < 0) return;
+          // 彻底删除：先塌缩一格再提交数据重绘（清单/归档两处同款退场，用户定案）；
+          // 提交时重查下标，防塌缩期间新增条目导致序号漂移
+          collapseRow(del.closest(".todo-item"), () => {
+            const i = todos.findIndex((t) => t.id === id);
+            if (i >= 0) todos.splice(i, 1);
+            renderTodos();
+            renderBoard(); // 板内彻底删除时同步收敛
+          });
           return;
         }
         const row = e.target.closest(".todo-row");
@@ -1987,26 +2055,37 @@
             e.clientY >= cb.top &&
             e.clientY <= cb.bottom;
           if (!inBox) return;
-          // 板内行：点击勾选框 = 退回清单（恢复未完成）
+          // 板内行：点击勾选框 = 退回清单（恢复未完成）——与清单入档同款两拍：
+          // 就地反勾播完 → 塌缩一格 → 重绘回清单并原位弹出（用户定案）
           if (row.closest("#board-overlay")) {
             t.done = false;
-            renderBoard();
-            renderTodos();
+            row.querySelector(".neon-checkbox input").checked = false;
+            row.classList.remove("is-done");
+            clearTimeout(row._moveTimer);
+            row._moveTimer = setTimeout(() => {
+              if (!row.isConnected) return;
+              collapseRow(row.closest(".todo-item"), () => {
+                renderBoard();
+                renderTodos();
+                popInRow(t.id);
+              });
+            }, 300); // 与清单入档同拍（用户定案 300ms）
             return;
           }
           // 清单行：点击勾选框 = 勾选入档——动效就地播放（组件靠 :checked 过渡，
-          // 整页重渲染会打断），播完离场进归档板
+          // 整页重渲染会打断），播完塌缩一格，再重绘进归档板（用户定案退场）
           t.done = true;
           row.querySelector(".neon-checkbox input").checked = true;
           row.classList.add("is-done");
           clearTimeout(row._moveTimer);
           row._moveTimer = setTimeout(() => {
             // 全量重渲染/删除会换掉节点，已脱离文档则跳过
-            if (row.isConnected) {
+            if (!row.isConnected) return;
+            collapseRow(row.closest(".todo-item"), () => {
               renderTodos();
               renderBoard();
-            }
-          }, 600);
+            });
+          }, 300); // 勾选动效主拍 300ms（用户定案，原 600）：粒子尾巴会被塌缩轻微截断
           return;
         }
         const brow = e.target.closest(".bubble-row");
