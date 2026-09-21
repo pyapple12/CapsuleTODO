@@ -780,8 +780,8 @@
         top: 10px;
         left: 10px;
         z-index: 2; /* 盖过标题粒子画布（画布 pointer-events:none，仅绘制层级） */
-        width: 20px; /* 原组件 40px 的 50%（用户定案） */
-        height: 20px;
+        width: 30px; /* 几何整套照搬 CapsulePulse sideButton（用户定案）：30×30、圆角 9、图标 17 */
+        height: 30px;
         padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，图标会被 flex 压缩 */
         display: flex;
         flex-direction: column;
@@ -790,14 +790,18 @@
         gap: 3px;
         background-color: transparent;
         border: none;
-        border-radius: 4px; /* 随 50% 缩放（原 8px） */
+        border-radius: 9px;
         cursor: pointer;
-        transition: all 0.2s;
+        /* transform 弹簧回位沿 CapsulePulse sideButton（松手经 0.22s 过冲曲线弹回） */
+        transition:
+          all 0.2s,
+          transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
         overflow: hidden;
       }
 
       .deleteButton svg {
-        width: 10px; /* 固定 10px（用户定案；高按 50:59 原比例 ≈ 11.8px） */
+        width: 15px; /* 15px（用户定案，17→16→15）；viewBox 方形，高同宽 */
+        height: 15px;
       }
 
       .deleteButton:hover {
@@ -836,23 +840,26 @@
         top: 10px;
         right: 10px;
         z-index: 2;
-        width: 20px;
-        height: 20px;
+        width: 30px; /* 几何照搬 CapsulePulse sideButton：30×30（用户定案） */
+        height: 30px;
         padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，flex 会把齿轮压扁 */
         display: flex;
         align-items: center;
         justify-content: center;
         background-color: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 9px;
         cursor: pointer;
-        transition: all 0.2s;
+        /* transform 弹簧回位与归档钮同款（沿 CapsulePulse sideButton） */
+        transition:
+          all 0.2s,
+          transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
         overflow: hidden;
       }
 
       .settingsButton svg {
-        width: 14px; /* 14px（用户定案，10→20→16→14） */
-        height: 14px;
+        width: 17px; /* 17px（照搬 CapsulePulse sideButton svg，用户定案） */
+        height: 17px;
         fill: #b5bac1; /* 静息与归档图标同灰 */
         transition:
           transform 0.45s ease,
@@ -917,8 +924,8 @@
       /* 出入场粒子：accent 主题色小圆点，中心与 (--dx,--dy) 偏移间定向飞行，播完即删零残留 */
       .archive-particle {
         position: absolute;
-        left: 20px; /* 按钮中心恒定：落位10px + 半宽10px */
-        top: 20px;
+        left: 25px; /* 按钮中心恒定：落位10px + 半宽15px（30×30 按钮，随 CP 几何调整；JS 同值覆盖） */
+        top: 25px;
         width: 2px; /* 粒子 2px（用户定案，原 4px）；飞行距离同比缩减为 5~10px */
         height: 2px;
         margin: -1px;
@@ -963,8 +970,12 @@
         }
       }
 
-      .deleteButton:active {
-        transform: scale(0.98);
+      /* 按压回弹（左右钮共用，沿 CapsulePulse）：按下 0.08s 快缩一档，松手经基础过渡
+         的过冲曲线弹回；缩放幅度 0.9（用户定案沿用，原 0.98 观感近乎不可见） */
+      .deleteButton:active,
+      .settingsButton:active {
+        transform: scale(0.9);
+        transition: transform 0.08s ease;
       }
 
       .tooltip {
@@ -978,10 +989,12 @@
         top: calc(100% + 4px); /* 翻转到下方（原组件在上方，被卡片裁剪）；间距 4px（用户定案） */
         background-color: var(--tooltip-color);
         color: white;
-        /* 气泡 = 原组件的 1/2（用户定案：字号 6px）：字号 12→6、内边距 8/12→4/6、圆角 5→2.5、阴影 10→5 */
+        /* 气泡 = 原组件的 1/2（用户定案：圆角 5→2.5、阴影 10→5）；字号定案 8px（原 12，曾 6）；
+           总高定案 12px = 字高 8 + 上下内距 2，flex + line-height 1 保证文字垂直居中 */
         border-radius: 2.5px;
-        font-size: 6px;
-        padding: 4px 6px;
+        font-size: 8px;
+        line-height: 1;
+        padding: 2px 6px;
         font-weight: 600;
         white-space: nowrap;
         box-shadow: 0px 5px 5px rgba(0, 0, 0, 0.105);
@@ -997,7 +1010,7 @@
         position: absolute;
         content: "";
         left: 50%;
-        top: -4px; /* 三角整体悬在气泡上缘外：菱形方块与气泡重叠会叠出一层黑透（用户定案换三角） */
+        top: -4.5px; /* 沿 CapsulePulse 定案上移 0.5px：三角与气泡全叠会叠出一道加深的黑透带 */
         transform: translateX(-50%);
         border-left: 4px solid transparent;
         border-right: 4px solid transparent;
@@ -1006,6 +1019,11 @@
 
       .deleteButton:hover .tooltip {
         opacity: 1;
+      }
+
+      /* 归档钮 tooltip 与归档钮按下色一致（用户定案，沿 CapsulePulse 统计钮方案） */
+      .deleteButton .tooltip {
+        --tooltip-color: #1e90ff;
       }
 
       /* 归档板/设置板 = 卡片同款玻璃卡（用户定案）：glass-bg 纱底 + 玻璃描边/棱光/落影整套配方，
@@ -1771,7 +1789,7 @@
               d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14zM5 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"
             ></path>
           </svg>
-          <span class="tooltip">Archive</span>
+          <span class="tooltip">归档</span>
         </button>
 
         <!-- 右上角设置按钮（参考 uiverse red-dragonfly-22 · thomas-m-njuguna）：与归档按钮同款几何表现，
@@ -1789,7 +1807,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.006</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.007</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -2087,8 +2105,8 @@
           p.className = `archive-particle${mode === "in" ? " in" : ""}`;
           const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.6; // 均匀布角+抖动
           const dist = 10 + Math.random() * 8; // 飞行距离 10~18px（用户定案）
-          p.style.left = "20px"; // 按钮中心恒定：落位10px + 半宽10px
-          p.style.top = "20px";
+          p.style.left = "25px"; // 按钮中心恒定：落位10px + 半宽15px（30×30 按钮，随 CP 几何调整）
+          p.style.top = "25px";
           p.style.setProperty("--dx", `${Math.cos(angle) * dist}px`);
           p.style.setProperty("--dy", `${Math.sin(angle) * dist}px`);
           p.addEventListener("animationend", () => p.remove());
