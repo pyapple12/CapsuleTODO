@@ -104,7 +104,12 @@
         width: 1rem;
         height: 1rem;
         font-size: 10px;
+        font-weight: 700; /* 数字加粗更醒目（用户定案） */
         line-height: 1; /* 行盒收紧到字面高，数字随 flex 真居中（用户定案） */
+        /* 数字墨迹对称渲染（用户定案）：实测 Arial 垂直偏移 0/水平 0.22px，Segoe 系为 0.5/0.3px；
+           tabular-nums 保障多位数（9+）等宽稳定 */
+        font-family: Arial, sans-serif;
+        font-variant-numeric: tabular-nums;
         border-radius: 50%;
         background-color: var(--danger);
         color: #fff;
@@ -683,6 +688,23 @@
         opacity: 0.55;
       }
 
+      /* 超时提醒（用户定案）：10px 加粗、真黄色、实体黑阴影且贴近字体；渲染在玻璃条外下方 */
+      .age-alert {
+        margin: 2px 0 0 12px; /* 与玻璃条左缘内容对齐 */
+        font-size: 10px;
+        font-weight: 700;
+        text-shadow: 0.5px 0.5px 2px #000; /* 偏移 0.5 + 模糊 2px（用户定案） */
+      }
+
+      .age-alert--yellow {
+        color: #ffd700; /* 真黄（用户定案，原琥珀 #d97706 过深） */
+      }
+
+      .age-alert--red {
+        color: var(--danger);
+        font-weight: 700;
+      }
+
       /* 删除按钮：uiverse smart-emu-83 改造（R001 规范，类名隔离 .del/.del-icon）
          实底改 25% 透明黑（用户定案）；整套按组件 0.5 等比缩放（25px，用户定案：原组件的一半）；
        中心缩放：收起位 right:11px（圆心 23.5px），悬停展宽向两侧各涨 5px——translateX(+5px)
@@ -1048,6 +1070,9 @@
         margin: 0;
         padding: 0;
         list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px; /* 行间距对齐 .group（用户反馈：归档行几乎无间隔） */
       }
 
       /* 设置板行布局：大控件（日夜开关）纵排——名称/描述在上、控件在下；
@@ -1764,7 +1789,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.005</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.006</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -1782,11 +1807,13 @@
     <script>
       // ===== 客户端模拟状态（实验场专用：无 Tauri 无持久化，演示捕获 = 示例片段池） =====
       let todoSeq = 0;
+      const HOUR = 3600 * 1000; // 小时毫秒数：超时提醒阈值计算用
+      const now = Date.now();
       const todos = [
-        { id: ++todoSeq, text: "买牛奶", done: false },
-        { id: ++todoSeq, text: "写周报", done: false },
-        { id: ++todoSeq, text: "读一章 Rust 书", done: false },
-        { id: ++todoSeq, text: "给 CapsuleTODO 画个图标", done: true },
+        { id: ++todoSeq, text: "买牛奶", done: false, createdAt: now }, // 新鲜：无提醒
+        { id: ++todoSeq, text: "写周报", done: false, createdAt: now - 30 * HOUR }, // 24~48h：黄字
+        { id: ++todoSeq, text: "读一章 Rust 书", done: false, createdAt: now - 50 * HOUR }, // >48h：红字
+        { id: ++todoSeq, text: "给 CapsuleTODO 画个图标", done: true, createdAt: now }, // 已完成不显示提醒
       ];
       let bubbleSeq = 0;
       const bubbles = [
@@ -1819,8 +1846,21 @@
       });
 
       // ===== 清单与归档板共用行模板（is-done 勾选态由数据驱动） =====
+      // 超时提醒（用户定案）：未完成且超 24h 黄字、超 48h 红字，均 10px 加粗；已完成不渲染。
+      // 提醒渲染在玻璃条外部的下方（不进 pill）
+      function overdueAlertHtml(t) {
+        if (t.done || !t.createdAt) return "";
+        const age = Date.now() - t.createdAt;
+        if (age > 48 * HOUR)
+          return '<p class="age-alert age-alert--red">2天都过去了哟&nbsp;&nbsp;( ﾟдﾟ) …… 大懒虫</p>';
+        if (age > 24 * HOUR)
+          return '<p class="age-alert age-alert--yellow">已超过24小时了哦&nbsp;&nbsp;｜ω･) WATCHING</p>';
+        return "";
+      }
+
       const todoRowHtml = (t) => `
-          <li class="todo-row ${t.done ? "is-done" : ""}" data-id="${t.id}">
+          <li class="todo-item">
+            <div class="todo-row ${t.done ? "is-done" : ""}" data-id="${t.id}">
             <div class="neon-checkbox" aria-hidden="true">
               <input type="checkbox" tabindex="-1" ${t.done ? "checked" : ""} />
               <div class="neon-checkbox__frame">
@@ -1855,6 +1895,8 @@
                 ></path>
               </svg>
             </button>
+            </div>
+            ${overdueAlertHtml(t)}
           </li>`;
 
       function renderTodos() {
@@ -1891,7 +1933,7 @@
       function addTodo() {
         const text = $("todo-input").value.trim();
         if (!text) return;
-        todos.push({ id: ++todoSeq, text, done: false });
+        todos.push({ id: ++todoSeq, text, done: false, createdAt: Date.now() });
         $("todo-input").value = "";
         $("todo-add").disabled = true;
         renderTodos();
@@ -1918,15 +1960,24 @@
         if (row) {
           const t = todos.find((x) => x.id === Number(row.dataset.id));
           if (!t) return;
-          // 板内行：仅勾选框生效——退回清单（用户定案）；点文字不动作
+          // 勾选框装饰层不参与命中（点击落在行元素上），清单/归档两页统一按点击坐标
+          // 是否落在勾选框范围内判定，点行内其他位置（文字等）不动作（用户定案）
+          const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
+          const inBox =
+            e.clientX >= cb.left &&
+            e.clientX <= cb.right &&
+            e.clientY >= cb.top &&
+            e.clientY <= cb.bottom;
+          if (!inBox) return;
+          // 板内行：点击勾选框 = 退回清单（恢复未完成）
           if (row.closest("#board-overlay")) {
-            if (!e.target.closest(".neon-checkbox")) return;
             t.done = false;
             renderBoard();
             renderTodos();
             return;
           }
-          // 清单行：勾选即入档——动效就地播放（组件靠 :checked 过渡，整页重渲染会打断），播完离场
+          // 清单行：点击勾选框 = 勾选入档——动效就地播放（组件靠 :checked 过渡，
+          // 整页重渲染会打断），播完离场进归档板
           t.done = true;
           row.querySelector(".neon-checkbox input").checked = true;
           row.classList.add("is-done");
@@ -1974,8 +2025,10 @@
         setBoard(!boardOverlay.classList.contains("open"));
       });
 
-      // 点任一板外任何位置收板（用户定案）；板内点击与开关按钮自身的开合不在此列
+      // 点任一板外任何位置收板（用户定案）；板内点击与开关按钮自身的开合不在此列。
+      // 目标已脱离文档（入档/退回/删除触发重渲染移除原节点）时不视为板外点击，防误收板
       document.addEventListener("click", (e) => {
+        if (!e.target.isConnected) return;
         if (boardOverlay.classList.contains("open")) {
           if (!e.target.closest("#board-overlay") && !e.target.closest("#card-archive")) {
             setBoard(false);
