@@ -151,9 +151,11 @@
           display: none;
         }
 
-        /* 归档板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
+        /* 归档/设置板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
         #board-overlay,
-        #board-overlay .board-glass {
+        #settings-overlay,
+        #board-overlay .board-glass,
+        #settings-overlay .board-glass {
           transition: none;
         }
 
@@ -162,6 +164,18 @@
         .deleteButton.entering,
         .archive-particle {
           animation: none;
+        }
+
+        /* 双开关动效全关（日夜云星月亮/滑块） */
+        .theme-switch__container,
+        .theme-switch__circle-container,
+        .theme-switch__sun-moon-container,
+        .theme-switch__moon,
+        .theme-switch__clouds,
+        .theme-switch__stars-container,
+        .switch .slider,
+        .switch .slider:before {
+          transition: none;
         }
 
         /* 霓虹勾选框：动效全关（粒子/流光/爆闪 + 对勾描画），勾选态瞬时呈现 */
@@ -746,6 +760,7 @@
         z-index: 2; /* 盖过标题粒子画布（画布 pointer-events:none，仅绘制层级） */
         width: 20px; /* 原组件 40px 的 50%（用户定案） */
         height: 20px;
+        padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，图标会被 flex 压缩 */
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -789,6 +804,56 @@
 
       .deleteButton[hidden] {
         display: none; /* 类内 display:flex 会压过 UA 的 [hidden] 规则，需显式声明（归档仅清单页生效） */
+      }
+
+      /* 右上角设置按钮（参考 uiverse red-dragonfly-22 · thomas-m-njuguna）：与归档按钮同款几何与表现
+         （20px、tooltip 翻下共享样式、悬停图标翻白），位置距上/右 10px 镜像（用户定案）；
+         悬停底色 50% 黑透（用户定案，替代归档的蓝）；动态效果 = 齿轮悬停旋转半圈 */
+      .settingsButton {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 2;
+        width: 20px;
+        height: 20px;
+        padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，flex 会把齿轮压扁 */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: transparent;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+        overflow: hidden;
+      }
+
+      .settingsButton svg {
+        width: 14px; /* 14px（用户定案，10→20→16→14） */
+        height: 14px;
+        fill: #b5bac1; /* 静息与归档图标同灰 */
+        transition:
+          transform 0.45s ease,
+          fill 0.2s;
+      }
+
+      .settingsButton:hover {
+        background-color: rgba(0, 0, 0, 0.5);
+        overflow: visible; /* 气泡可溢出按钮框 */
+      }
+
+      .settingsButton:hover svg {
+        transform: rotate(180deg); /* 齿轮动态：悬停转半圈 */
+        fill: #fff;
+      }
+
+      .settingsButton.open {
+        background-color: rgba(0, 0, 0, 0.5); /* 设置板打开期间保持 50% 黑透（用户定案） */
+        overflow: visible;
+      }
+
+      .settingsButton.open svg {
+        fill: #fff;
       }
 
       /* 归档按钮换页出入场（用户定案）：离场=吸气放大→快速塌缩成点；入场=从点带回弹弹出。
@@ -921,12 +986,14 @@
         opacity: 1;
       }
 
-      /* 归档板 = 卡片同款玻璃卡（用户定案）：glass-bg 纱底 + 玻璃描边/棱光/落影整套配方，磨砂 3px。
-         揭示动画只能用 transform scale——clip-path 加在玻璃本体上磨砂层不吃逐帧裁切（瞬跳），
-         加在父层上会切割 backdrop 采样范围（毛玻璃失效），两条路均被 Chromium 渲染层合并否决；
-         scale 加在玻璃自身则磨砂与动画兼得，origin 定在归档图标中心即"从图案处飞出"。
+      /* 归档板/设置板 = 卡片同款玻璃卡（用户定案）：glass-bg 纱底 + 玻璃描边/棱光/落影整套配方，
+         磨砂 3px。揭示动画只能用 transform scale——clip-path 加在玻璃本体上磨砂层不吃逐帧裁切
+        （瞬跳），加在父层上会切割 backdrop 采样范围（毛玻璃失效），两条路均被 Chromium 渲染层
+         合并否决；scale 加在玻璃自身则磨砂与动画兼得，origin 定在开关图标中心即"从图案处飞出"
+        （归档=左上图标、设置=右上齿轮，原点经 --origin-x/y 由 JS 注入）。
          左右下各留 14px、上越页签顶 4px（用户定案：18px 基础外扩 4px） */
-      #board-overlay {
+      #board-overlay,
+      #settings-overlay {
         position: absolute;
         top: 54px; /* 兜底值：开板时 JS 按页签实测再上扩 4px 覆盖 */
         left: 14px;
@@ -938,12 +1005,13 @@
         transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
       }
 
-      #board-overlay.open {
+      #board-overlay.open,
+      #settings-overlay.open {
         visibility: visible;
         transition: none;
       }
 
-      /* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从归档图标中心缩放飞出（带轻微回弹） */
+      /* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从开关图标中心缩放飞出（带轻微回弹） */
       .board-glass {
         box-sizing: border-box;
         width: 100%;
@@ -956,14 +1024,15 @@
         box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
         -webkit-backdrop-filter: blur(3px);
         backdrop-filter: blur(3px);
-        transform-origin: var(--archive-x, 6px) var(--archive-y, -34px);
+        transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
         transform: scale(0);
         /* 收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
            变负值、以图标为轴镜像闪动（2026-09-18 目验发现，用户确认修） */
         transition: transform 0.35s ease;
       }
 
-      #board-overlay.open .board-glass {
+      #board-overlay.open .board-glass,
+      #settings-overlay.open .board-glass {
         transform: scale(1);
         transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
       }
@@ -979,6 +1048,364 @@
         margin: 0;
         padding: 0;
         list-style: none;
+      }
+
+      /* 设置板行布局：大控件（日夜开关）纵排——名称/描述在上、控件在下；
+         小控件行（跟随系统/步进）用 .inline 横排省高度 */
+      .setting-row {
+        padding: 10px 0;
+      }
+
+      .setting-row + .setting-row {
+        border-top: 1px solid rgba(128, 128, 128, 0.18);
+      }
+
+      .setting-row.inline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .setting-row.inline .setting-control {
+        margin-top: 0;
+        display: flex; /* flex 子项无文本基线空隙：跟随系统（inline-block）与日夜（inline 包块）统一真居中 */
+        align-items: center;
+      }
+
+      .setting-name {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .setting-desc {
+        margin: 2px 0 0;
+        font-size: 8px; /* 原 10px 的 80% 取整（用户定案） */
+        opacity: 0.6;
+      }
+
+      .setting-control {
+        margin-top: 10px;
+      }
+
+      /* 气泡提醒数量步进器：− 数值 +，范围 1~20（用户定案） */
+      .stepper {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .stepper-btn {
+        width: 26px;
+        height: 22px;
+        border: none;
+        border-radius: 6px;
+        background: var(--panel-bg);
+        box-shadow: var(--panel-stroke), var(--panel-shadow);
+        color: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+
+      .stepper-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      .stepper-btn:not(:disabled):active {
+        transform: scale(0.94);
+      }
+
+      .stepper-value {
+        min-width: 24px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      /* 归档/设置开关按钮的 open 态由各自类承担（.open 已在上方定义） */
+
+      /* 主题日夜开关：uiverse strong-squid-82（Galahhad）原样移植，尺寸经 --toggle-size 统一缩放
+        （用户定案：高度 2.5em × 7.2px = 18px） */
+      .theme-switch {
+        --toggle-size: 7.2px;
+        /* the size is adjusted using font-size,
+           this is not transform scale,
+           so you can choose any size */
+        --container-width: 5.625em;
+        --container-height: 2.5em;
+        --container-radius: 6.25em;
+        /* radius 0 - minecraft mode :) */
+        --container-light-bg: #3d7eae;
+        --container-night-bg: #1d1f2c;
+        --circle-container-diameter: 3.375em;
+        --sun-moon-diameter: 2.125em;
+        --sun-bg: #ecca2f;
+        --moon-bg: #c4c9d1;
+        --spot-color: #959db1;
+        --circle-container-offset: calc(
+          (var(--circle-container-diameter) - var(--container-height)) / 2 * -1
+        );
+        --stars-color: #fff;
+        --clouds-color: #f3fdff;
+        --back-clouds-color: #aacadf;
+        --transition: 0.5s cubic-bezier(0, -0.02, 0.4, 1.25);
+        --circle-transition: 0.3s cubic-bezier(0, -0.02, 0.35, 1.17);
+      }
+
+      .theme-switch,
+      .theme-switch *,
+      .theme-switch *::before,
+      .theme-switch *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-size: var(--toggle-size);
+      }
+
+      .theme-switch__container {
+        width: var(--container-width);
+        height: var(--container-height);
+        background-color: var(--container-light-bg);
+        border-radius: var(--container-radius);
+        overflow: hidden;
+        cursor: pointer;
+        box-shadow:
+          0em -0.062em 0.062em rgba(0, 0, 0, 0.25),
+          0em 0.062em 0.125em rgba(255, 255, 255, 0.94);
+        transition: var(--transition);
+        position: relative;
+      }
+
+      .theme-switch__container::before {
+        content: "";
+        position: absolute;
+        z-index: 1;
+        inset: 0;
+        box-shadow:
+          0em 0.05em 0.187em rgba(0, 0, 0, 0.25) inset,
+          0em 0.05em 0.187em rgba(0, 0, 0, 0.25) inset;
+        border-radius: var(--container-radius);
+      }
+
+      .theme-switch__checkbox {
+        display: none;
+      }
+
+      .theme-switch__circle-container {
+        width: var(--circle-container-diameter);
+        height: var(--circle-container-diameter);
+        background-color: rgba(255, 255, 255, 0.1);
+        position: absolute;
+        left: var(--circle-container-offset);
+        top: var(--circle-container-offset);
+        border-radius: var(--container-radius);
+        box-shadow:
+          inset 0 0 0 3.375em rgba(255, 255, 255, 0.1),
+          inset 0 0 0 3.375em rgba(255, 255, 255, 0.1),
+          0 0 0 0.625em rgba(255, 255, 255, 0.1),
+          0 0 0 1.25em rgba(255, 255, 255, 0.1);
+        display: flex;
+        transition: var(--circle-transition);
+        pointer-events: none;
+      }
+
+      .theme-switch__sun-moon-container {
+        pointer-events: auto;
+        position: relative;
+        z-index: 2;
+        width: var(--sun-moon-diameter);
+        height: var(--sun-moon-diameter);
+        margin: auto;
+        border-radius: var(--container-radius);
+        background-color: var(--sun-bg);
+        box-shadow:
+          0.062em 0.062em 0.062em 0em rgba(254, 255, 239, 0.61) inset,
+          0em -0.062em 0.062em 0em #a1872a inset;
+        filter: drop-shadow(0.062em 0.125em 0.125em rgba(0, 0, 0, 0.25))
+          drop-shadow(0em 0.062em 0.125em rgba(0, 0, 0, 0.25));
+        overflow: hidden;
+        transition: var(--transition);
+      }
+
+      .theme-switch__moon {
+        transform: translateX(100%);
+        width: 100%;
+        height: 100%;
+        background-color: var(--moon-bg);
+        border-radius: inherit;
+        box-shadow:
+          0.062em 0.062em 0.062em 0em rgba(254, 255, 239, 0.61) inset,
+          0em -0.062em 0.062em 0em #969696 inset;
+        transition: var(--transition);
+        position: relative;
+      }
+
+      .theme-switch__spot {
+        position: absolute;
+        top: 0.75em;
+        left: 0.312em;
+        width: 0.75em;
+        height: 0.75em;
+        border-radius: var(--container-radius);
+        background-color: var(--spot-color);
+        box-shadow: 0em 0.0312em 0.062em rgba(0, 0, 0, 0.25) inset;
+      }
+
+      .theme-switch__spot:nth-of-type(2) {
+        width: 0.375em;
+        height: 0.375em;
+        top: 0.937em;
+        left: 1.375em;
+      }
+
+      .theme-switch__spot:nth-last-of-type(3) {
+        width: 0.25em;
+        height: 0.25em;
+        top: 0.312em;
+        left: 0.812em;
+      }
+
+      .theme-switch__clouds {
+        width: 1.25em;
+        height: 1.25em;
+        background-color: var(--clouds-color);
+        border-radius: var(--container-radius);
+        position: absolute;
+        bottom: -0.625em;
+        left: 0.312em;
+        box-shadow:
+          0.937em 0.312em var(--clouds-color),
+          -0.312em -0.312em var(--back-clouds-color),
+          1.437em 0.375em var(--clouds-color),
+          0.5em -0.125em var(--back-clouds-color),
+          2.187em 0 var(--clouds-color),
+          1.25em -0.062em var(--back-clouds-color),
+          2.937em 0.312em var(--clouds-color),
+          2em -0.312em var(--back-clouds-color),
+          3.625em -0.062em var(--clouds-color),
+          2.625em 0em var(--back-clouds-color),
+          4.5em -0.312em var(--clouds-color),
+          3.375em -0.437em var(--back-clouds-color),
+          4.625em -1.75em 0 0.437em var(--clouds-color),
+          4em -0.625em var(--back-clouds-color),
+          4.125em -2.125em 0 0.437em var(--clouds-color);
+        transition: 0.5s cubic-bezier(0, -0.02, 0.4, 1.25);
+      }
+
+      .theme-switch__stars-container {
+        position: absolute;
+        color: var(--stars-color);
+        top: -100%;
+        left: 0.312em;
+        width: 2.75em;
+        height: auto;
+        transition: var(--transition);
+      }
+
+      /* actions */
+
+      .theme-switch__checkbox:checked + .theme-switch__container {
+        background-color: var(--container-night-bg);
+      }
+
+      .theme-switch__checkbox:checked + .theme-switch__container .theme-switch__circle-container {
+        left: calc(100% - var(--circle-container-offset) - var(--circle-container-diameter));
+      }
+
+      .theme-switch__checkbox:checked
+        + .theme-switch__container
+        .theme-switch__circle-container:hover {
+        left: calc(
+          100% - var(--circle-container-offset) - var(--circle-container-diameter) - 0.187em
+        );
+      }
+
+      .theme-switch__circle-container:hover {
+        left: calc(var(--circle-container-offset) + 0.187em);
+      }
+
+      .theme-switch__checkbox:checked + .theme-switch__container .theme-switch__moon {
+        transform: translate(0);
+      }
+
+      .theme-switch__checkbox:checked + .theme-switch__container .theme-switch__clouds {
+        bottom: -4.062em;
+      }
+
+      .theme-switch__checkbox:checked + .theme-switch__container .theme-switch__stars-container {
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      /* 跟随系统开启时日夜开关灰化禁用（用户定案：单一灰色、档位随系统）；
+         圆盘必须显式按住——组件自带 pointer-events:auto 会从禁用层里豁免出来（实测漏点） */
+      .theme-switch.is-disabled {
+        opacity: 0.45;
+        filter: grayscale(1);
+        pointer-events: none;
+      }
+
+      .theme-switch.is-disabled .theme-switch__sun-moon-container {
+        pointer-events: none;
+      }
+
+      /* 跟随系统开关：uiverse sour-vampirebat-66（gharsh11032000）原样移植；高度 2em × 9px = 18px（用户定案） */
+      .switch {
+        font-size: 9px;
+        position: relative;
+        display: inline-block;
+        width: 40.5px; /* 与日夜开关同宽（用户定案）；高保持 2em = 18px */
+        height: 2em;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .switch .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background: #d4acfb;
+        border-radius: 50px;
+        transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+      }
+
+      .switch .slider:before {
+        position: absolute;
+        content: "";
+        height: 1.4em;
+        width: 1.4em;
+        left: 0.3em;
+        bottom: 0.3em;
+        background-color: white;
+        border-radius: 50px;
+        box-shadow: 0 0px 20px rgba(0, 0, 0, 0.4);
+        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      }
+
+      .switch input:checked + .slider {
+        background: #b84fce;
+      }
+
+      .switch input:focus + .slider {
+        box-shadow: 0 0 1px #b84fce;
+      }
+
+      .switch input:checked + .slider:before {
+        transform: translateX(
+          2.2em
+        ); /* 白圆右缘顶满轨道右端、充当右侧圆头——还原原组件观感（40.5px 轨道） */
+        width: 2em;
+        height: 2em;
+        bottom: 0;
       }
 
       .empty,
@@ -1210,7 +1637,7 @@
           </div>
           <p id="bubble-error" class="error" hidden></p>
           <div id="bubble-banner" class="banner" hidden>
-            <span>气泡已满 5 个，该清理了</span>
+            <span id="bubble-banner-text">气泡已满 5 个，该清理了</span>
             <button id="bubble-clear" class="clear">一键清空</button>
           </div>
           <p id="bubble-empty" class="empty">暂无气泡，点上方捕获剪贴板</p>
@@ -1238,6 +1665,70 @@
           </div>
         </div>
 
+        <!-- 设置板：主题双开关（跟随系统 + 日夜切换）与气泡提醒数量步进，从齿轮位置缩放飞出
+             （与归档板同构，用户定案）；跟随系统开启时日夜开关灰化、档位随系统 -->
+        <div id="settings-overlay">
+          <div class="board-glass">
+            <p class="board-title">设置</p>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">跟随系统</p>
+                <p class="setting-desc">开启后主题随系统深浅自动切换</p>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input type="checkbox" id="follow-switch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">日夜切换</p>
+                <p class="setting-desc" id="daynight-desc">手动选择浅色或暗色</p>
+              </div>
+              <div class="setting-control">
+                <label class="theme-switch" id="daynight-label">
+                  <input type="checkbox" class="theme-switch__checkbox" id="daynight-switch" />
+                  <div class="theme-switch__container">
+                    <div class="theme-switch__clouds"></div>
+                    <div class="theme-switch__stars-container">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 55" fill="none">
+                        <path
+                          fill-rule="evenodd"
+                          clip-rule="evenodd"
+                          d="M135.831 3.00688C135.055 3.85027 134.111 4.29946 133 4.35447C134.111 4.40947 135.055 4.85867 135.831 5.71123C136.607 6.55462 136.996 7.56303 136.996 8.72727C136.996 7.95722 137.172 7.25134 137.525 6.59129C137.886 5.93124 138.372 5.39954 138.98 5.00535C139.598 4.60199 140.268 4.39114 141 4.35447C139.88 4.2903 138.936 3.85027 138.16 3.00688C137.384 2.16348 136.996 1.16425 136.996 0C136.996 1.16425 136.607 2.16348 135.831 3.00688ZM31 23.3545C32.1114 23.2995 33.0551 22.8503 33.8313 22.0069C34.6075 21.1635 34.9956 20.1642 34.9956 19C34.9956 20.1642 35.3837 21.1635 36.1599 22.0069C36.9361 22.8503 37.8798 23.2903 39 23.3545C38.2679 23.3911 37.5976 23.602 36.9802 24.0053C36.3716 24.3995 35.8864 24.9312 35.5248 25.5913C35.172 26.2513 34.9956 26.9572 34.9956 27.7273C34.9956 26.563 34.6075 25.5546 33.8313 24.7112C33.0551 23.8587 32.1114 23.4095 31 23.3545ZM0 36.3545C1.11136 36.2995 2.05513 35.8503 2.83131 35.0069C3.6075 34.1635 3.99559 33.1642 3.99559 32C3.99559 33.1642 4.38368 34.1635 5.15987 35.0069C5.93605 35.8503 6.87982 36.2903 8 36.3545C7.26792 36.3911 6.59757 36.602 5.98015 37.0053C5.37155 37.3995 4.88644 37.9312 4.52481 38.5913C4.172 39.2513 3.99559 39.9572 3.99559 40.7273C3.99559 39.563 3.6075 38.5546 2.83131 37.7112C2.05513 36.8587 1.11136 36.4095 0 36.3545ZM56.8313 24.0069C56.0551 24.8503 55.1114 25.2995 54 25.3545C55.1114 25.4095 56.0551 25.8587 56.8313 26.7112C57.6075 27.5546 57.9956 28.563 57.9956 29.7273C57.9956 28.9572 58.172 28.2513 58.5248 27.5913C58.8864 26.9312 59.3716 26.3995 59.9802 26.0053C60.5976 25.602 61.2679 25.3911 62 25.3545C60.8798 25.2903 59.9361 24.8503 59.1599 24.0069C58.3837 23.1635 57.9956 22.1642 57.9956 21C57.9956 22.1642 57.6075 23.1635 56.8313 24.0069ZM81 25.3545C82.1114 25.2995 83.0551 24.8503 83.8313 24.0069C84.6075 23.1635 84.9956 22.1642 84.9956 21C84.9956 22.1642 85.3837 23.1635 86.1599 24.0069C86.9361 24.8503 87.8798 25.2903 89 25.3545C88.2679 25.3911 87.5976 25.602 86.9802 26.0053C86.3716 26.3995 85.8864 26.9312 85.5248 27.5913C85.172 28.2513 84.9956 28.9572 84.9956 29.7273C84.9956 28.563 84.6075 27.5546 83.8313 26.7112C83.0551 25.8587 82.1114 25.4095 81 25.3545ZM136 36.3545C137.111 36.2995 138.055 35.8503 138.831 35.0069C139.607 34.1635 139.996 33.1642 139.996 32C139.996 33.1642 140.384 34.1635 141.16 35.0069C141.936 35.8503 142.88 36.2903 144 36.3545C143.268 36.3911 142.598 36.602 141.98 37.0053C141.372 37.3995 140.886 37.9312 140.525 38.5913C140.172 39.2513 139.996 39.9572 139.996 40.7273C139.996 39.563 139.607 38.5546 138.831 37.7112C138.055 36.8587 137.111 36.4095 136 36.3545ZM101.831 49.0069C101.055 49.8503 100.111 50.2995 99 50.3545C100.111 50.4095 101.055 50.8587 101.831 51.7112C102.607 52.5546 102.996 53.563 102.996 54.7273C102.996 53.9572 103.172 53.2513 103.525 52.5913C103.886 51.9312 104.372 51.3995 104.98 51.0053C105.598 50.602 106.268 50.3911 107 50.3545C105.88 50.2903 104.936 49.8503 104.16 49.0069C103.384 48.1635 102.996 47.1642 102.996 46C102.996 47.1642 102.607 48.1635 101.831 49.0069Z"
+                          fill="currentColor"
+                        ></path>
+                      </svg>
+                    </div>
+                    <div class="theme-switch__circle-container">
+                      <div class="theme-switch__sun-moon-container">
+                        <div class="theme-switch__moon">
+                          <div class="theme-switch__spot"></div>
+                          <div class="theme-switch__spot"></div>
+                          <div class="theme-switch__spot"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">气泡提醒数量</p>
+                <p class="setting-desc">气泡达到该数量时横幅提醒清理</p>
+              </div>
+              <div class="setting-control stepper">
+                <button id="bubble-count-dec" class="stepper-btn" aria-label="减少">−</button>
+                <span id="bubble-count-value" class="stepper-value">5</span>
+                <button id="bubble-count-inc" class="stepper-btn" aria-label="增加">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 左上角归档按钮（开合归档板，用户定案）：布局移植自 uiverse slippery-fox-79
              （vinodjangid07，MIT），位置距上/左 10px；图形为 Bootstrap Icons archive（#B5BAC1+描边加粗） -->
         <button class="deleteButton" id="card-archive" aria-label="Archive">
@@ -1257,11 +1748,23 @@
           </svg>
           <span class="tooltip">Archive</span>
         </button>
+
+        <!-- 右上角设置按钮（参考 uiverse red-dragonfly-22 · thomas-m-njuguna）：与归档按钮同款几何表现，
+             位置距上/右 10px 镜像；悬停底色 50% 黑透、齿轮旋转半圈（用户定案）；点击行为待定未接线 -->
+        <button class="settingsButton" id="card-settings" aria-label="Settings">
+          <svg class="settings-btn" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960">
+            <path
+              fill="#B5BAC1"
+              d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm70-80h79l14-106q31-8 57.5-23.5T639-327l99 41 39-68-86-65q5-14 7-29.5t2-31.5q0-16-2-31.5t-7-29.5l86-65-39-68-99 42q-22-23-48.5-38.5T533-694l-13-106h-79l-14 106q-31 8-57.5 23.5T321-633l-99-41-39 68 86 64q-5 15-7 30t-2 32q0 16 2 31t7 30l-86 65 39 68 99-42q22 23 48.5 38.5T427-266l13 106Zm42-180q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Zm-2-140Z"
+            ></path>
+          </svg>
+          <span class="tooltip">settings</span>
+        </button>
       </main>
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.002</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.005</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -1295,7 +1798,7 @@
         "示例片段：临时记一下——明早把白板草稿誊进待办",
         "示例片段： conferences 关键词清单，稍后整理",
       ];
-      const MAX_BUBBLES = 5; // 与 APP 常量一致（满 5 提醒）
+      let MAX_BUBBLES = 5; // 气泡提醒阈值：设置板步进可改（1~20，会话内有效刷新重置）
       let confirmingClear = false;
       let confirmTimer = 0;
       let copiedTimer = 0;
@@ -1452,14 +1955,15 @@
       const boardOverlay = $("board-overlay");
       const setBoard = (open) => {
         if (open) {
+          if (settingsOverlay.classList.contains("open")) setSettings(false); // 两板互斥（用户定案）
           // top 动态落位：页签顶再上扩 4px（用户定案）；归档图标中心的板内坐标注入 transform-origin
           // 变量（板左缘 14px，图标中心卡内 x=20 → 板内 x=6）
           const cr = $("board").getBoundingClientRect();
           const tr = document.querySelector(".tabs").getBoundingClientRect();
           const top = Math.max(0, tr.top - cr.top - 4);
           boardOverlay.style.top = `${top}px`;
-          boardOverlay.style.setProperty("--archive-x", "6px");
-          boardOverlay.style.setProperty("--archive-y", `${20 - top}px`);
+          boardOverlay.style.setProperty("--origin-x", "6px");
+          boardOverlay.style.setProperty("--origin-y", `${20 - top}px`);
           renderBoard();
         }
         boardOverlay.classList.toggle("open", open);
@@ -1470,12 +1974,54 @@
         setBoard(!boardOverlay.classList.contains("open"));
       });
 
-      // 点归档页外任何位置收板（用户定案）；板内点击与归档按钮自身的开合不在此列
+      // 点任一板外任何位置收板（用户定案）；板内点击与开关按钮自身的开合不在此列
       document.addEventListener("click", (e) => {
-        if (!boardOverlay.classList.contains("open")) return;
-        if (e.target.closest("#board-overlay") || e.target.closest("#card-archive")) return;
-        setBoard(false);
+        if (boardOverlay.classList.contains("open")) {
+          if (!e.target.closest("#board-overlay") && !e.target.closest("#card-archive")) {
+            setBoard(false);
+          }
+        }
+        if (settingsOverlay.classList.contains("open")) {
+          if (!e.target.closest("#settings-overlay") && !e.target.closest("#card-settings")) {
+            setSettings(false);
+          }
+        }
       });
+
+      // ===== 设置板开关编排（用户定案）：与归档板同构——齿轮原点飞出、双出口收板、互斥、保色 =====
+      const settingsOverlay = $("settings-overlay");
+      const setSettings = (open) => {
+        if (open) {
+          if (boardOverlay.classList.contains("open")) setBoard(false); // 两板互斥（用户定案）
+          // top 动态落位同归档板；齿轮中心的板内坐标注入 transform-origin
+          //（板左缘 14px，齿轮中心卡内 x = 卡宽 - 落位10 - 半宽10）
+          const cr = $("board").getBoundingClientRect();
+          const tr = document.querySelector(".tabs").getBoundingClientRect();
+          const top = Math.max(0, tr.top - cr.top - 4);
+          settingsOverlay.style.top = `${top}px`;
+          settingsOverlay.style.setProperty("--origin-x", `${Math.round(cr.width - 20 - 14)}px`);
+          settingsOverlay.style.setProperty("--origin-y", `${20 - top}px`);
+        }
+        settingsOverlay.classList.toggle("open", open);
+        $("card-settings").classList.toggle("open", open); // 开板保色、收板褪色（用户定案）
+      };
+
+      $("card-settings").addEventListener("click", () => {
+        setSettings(!settingsOverlay.classList.contains("open"));
+      });
+
+      // 气泡提醒数量步进（范围 1~20 钳制，横幅即时重算；会话内有效刷新重置，用户定案）
+      const BUBBLE_MAX_LIMIT = 20;
+      const setBubbleMax = (v) => {
+        MAX_BUBBLES = Math.min(BUBBLE_MAX_LIMIT, Math.max(1, v));
+        $("bubble-count-value").textContent = String(MAX_BUBBLES);
+        $("bubble-count-dec").disabled = MAX_BUBBLES <= 1;
+        $("bubble-count-inc").disabled = MAX_BUBBLES >= BUBBLE_MAX_LIMIT;
+        renderBubbles();
+      };
+
+      $("bubble-count-dec").addEventListener("click", () => setBubbleMax(MAX_BUBBLES - 1));
+      $("bubble-count-inc").addEventListener("click", () => setBubbleMax(MAX_BUBBLES + 1));
 
       // ===== 归档按钮换页出入场编排（用户定案）：离场=吸气放大→快速塌缩成点→粒子迸裂；
       // 入场=粒子四周汇聚成点→按钮带回弹弹出。粒子为临时元素，播完即删零残留 =====
@@ -1546,6 +2092,7 @@
           .join("");
         $("bubble-empty").hidden = bubbles.length > 0;
         $("bubble-list").hidden = bubbles.length === 0;
+        $("bubble-banner-text").textContent = `气泡已满 ${MAX_BUBBLES} 个，该清理了`;
         $("bubble-banner").hidden = bubbles.length < MAX_BUBBLES;
         // 页签红色徽章：读实际气泡数，固定正圆，≥10 显示"9+"（用户定案）
         $("bubble-badge").textContent = bubbles.length > 9 ? "9+" : String(bubbles.length);
@@ -1616,24 +2163,61 @@
         }, 800);
       });
 
-      // ===== 实验场控件：主题三态 / 背景切换 / 聚焦态预览 =====
+      // ===== 主题三态状态源（设置板双开关与实验场按钮共用，双向同步，用户定案保留两处入口） =====
       const themeStates = [
         { label: "跟随系统", value: null },
         { label: "浅色", value: "light" },
         { label: "暗色", value: "dark" },
       ];
-      let themeIdx = 0;
-      $("lab-theme").addEventListener("click", () => {
-        themeIdx = (themeIdx + 1) % themeStates.length;
+      const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+      let themeIdx = systemDark.matches ? 2 : 1; // 默认手动模式：跟随系统开关默认关闭，档位取系统当前深浅（用户定案）
+
+      // 双开关与实验场按钮的界面同步（跟随系统时日夜档位实时反映系统深浅并整体灰化）；
+      // 手动档位的 data-theme 也在此落属性——初始加载即一致，不依赖首次切换
+      function syncThemeControls() {
+        $("follow-switch").checked = themeIdx === 0;
+        $("daynight-label").classList.toggle("is-disabled", themeIdx === 0);
+        $("daynight-switch").checked = themeIdx === 0 ? systemDark.matches : themeIdx === 2;
+        $("daynight-switch").disabled = themeIdx === 0; // 跟随时彻底锁死：disabled 控件对任何来源的点击免疫
+        $("daynight-desc").textContent =
+          themeIdx === 0 ? "跟随系统当前深浅自动切换" : "手动选择浅色或暗色";
+        $("lab-theme").textContent = `主题：${themeStates[themeIdx].label}`;
         const state = themeStates[themeIdx];
         if (state.value === null) {
           document.documentElement.removeAttribute("data-theme");
         } else {
           document.documentElement.dataset.theme = state.value;
         }
-        $("lab-theme").textContent = `主题：${state.label}`;
+      }
+
+      function applyTheme(idx) {
+        if (themeIdx === idx) {
+          syncThemeControls();
+          return;
+        }
+        themeIdx = idx;
+        syncThemeControls();
         if (titleFX) titleFX.refresh(); // 主题 accent 换色 → 标题粒子重建
+      }
+
+      $("lab-theme").addEventListener("click", () => {
+        applyTheme((themeIdx + 1) % themeStates.length);
       });
+
+      $("follow-switch").addEventListener("change", (e) => {
+        // 关闭跟随的瞬间：以系统当前深浅作为日夜开关的起始档位（用户定案）
+        applyTheme(e.target.checked ? 0 : systemDark.matches ? 2 : 1);
+      });
+
+      $("daynight-switch").addEventListener("change", (e) => {
+        applyTheme(e.target.checked ? 2 : 1);
+      });
+
+      systemDark.addEventListener("change", () => {
+        if (themeIdx === 0) syncThemeControls(); // 跟随期间系统深浅实时变化 → 日夜档位跟随
+      });
+
+      syncThemeControls(); // 初始界面同步：默认跟随系统（开关勾选 + 日夜灰化随系统档位）
 
       document.querySelectorAll(".lab [data-bg]").forEach((btn) => {
         btn.addEventListener("click", () => {
