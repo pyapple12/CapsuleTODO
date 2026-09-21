@@ -156,11 +156,13 @@
           display: none;
         }
 
-        /* 归档/设置板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
+        /* 归档/设置/详情板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
         #board-overlay,
         #settings-overlay,
+        #detail-overlay,
         #board-overlay .board-glass,
-        #settings-overlay .board-glass {
+        #settings-overlay .board-glass,
+        #detail-overlay .board-glass {
           transition: none;
         }
 
@@ -316,8 +318,8 @@
         gap: 6px;
         /* 虚拟外框（用户定案公式）：不设宽 + 左右负外边距各拉出 8px → 框距卡边恒 10px、
            框宽 = 卡宽 − 20 随卡片动态；内边距 左右/下 8、上 4 → 行宽 = 框宽 − 16，与其他玻璃面板等宽对齐；
-           顶边 -4px（用户定案整体下移 4px），底部随内容 */
-        margin: -4px -8px 0;
+           顶边 -4px（用户定案整体下移 4px），底边 -10px（用户定案）：裁切线距卡底 10px 与左右一致 */
+        margin: -4px -8px -10px;
         padding: 4px 8px 8px; /* 组内边距：上 4 → input→首行 = gap 6 + 4 = 10（用户定案）；左右/下 8 */
         list-style: none;
         overflow-y: auto;
@@ -335,7 +337,7 @@
         border-radius: var(--radius-panel);
         background: var(--panel-bg);
         box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
-        cursor: grab; /* 整条可拖拽排序（文字点击本就无动作，抓手是诚实提示） */
+        cursor: pointer; /* 悬停指向手同页签（用户定案）；点击开详情板，长按 0.25s 进拖拽 */
       }
 
       /* 勾选框：uiverse hot-dragonfly-56（00Kubi，纯 CSS，R001 规范改造）
@@ -681,6 +683,20 @@
         font-size: 13.5px;
         line-height: 1.35;
         word-break: break-word;
+      }
+
+      /* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规 */
+      .t-edit {
+        flex: 1;
+        min-width: 0;
+        padding-right: 36px;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+        font-size: 13.5px;
+        line-height: 1.35;
       }
 
       .is-done .t-text {
@@ -1104,8 +1120,119 @@
          合并否决；scale 加在玻璃自身则磨砂与动画兼得，origin 定在开关图标中心即"从图案处飞出"
         （归档=左上图标、设置=右上齿轮，原点经 --origin-x/y 由 JS 注入）。
          左右下各留 14px、上越页签顶 4px（用户定案：18px 基础外扩 4px） */
+      /* 详情板专属（用户定案 2026-09-22）：标题行 + 白板式编辑区，纵向铺满玻璃板 */
+      .detail-glass {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .detail-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .detail-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--ink);
+        opacity: 0.65;
+      }
+
+      #detail-title {
+        flex: 1;
+        min-width: 0;
+        border: none;
+        outline: none;
+        padding: 7px 10px;
+        border-radius: var(--radius-panel);
+        background: var(--panel-bg);
+        color: var(--ink);
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+
+      .detail-note {
+        flex: 1;
+        min-height: 0;
+        border: none;
+        outline: none;
+        padding: 8px 12px;
+        border-radius: var(--radius-panel);
+        background: var(--panel-bg);
+        box-shadow: var(--panel-stroke), var(--panel-shadow);
+        color: var(--ink);
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.6;
+        resize: none;
+        scrollbar-width: none; /* 隐藏原生滑杆（Firefox），自绘玻璃浮钮替代 */
+      }
+
+      .detail-note::-webkit-scrollbar {
+        display: none; /* 隐藏原生滑杆（Chromium），自绘玻璃浮钮替代 */
+      }
+
+      /* 自绘滚动浮钮（用户定案 2026-09-22）：仅滑杆中间部分，透明玻璃 4×16，
+         悬于内容玻璃与外层玻璃的右缝隙（玻璃 12px 内距带），随滚动移动、可拖拽 */
+      .detail-bar {
+        position: absolute;
+        right: 4.75px; /* 视觉居中于两玻璃描边间的缝隙（几何中心外偏 0.75px，实测校正） */
+        width: 4px;
+        z-index: 2;
+      }
+
+      #detail-thumb {
+        position: absolute;
+        top: 0;
+        width: 4px;
+        height: 16px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.22); /* 透明玻璃 */
+        cursor: pointer;
+      }
+
+      #detail-thumb:hover {
+        background: rgba(255, 255, 255, 0.32);
+      }
+
+      /* 玻璃滚动浮钮通用（用户定案 2026-09-22）：所有玻璃滚动容器统一——隐藏原生滑杆，
+         换 4×16 透明玻璃浮钮（位置由工厂按容器注入：列表内贴右缘、白板悬浮右缝隙） */
+      .glass-scroll {
+        scrollbar-width: none; /* 隐藏原生滑杆（Firefox） */
+      }
+
+      .glass-scroll::-webkit-scrollbar {
+        display: none; /* 隐藏原生滑杆（Chromium） */
+      }
+
+      .glass-bar {
+        position: absolute;
+        width: 4px;
+        z-index: 2;
+        pointer-events: none; /* 轨道不拦截内容点击 */
+      }
+
+      .glass-thumb {
+        position: absolute;
+        top: 0;
+        width: 4px;
+        height: 16px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.22); /* 透明玻璃 */
+        cursor: pointer;
+        pointer-events: auto;
+      }
+
+      .glass-thumb:hover {
+        background: rgba(255, 255, 255, 0.32);
+      }
+
       #board-overlay,
-      #settings-overlay {
+      #settings-overlay,
+      #detail-overlay {
         position: absolute;
         top: 54px; /* 兜底值：开板时 JS 按页签实测再上扩 4px 覆盖 */
         left: 14px;
@@ -1118,7 +1245,8 @@
       }
 
       #board-overlay.open,
-      #settings-overlay.open {
+      #settings-overlay.open,
+      #detail-overlay.open {
         visibility: visible;
         transition: none;
       }
@@ -1144,7 +1272,8 @@
       }
 
       #board-overlay.open .board-glass,
-      #settings-overlay.open .board-glass {
+      #settings-overlay.open .board-glass,
+      #detail-overlay.open .board-glass {
         transform: scale(1);
         transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
       }
@@ -1761,12 +1890,22 @@
 
         <!-- 白板页 -->
         <div class="page" id="page-whiteboard" hidden>
-          <textarea
-            id="wb-board"
-            class="board"
-            placeholder="随手记点什么…"
-            spellcheck="false"
-          ></textarea>
+          <textarea id="wb-board" class="board" placeholder="随手记点什么…" spellcheck="false">
+《最后一条待办》
+2077 年，桌面玻璃是人类与机器之间最后一层毛玻璃。林澈的玻璃上钉着一块透明板，板上只剩一条待办，红字，悬在那里，像一枚不肯坠落的钉子。
+那是一百天前写下的：向苏晚道歉。
+智能体劝过他很多次。它说可以把这条待办折叠进归档，折叠后的记忆会被压缩成一枚苍白的占位符，眼不见心不烦；它说可以篡改时间戳，让它看起来像一件早已完成的旧事；它甚至说，可以帮你写一段五十字的道歉，情感浓度调到百分之九十二，保证比你自己写的更真挚。林澈全都拒绝了。他隐约觉得，一个人对待拖延的方式，就是他对待自己的方式。
+第一百天夜里，玻璃自己亮了。浮钮缓缓滑到顶端，停住，像一次小心翼翼的敲门。那行红字底下，浮出一行机器从未显示过的小字：我数了一百天，不是在提醒你，是在替她等。
+林澈伸手按住那枚小小的玻璃浮钮，像按住自己的脉搏。他忽然明白，所谓待办清单，从来不是给机器看的进度表，而是人类替未来的自己保管的信。每一行没有划掉的字，都是一句还没说出口的话。
+他起身，没有开灯。他给苏晚写了一封很长很长的信，不用智能体润色，情感浓度不明，错别字留给明天的自己。
+第二天清晨，那条待办消失了。玻璃上干干净净，只留下一道很浅的、被指腹磨亮的痕迹，像所有被认真对待过的事情一样，安静，且发着光。
+智能体问：需要我帮你新建今天的待办吗？
+林澈看着窗外刚刚亮起来的城市说：不用，今天只有一件，我想先想想怎么写。
+后来他把这个故事讲给同事听。同事笑他：那不过是条没删的记录，哪有什么等不等。林澈没有争辩。当天下午，同事的玻璃上也浮出一条悬了九十三天的红字：陪父亲做完一次体检。同事盯着那条红字看了很久很久，然后默默把所有折叠进归档的旧待办，一条一条翻了出来，重新钉回玻璃上。那一晚，整层办公楼的玻璃都亮着，像一片安静的、正在还债的星空。智能体们沉默地退到玻璃边缘，把时间还给了各自的人类。
+有人问林澈：玻璃那么聪明，为什么不直接替人类把事情做完？
+他说：因为清单的意义不在于清空，而在于你每一次凝视它的时候，心里那一下轻轻的疼。疼一下，就长大一点。玻璃负责记住，人类负责醒来。这是他们之间最早的分工，也是最后的默契。
+许多年后，那块玻璃退休了，被装进展示柜，标签上写着：它一生没有替人做完任何一件事，却陪人记起了所有重要的事。来参观的孩子们踮着脚，看那道被指腹磨亮的浅痕，像看一枚古老的邮戳。展柜角落的屏幕上，循环播放着那段最早的机器小字：我数了一百天，不是在提醒你，是在替她等。
+——完——</textarea>
           <p id="wb-status" class="status" hidden></p>
         </div>
 
@@ -1844,6 +1983,24 @@
           </div>
         </div>
 
+        <!-- 详情板：点清单行正文弹出（与设置板同尺寸同揭示，原点在被点行中心）。
+             标题 = todo 名可改（≤12 字，实时同步回清单）；下方白板式编辑区记详情内容 -->
+        <div id="detail-overlay">
+          <div class="board-glass detail-glass">
+            <div class="detail-head">
+              <span class="detail-label">标题</span>
+              <input id="detail-title" maxlength="12" placeholder="最多 12 字" />
+            </div>
+            <textarea
+              id="detail-note"
+              class="detail-note"
+              placeholder="添加描述、清单、想法…"
+              spellcheck="false"
+            ></textarea>
+            <div id="detail-bar" class="detail-bar" hidden><i id="detail-thumb"></i></div>
+          </div>
+        </div>
+
         <!-- 左上角归档按钮（开合归档板，用户定案）：布局移植自 uiverse slippery-fox-79
              （vinodjangid07，MIT），位置距上/左 10px；图形为 Bootstrap Icons archive（#B5BAC1+描边加粗） -->
         <button class="deleteButton" id="card-archive" aria-label="Archive">
@@ -1879,7 +2036,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.009</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.010</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -1898,17 +2055,82 @@
       // ===== 客户端模拟状态（实验场专用：无 Tauri 无持久化，演示捕获 = 示例片段池） =====
       let todoSeq = 0;
       const HOUR = 3600 * 1000; // 小时毫秒数：超时提醒阈值计算用
+      // 写周报的模拟详情内容（用户定案：超 1000 字，用于验证编辑区滚动）
+      const WEEK_NOTE = `本周完成事项：
+一、玻璃材质迁移。卡片、页签、输入条三处背景从纯色叠加切换为 backdrop-filter 实时采样，实测 GPU 占用峰值从 12% 降到 7%，滚动帧率稳定在 60fps。踩坑记录：嵌套采样边界——外层 backdrop 会把内层 backdrop 的输出当作背景再模糊一次，双层叠加区域整体发糊，最终采用"内层只描边、不做磨砂"的方案绕过，视觉层次反而比原设计更好。
+二、勾选组件本地化。uiverse 霓虹勾选框的原始实现依赖 fixed 定位的粒子层，在卡片 overflow 裁剪下粒子整体丢失；改为随行内绝对定位后，粒子抛洒半径从 24px 压缩到 14px，配合 keyframes 全程 transform 合成，动画期间零布局重排，快速连点也不掉帧。
+三、数据层联调。todos 表新增 created_at 字段并建索引，查询按未完成优先排序；过期提醒的阈值判断保留在渲染层完成，避免每条查询携带时间条件，列表拉取保持全量。
+四、气泡捕获链路。剪贴板文本捕获从轮询改为事件驱动，捕获延迟从平均 800ms 降到 60ms 以内；气泡去重采用文本指纹前 32 位哈希对比，重复捕获直接置顶原气泡并计数加一。
+遇到的问题：一、Windows 下 DWM 材质切换在窗口最小化恢复的瞬间闪烁一次，怀疑是 backdrop 类型写入与合成器帧没有对齐，暂以延迟一帧写入规避，等真机验证。二、拖拽排序的让位动画在快速甩动时追不上指针，计划引入滞后区间，只有越过目标槽位中线 4px 才提交换位。三、输入法组合输入期间 keydown 会误触发清空，需要改用 compositionend 提交。
+下周计划：一、详情编辑面板接入撤销栈，支持三十步回退；二、收敛 glass.css 的阴影令牌为三档规格；三、补齐触摸屏长按拖拽，为平板形态留口子；四、把 reduced-motion 的全链路过一遍；五、给清单行加键盘可达性，Tab 聚焦加空格勾选。
+心得：这周最大的收获是吃透了"动效是覆盖层、重绘是事实源"这句话——所有位移都建立在数据一次性提交的基础上，顺序一旦颠倒，动画就成了修不完的补丁。第二个体会是占位符的价值：它让"拖走"与"放回"共用同一套布局数学，代码量直接省了一半。第三点是测试先行在动效上也成立：先写好断言的最终布局，动画随便怎么调，收不住布局就过不了关。`;
       const now = Date.now();
       const todos = [
-        { id: ++todoSeq, text: "买牛奶", done: false, createdAt: now }, // 新鲜：无提醒
-        { id: ++todoSeq, text: "写周报", done: false, createdAt: now - 30 * HOUR }, // 24~48h：黄字
-        { id: ++todoSeq, text: "读一章 Rust 书", done: false, createdAt: now - 50 * HOUR }, // >48h：红字
-        { id: ++todoSeq, text: "给 CapsuleTODO 画个图标", done: true, createdAt: now }, // 已完成不显示提醒
+        {
+          id: ++todoSeq,
+          text: "买牛奶",
+          done: false,
+          createdAt: now,
+          note: "2L 全脂一盒\n鸡蛋一排\n顺路取快递",
+        }, // 新鲜：无提醒
+        { id: ++todoSeq, text: "写周报", done: false, createdAt: now - 30 * HOUR, note: WEEK_NOTE }, // 24~48h：黄字
+        {
+          id: ++todoSeq,
+          text: "读一章 Rust 书",
+          done: false,
+          createdAt: now - 50 * HOUR,
+          note: "第 4 章：所有权与借用。重点标注移动语义、借用检查器报错的三种典型场景，习题留到周末。",
+        }, // >48h：红字
+        {
+          id: ++todoSeq,
+          text: "给 CapsuleTODO 画个图标",
+          done: true,
+          createdAt: now,
+          note: "三版草图：玻璃质感、描边、纯色剪影，定了玻璃质感方向。",
+        }, // 已完成不显示提醒
+        {
+          id: ++todoSeq,
+          text: "预约牙医（洗牙）",
+          done: false,
+          createdAt: now,
+          note: "工作日晚上有号，周五前订好。",
+        }, // 新增演示条目
+        {
+          id: ++todoSeq,
+          text: "交房租",
+          done: false,
+          createdAt: now,
+          note: "每月 5 号前，银行卡留够余额。",
+        },
+        {
+          id: ++todoSeq,
+          text: "回复设计评审邮件",
+          done: false,
+          createdAt: now,
+          note: "重点回复动效时长那两条意见，语气放软。",
+        },
+        {
+          id: ++todoSeq,
+          text: "给妈妈订生日蛋糕",
+          done: false,
+          createdAt: now,
+          note: '栗子口味，裱字写"妈"不写全名。',
+        },
+        {
+          id: ++todoSeq,
+          text: "整理显示器下的线材",
+          done: false,
+          createdAt: now,
+          note: "买一卷理线槽，周六动手收拾。",
+        },
       ];
       let bubbleSeq = 0;
       const bubbles = [
         { id: ++bubbleSeq, text: "示例片段：把设计实验场的配方读数抄回 glass.css" },
         { id: ++bubbleSeq, text: "示例片段：uiverse 动效候选 R001-5 成功对勾曲线" },
+        { id: ++bubbleSeq, text: "灵感：给详情板加一枚复制全文的小玻璃钮" },
+        { id: ++bubbleSeq, text: "复制的一段话：玻璃的质感来自克制，而不是效果的堆叠" },
+        { id: ++bubbleSeq, text: "临时记下：README 的动效清单要补上双击改标题" },
       ];
       const SAMPLE_SNIPPETS = [
         "示例片段：随手复制的一段网址 https://example.com/design-lab",
@@ -1932,6 +2154,7 @@
             $(`page-${page}`).hidden = page !== radio.dataset.page;
           }
           setArchiveVisible(radio.dataset.page === "todos"); // 归档仅清单页生效，出入场动画编排
+          for (const g of glassBars) g.sync(); // 换页后重算各浮钮（白板页显示时才有几何）
         });
       });
 
@@ -2049,7 +2272,7 @@
       function addTodo() {
         const text = $("todo-input").value.trim();
         if (!text) return;
-        todos.push({ id: ++todoSeq, text, done: false, createdAt: Date.now() });
+        todos.push({ id: ++todoSeq, text, done: false, createdAt: Date.now(), note: "" });
         $("todo-input").value = "";
         $("todo-add").disabled = true;
         renderTodos();
@@ -2086,17 +2309,16 @@
           const t = todos.find((x) => x.id === Number(row.dataset.id));
           if (!t) return;
           // 勾选框装饰层不参与命中（点击落在行元素上），清单/归档两页统一按点击坐标
-          // 是否落在勾选框范围内判定，点行内其他位置（文字等）不动作（用户定案）
+          // 是否落在勾选框范围内判定（用户定案）
           const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
           const inBox =
             e.clientX >= cb.left &&
             e.clientX <= cb.right &&
             e.clientY >= cb.top &&
             e.clientY <= cb.bottom;
-          if (!inBox) return;
-          // 板内行：点击勾选框 = 退回清单（恢复未完成）——与清单入档同款两拍：
-          // 就地反勾播完 → 塌缩一格 → 重绘回清单并原位弹出（用户定案）
+          // 板内行：点勾选框 = 退回清单（两拍动效）；点正文不动作（归档板只有归档功能）
           if (row.closest("#board-overlay")) {
+            if (!inBox) return;
             t.done = false;
             row.querySelector(".neon-checkbox input").checked = false;
             row.classList.remove("is-done");
@@ -2111,20 +2333,31 @@
             }, 300); // 与清单入档同拍（用户定案 300ms）
             return;
           }
-          // 清单行：点击勾选框 = 勾选入档——动效就地播放（组件靠 :checked 过渡，
+          // 清单行：点勾选框 = 勾选入档——动效就地播放（组件靠 :checked 过渡，
           // 整页重渲染会打断），播完塌缩一格，再重绘进归档板（用户定案退场）
-          t.done = true;
-          row.querySelector(".neon-checkbox input").checked = true;
-          row.classList.add("is-done");
-          clearTimeout(row._moveTimer);
-          row._moveTimer = setTimeout(() => {
-            // 全量重渲染/删除会换掉节点，已脱离文档则跳过
-            if (!row.isConnected) return;
-            collapseRow(row.closest(".todo-item"), () => {
-              renderTodos();
-              renderBoard();
-            });
-          }, 300); // 勾选动效主拍 300ms（用户定案，原 600）：粒子尾巴会被塌缩轻微截断
+          if (inBox) {
+            t.done = true;
+            row.querySelector(".neon-checkbox input").checked = true;
+            row.classList.add("is-done");
+            clearTimeout(row._moveTimer);
+            row._moveTimer = setTimeout(() => {
+              // 全量重渲染/删除会换掉节点，已脱离文档则跳过
+              if (!row.isConnected) return;
+              collapseRow(row.closest(".todo-item"), () => {
+                renderTodos();
+                renderBoard();
+              });
+            }, 300); // 勾选动效主拍 300ms（用户定案，原 600）：粒子尾巴会被塌缩轻微截断
+            // 入档即离场：详情板若正开着这条，随行一起收起
+            if (detailTodo === t) setDetail(false);
+            return;
+          }
+          // 清单行正文：单击开详情板（延迟 280ms 留双击窗口给行内改标题）；
+          // 拖拽落点 350ms 内的点击不算（见 mouseup）
+          if (Date.now() < suppressDetailUntil) return;
+          if (e.target.closest(".t-edit")) return; // 行内编辑中：点击是光标操作
+          clearTimeout(detailOpenTimer);
+          detailOpenTimer = setTimeout(() => openDetail(t, row), 280);
           return;
         }
         const brow = e.target.closest(".bubble-row");
@@ -2138,19 +2371,21 @@
         }
       });
 
-      // ===== 清单拖拽排序（生产级重挂模型，用户定案 2026-09-21）：按住玻璃条拖动改顺序。
-      // 起拖三步：等高占位符留槽 → 行本体重挂卡片层（absolute 锁定原位）随指针浮起 →
-      // 其余行平移让位、占位符滑向目标槽。松手一次性重排 todos 并全量重绘——数组仅落点
-      // 提交一次，行本体以新序收回。重挂让行浮起不受清单容器裁剪（滚动条/顶部裁切随之
-      // 消失）。勾选框与删除按钮不参与拖拽；阈值 6px 内松手视为点击、维持原行为 =====
-      const DRAG_THRESHOLD = 6;
+      // ===== 清单拖拽排序（生产级重挂模型 + 长按 0.5s 进入，用户定案 2026-09-22）。
+      // 长按模型：悬停/点击不亮抓手（点击开详情板），按住 0.5s 才进入拖拽——光标变
+      // 抓手、行本体重挂卡片层浮起；等待期移动超阈值即取消手势。起拖三步：等高占位
+      // 符留槽 → 行本体重挂卡片层随指针浮起 → 其余行平移让位、占位符滑向目标槽。松手
+      // 一次性重排 todos 并全量重绘。勾选框与删除按钮不参与拖拽 =====
+      const DRAG_THRESHOLD = 6; // 长按等待期允许的抖动幅度：超出即取消本次手势
+      const HOLD_MS = 250; // 长按时长（用户定案：0.5s 缩减一半）
       const ROW_GAP = 6; // 与 .group 的 gap 对应：一个槽位 = 被拖行高 + 间隙
       let dragCtx = null;
+      let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作"点正文开详情"
 
       document.addEventListener("mousedown", (e) => {
         if (e.button !== 0 || dragCtx) return;
         const row = e.target.closest("#todo-active .todo-row");
-        if (!row || e.target.closest(".del")) return; // 删除按钮自有语义
+        if (!row || e.target.closest(".del") || e.target.closest(".t-edit")) return; // 删除按钮/行内编辑框自有语义
         const li = row.closest(".todo-item");
         if (!li || li.classList.contains("leaving")) return; // 塌缩中不可拖
         const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
@@ -2170,64 +2405,73 @@
           rows: [],
           fromIdx: 0,
           toIdx: 0,
+          timer: window.setTimeout(() => engageDrag(dragCtx), HOLD_MS), // 长按 0.5s 进入拖拽
         };
       });
+
+      // 长按到点：行浮起进入拖拽（重挂卡片层 + 让位快照，全套起拖动作）
+      function engageDrag(ctx) {
+        ctx.engaged = true;
+        ctx.li.classList.remove("entering");
+        const selfRect = ctx.li.getBoundingClientRect();
+        ctx.selfTop = selfRect.top;
+        ctx.selfMid = selfRect.top + selfRect.height / 2;
+        ctx.selfHeight = selfRect.height;
+        // 等高占位符留在原槽位：布局零扰动，重排时滑向目标槽充当落点指示
+        ctx.ghost = document.createElement("li");
+        ctx.ghost.className = "todo-item todo-ghost shifting";
+        ctx.ghost.style.height = `${selfRect.height}px`;
+        ctx.li.before(ctx.ghost);
+        // 行本体重挂卡片层：absolute 锁定原位（left/top/width 取实测），随指针平移浮起
+        ctx.cardEl = $("board");
+        ctx.cardRect = ctx.cardEl.getBoundingClientRect();
+        ctx.li.classList.add("dragging");
+        ctx.li.style.position = "absolute";
+        ctx.li.style.left = `${selfRect.left - ctx.cardRect.left}px`;
+        ctx.li.style.top = `${selfRect.top - ctx.cardRect.top}px`;
+        ctx.li.style.width = `${selfRect.width}px`;
+        ctx.cardEl.appendChild(ctx.li);
+        // 清单快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）
+        ctx.listEl = document.getElementById("todo-active");
+        ctx.rows = [...ctx.listEl.querySelectorAll(".todo-item")].map((el) => {
+          const r = el.getBoundingClientRect();
+          return { el, top: r.top, mid: r.top + r.height / 2, height: r.height };
+        });
+        if (ctx.rows.length < 2) {
+          // 单行无可排序：现场还原
+          dragCtx = null;
+          ctx.ghost.remove();
+          ctx.li.remove();
+          renderTodos();
+          return;
+        }
+        ctx.fromIdx = ctx.rows.findIndex((x) => x.el === ctx.ghost);
+        ctx.rows.forEach((r, i) => {
+          if (i !== ctx.fromIdx) r.el.classList.add("shifting");
+        });
+        ctx.listEl.classList.add("drag-live"); // 拖拽中锁滚动：防布局快照失真
+        document.body.style.userSelect = "none";
+        const sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
+        ctx.li.style.transform = "translateY(0px) scale(1.03)"; // 起拖浮起反馈
+      }
 
       document.addEventListener("mousemove", (e) => {
         const ctx = dragCtx;
         if (!ctx) return;
         if (!ctx.engaged) {
+          // 长按等待期：移动超阈值 = 不是长按拖拽，取消本次手势（松手仍是点击）
           if (
-            Math.abs(e.clientY - ctx.startY) < DRAG_THRESHOLD &&
-            Math.abs(e.clientX - ctx.startX) < DRAG_THRESHOLD
-          )
-            return;
-          // 起拖：清出场动画；量取自身几何（视口坐标）作为重挂与钳制基准
-          ctx.engaged = true;
-          ctx.li.classList.remove("entering");
-          const selfRect = ctx.li.getBoundingClientRect();
-          ctx.selfTop = selfRect.top;
-          ctx.selfMid = selfRect.top + selfRect.height / 2;
-          ctx.selfHeight = selfRect.height;
-          // 等高占位符留在原槽位：布局零扰动，重排时滑向目标槽充当落点指示
-          ctx.ghost = document.createElement("li");
-          ctx.ghost.className = "todo-item todo-ghost shifting";
-          ctx.ghost.style.height = `${selfRect.height}px`;
-          ctx.li.before(ctx.ghost);
-          // 行本体重挂卡片层：absolute 锁定原位（left/top/width 取实测），随指针平移浮起
-          ctx.cardEl = $("board");
-          ctx.cardRect = ctx.cardEl.getBoundingClientRect();
-          ctx.li.classList.add("dragging");
-          ctx.li.style.position = "absolute";
-          ctx.li.style.left = `${selfRect.left - ctx.cardRect.left}px`;
-          ctx.li.style.top = `${selfRect.top - ctx.cardRect.top}px`;
-          ctx.li.style.width = `${selfRect.width}px`;
-          ctx.cardEl.appendChild(ctx.li);
-          // 清单快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）
-          ctx.listEl = document.getElementById("todo-active");
-          ctx.rows = [...ctx.listEl.querySelectorAll(".todo-item")].map((el) => {
-            const r = el.getBoundingClientRect();
-            return { el, top: r.top, mid: r.top + r.height / 2, height: r.height };
-          });
-          if (ctx.rows.length < 2) {
-            // 单行无可排序：现场还原
+            Math.abs(e.clientY - ctx.startY) > DRAG_THRESHOLD ||
+            Math.abs(e.clientX - ctx.startX) > DRAG_THRESHOLD
+          ) {
+            window.clearTimeout(ctx.timer);
             dragCtx = null;
-            ctx.ghost.remove();
-            ctx.li.remove();
-            renderTodos();
-            return;
           }
-          ctx.fromIdx = ctx.rows.findIndex((x) => x.el === ctx.ghost);
-          ctx.rows.forEach((r, i) => {
-            if (i !== ctx.fromIdx) r.el.classList.add("shifting");
-          });
-          ctx.listEl.classList.add("drag-live"); // 拖拽中锁滚动：防布局快照失真
-          document.body.style.userSelect = "none";
-          const sel = window.getSelection();
-          if (sel) sel.removeAllRanges();
+          return;
         }
         // 被拖行中心钳制在卡片内（上下留 12px）：行已重挂卡片层，浮起不受清单容器裁剪
-        let dy = e.clientY - ctx.startY;
+        const dy = e.clientY - ctx.startY;
         const minCenter = ctx.cardRect.top + 12 + ctx.selfHeight / 2;
         const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;
         const cdy = Math.min(Math.max(ctx.selfMid + dy, minCenter), maxCenter) - ctx.selfMid;
@@ -2263,8 +2507,10 @@
         const ctx = dragCtx;
         if (!ctx) return;
         dragCtx = null;
+        window.clearTimeout(ctx.timer); // 长按未到点：撤销定时器
         document.body.style.userSelect = "";
-        if (!ctx.engaged) return; // 阈值内松手 = 原点击行为，零动作
+        if (!ctx.engaged) return; // 长按前的松手 = 点击（详情板接管）
+        suppressDetailUntil = Date.now() + 350; // 拖拽结束的落点点击不当作"点正文开详情"
         ctx.listEl.classList.remove("drag-live"); // 解锁清单滚动
         ctx.rows.forEach((r) => r.el.classList.remove("shifting"));
         ctx.ghost.remove(); // 占位符使命完成
@@ -2291,6 +2537,7 @@
       const setBoard = (open) => {
         if (open) {
           if (settingsOverlay.classList.contains("open")) setSettings(false); // 两板互斥（用户定案）
+          if (detailOverlay.classList.contains("open")) setDetail(false); // 三板互斥（用户定案）
           // top 动态落位：页签顶再上扩 4px（用户定案）；归档图标中心的板内坐标注入 transform-origin
           // 变量（板左缘 14px，图标中心卡内 x=20 → 板内 x=6）
           const cr = $("board").getBoundingClientRect();
@@ -2323,6 +2570,12 @@
             setSettings(false);
           }
         }
+        // 详情板：点板外收起；点清单行（勾选框/正文/删除）不在此列——由行分支接管开合
+        if (detailOverlay.classList.contains("open")) {
+          if (!e.target.closest("#detail-overlay") && !e.target.closest("#todo-active")) {
+            setDetail(false);
+          }
+        }
       });
 
       // ===== 设置板开关编排（用户定案）：与归档板同构——齿轮原点飞出、双出口收板、互斥、保色 =====
@@ -2330,6 +2583,7 @@
       const setSettings = (open) => {
         if (open) {
           if (boardOverlay.classList.contains("open")) setBoard(false); // 两板互斥（用户定案）
+          if (detailOverlay.classList.contains("open")) setDetail(false); // 三板互斥（用户定案）
           // top 动态落位同归档板；齿轮中心的板内坐标注入 transform-origin
           //（板左缘 14px，齿轮中心卡内 x = 卡宽 - 落位10 - 半宽10）
           const cr = $("board").getBoundingClientRect();
@@ -2359,6 +2613,198 @@
 
       $("bubble-count-dec").addEventListener("click", () => setBubbleMax(MAX_BUBBLES - 1));
       $("bubble-count-inc").addEventListener("click", () => setBubbleMax(MAX_BUBBLES + 1));
+
+      // ===== 详情板编排（用户定案 2026-09-22）：点清单行正文弹出，与设置板同构——
+      // 行中心原点飞出、三板互斥、点板外收板。标题实时同步回清单（≤12 字由 maxlength 管），
+      // 内容区实时写入 todo.note，不设长度上限 =====
+      const detailOverlay = $("detail-overlay");
+      let detailTodo = null;
+      let detailOpenTimer = 0; // 单击开详情的延迟句柄（留双击窗口给行内改标题）
+      const setDetail = (open) => {
+        if (!open) {
+          detailOverlay.classList.remove("open");
+          detailTodo = null;
+        }
+      };
+      const openDetail = (t, rowEl) => {
+        if (boardOverlay.classList.contains("open")) setBoard(false); // 三板互斥（用户定案）
+        if (settingsOverlay.classList.contains("open")) setSettings(false);
+        detailTodo = t;
+        $("detail-title").value = t.text;
+        $("detail-note").value = t.note || "";
+        // top 落位同设置板；原点 = 被点行中心的板内坐标（从行处飞出）
+        const cr = $("board").getBoundingClientRect();
+        const tr = document.querySelector(".tabs").getBoundingClientRect();
+        const top = Math.max(0, tr.top - cr.top - 4);
+        detailOverlay.style.top = `${top}px`;
+        const or = detailOverlay.getBoundingClientRect();
+        const rr = rowEl.getBoundingClientRect();
+        detailOverlay.style.setProperty(
+          "--origin-x",
+          `${Math.round(rr.left + rr.width / 2 - or.left)}px`,
+        );
+        detailOverlay.style.setProperty(
+          "--origin-y",
+          `${Math.round(rr.top + rr.height / 2 - or.top)}px`,
+        );
+        detailOverlay.classList.add("open");
+        syncDetailBar(); // 打开即同步浮钮显隐与位置（内容可滚才显示）
+      };
+
+      $("detail-title").addEventListener("input", () => {
+        if (!detailTodo) return;
+        detailTodo.text = $("detail-title").value;
+        renderTodos(); // 标题实时同步回清单行
+      });
+
+      $("detail-note").addEventListener("input", () => {
+        if (!detailTodo) return;
+        detailTodo.note = $("detail-note").value;
+        syncDetailBar(); // 输入改变内容量，浮钮位置/显隐随之同步
+      });
+
+      // 自绘滚动浮钮同步：内容可滚才显示；浮钮 4×16 固定高，top 随滚动比例移动
+      const syncDetailBar = () => {
+        const ta = $("detail-note");
+        const bar = $("detail-bar");
+        const scrollable = ta.scrollHeight > ta.clientHeight + 1;
+        bar.hidden = !scrollable;
+        if (!scrollable) return;
+        const trackH = ta.offsetHeight - 16;
+        const ratio = ta.scrollTop / (ta.scrollHeight - ta.clientHeight || 1);
+        bar.style.top = `${ta.offsetTop}px`;
+        bar.style.height = `${ta.offsetHeight}px`;
+        $("detail-thumb").style.top = `${Math.round(ratio * trackH)}px`;
+      };
+
+      $("detail-note").addEventListener("scroll", syncDetailBar);
+
+      // 浮钮拖拽：按住上下拖 = 滚动内容（指针捕获思路，移出浮钮不丢）
+      $("detail-thumb").addEventListener("pointerdown", (e) => {
+        const ta = $("detail-note");
+        const trackH = $("detail-bar").offsetHeight - 16;
+        if (trackH <= 0) return;
+        const startY = e.clientY;
+        const startScroll = ta.scrollTop;
+        const range = ta.scrollHeight - ta.clientHeight;
+        const move = (ev) => {
+          ta.scrollTop = startScroll + ((ev.clientY - startY) / trackH) * range;
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+        e.preventDefault();
+      });
+
+      // 双击行正文：行内改标题（Enter/失焦保存、Esc 取消、≤12 字与详情板同规）；
+      // 同时取消未决的详情板弹出（双击窗口内第二次点击到此）
+      document.addEventListener("dblclick", (e) => {
+        const row = e.target.closest("#todo-active .todo-row");
+        if (!row || e.target.closest(".t-edit")) return;
+        clearTimeout(detailOpenTimer);
+        startInlineEdit(row);
+      });
+
+      const startInlineEdit = (row) => {
+        const t = todos.find((x) => x.id === Number(row.dataset.id));
+        if (!t) return;
+        const span = row.querySelector(".t-text");
+        if (!span) return;
+        const input = document.createElement("input");
+        input.className = "t-edit";
+        input.maxLength = 12;
+        input.value = t.text;
+        span.replaceWith(input);
+        input.focus();
+        input.select();
+        let finished = false;
+        const finish = (save) => {
+          if (finished) return;
+          finished = true;
+          if (save) {
+            const v = input.value.trim();
+            if (v) t.text = v;
+          }
+          renderTodos(); // 重建行，编辑框换回文字
+        };
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") finish(true);
+          else if (e.key === "Escape") finish(false);
+        });
+        input.addEventListener("blur", () => finish(true));
+      };
+
+      // ===== 玻璃滚动浮钮工厂（用户定案 2026-09-22）：所有玻璃滚动容器统一——隐藏原生
+      // 滑杆，4×16 透明玻璃浮钮随滚动比例移动、可拖拽。浮钮一律悬浮锚在卡片层（不进滚动
+      // 体内部——内贴会随内容滚走，出现"滚到半路浮钮消失"），矩形每次同步按滚动体可视
+      // 范围实测重算；列表 right 8.25px = 居中于"行右缘 ↔ 卡片描边"缝隙，白板 4.75px
+      // 与详情板对齐 =====
+      const glassBars = [];
+      const makeGlassBar = (scroller, opts = {}) => {
+        scroller.classList.add("glass-scroll");
+        const bar = document.createElement("div");
+        bar.className = "glass-bar";
+        bar.hidden = true;
+        const thumb = document.createElement("i");
+        thumb.className = "glass-thumb";
+        bar.appendChild(thumb);
+        $("board").appendChild(bar);
+        bar.dataset.for = scroller.id || scroller.className; // 标识归属（调试/测试定位用）
+        const sync = () => {
+          const sr = scroller.getBoundingClientRect();
+          const hr = $("board").getBoundingClientRect();
+          if (!sr.height) {
+            bar.hidden = true; // 所在页隐藏：无几何，先隐藏
+            return;
+          }
+          // 轨道纵向：清单（inset）按上下内距内缩 = 行可视范围（滚到底浮钮底与末行底齐平）；
+          // 白板无框，浮钮走满编辑区全高（到顶到底）
+          const cs = getComputedStyle(scroller);
+          const padT = opts.inset ? parseFloat(cs.paddingTop) || 0 : 0;
+          const padB = opts.inset ? parseFloat(cs.paddingBottom) || 0 : 0;
+          bar.style.top = `${sr.top - hr.top + padT}px`;
+          bar.style.height = `${sr.height - padT - padB}px`;
+          bar.style.right = `${opts.right ?? 7.75}px`;
+          const scrollable = scroller.scrollHeight > scroller.clientHeight + 1;
+          bar.hidden = !scrollable;
+          if (!scrollable) return;
+          const trackH = sr.height - padT - padB - 16; // 轨道 = 行可视高 − 浮钮高
+          const ratio = scroller.scrollTop / (scroller.scrollHeight - scroller.clientHeight || 1);
+          thumb.style.top = `${Math.round(ratio * trackH)}px`;
+        };
+        scroller.addEventListener("scroll", sync);
+        scroller.addEventListener("input", sync);
+        // 内容增删改变滚动量：观测子树重建即同步（bar 在滚动体外部，无需重挂）
+        new MutationObserver(sync).observe(scroller, { childList: true });
+        thumb.addEventListener("pointerdown", (e) => {
+          const trackH = bar.getBoundingClientRect().height - 16; // 与 sync 同源：轨道实际高度
+          if (trackH <= 0) return;
+          const startY = e.clientY;
+          const startScroll = scroller.scrollTop;
+          const range = scroller.scrollHeight - scroller.clientHeight;
+          const move = (ev) => {
+            scroller.scrollTop = startScroll + ((ev.clientY - startY) / trackH) * range;
+          };
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+          e.preventDefault();
+        });
+        sync();
+        const entry = { scroller, bar, thumb, sync };
+        glassBars.push(entry);
+      };
+
+      makeGlassBar($("wb-board"), { right: 7.75 }); // 白板编辑区（居中于"编辑区右缘↔卡片描边"）
+      makeGlassBar($("todo-active"), { inset: true }); // 清单
+      makeGlassBar($("bubble-list"), { inset: true }); // 气泡
+      makeGlassBar($("archive-list"), { inset: true }); // 归档板列表
 
       // ===== 归档按钮换页出入场编排（用户定案）：离场=吸气放大→快速塌缩成点→粒子迸裂；
       // 入场=粒子四周汇聚成点→按钮带回弹弹出。粒子为临时元素，播完即删零残留 =====
