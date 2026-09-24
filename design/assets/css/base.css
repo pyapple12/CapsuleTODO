@@ -1,0 +1,49 @@
+/* ===== 组件样式（1:1 对照 APP：TodoList/AddBar/BubblesView/WhiteboardView） ===== */
+/* hidden 兜底：.page/.group 等设了 display 的元素，hidden 会被覆盖导致切页失效 */
+[hidden] {
+  display: none !important;
+}
+
+/* 纵向布局：玻璃板居中在上，实验场控件同宽置下（按钮单行排布压低面板） */
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px 48px 48px; /* 顶边减半：标题上方留空减半（用户定案） */
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* 标题居中（用户定案） */
+  margin-bottom: 15.5px; /* 墨迹底 → 页签 18px（盒底 48 + 15.5 = 页签顶 63.5，墨迹底≈45.5，用户定案） */
+}
+
+.title {
+  position: relative; /* 粒子画布定位基准 */
+  margin: 0;
+  font-size: 30px; /* 放大一倍（原 15px，用户定案） */
+  line-height: 1; /* 盒高=字高：排版内衬清零，墨迹顶≈盒顶（用户定案） */
+  font-weight: 700; /* 加粗（用户定案） */
+  letter-spacing: 0.3px;
+  opacity: 0.8;
+}
+
+/* 标题粒子化（参考 Da0Mine/text-particleization，MIT）：画布接管视觉，仅粒子无双层（用户定案） */
+.title--particles {
+  color: transparent; /* 由 JS 在粒子初始化时挂上；reduced-motion 不加此类，回退静态文字 */
+  text-shadow: none; /* 杀掉 .glass-card 继承的字形影：透明文字仍投静态残影、钉在归位处（用户定案） */
+}
+
+.title-canvas {
+  position: absolute;
+  left: -30px; /* 画布外扩余量：粒子散开/辉光侧摆不被裁 */
+  top: -20px; /* 与 MARGIN_TOP 联动：辉光上摆（模糊 15）不被裁 */
+  pointer-events: none; /* 事件穿透，交互监听在 document 上 */
+  /* 落影与辉光全部 canvas 内自绘（随粒子位移同步）：辉光色取 --input-focus-glow、
+           落影参数取 --panel-shadow——CSS drop-shadow 无 spread 位且不随粒子动，一并淘汰 */
+}

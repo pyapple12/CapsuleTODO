@@ -1,0 +1,116 @@
+/* 玻璃滚动浮钮通用（用户定案 2026-09-22）：所有玻璃滚动容器统一——隐藏原生滑杆，
+         换 4×16 透明玻璃浮钮（位置由工厂按容器注入：列表内贴右缘、白板悬浮右缝隙） */
+.glass-scroll {
+  scrollbar-width: none; /* 隐藏原生滑杆（Firefox） */
+}
+
+.glass-scroll::-webkit-scrollbar {
+  display: none; /* 隐藏原生滑杆（Chromium） */
+}
+
+.glass-bar {
+  position: absolute;
+  width: 4px;
+  z-index: 2;
+  pointer-events: none; /* 轨道不拦截内容点击 */
+}
+
+.glass-thumb {
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22); /* 透明玻璃 */
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.glass-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+/* 渐隐点平滑过渡（用户定案 2026-09-24）：mask 渐变本身不可插值，但把 --fade-btm
+   注册为带类型的自定义属性后，变量可参与 transition——浏览器逐帧用插值重算渐变，
+   落定加深/滚动回弹由瞬时跳变变为 0.25s 平滑过渡 */
+@property --fade-btm {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* ===== 整板阅读（用户定案 2026-09-24，A 路线实验版）：清单滚动吸附行边界——
+         静止时顶部恒为完整行（mandatory snap + scroll-padding 对齐顶内距），半截行只
+         存在于滚动途中；上下淡出遮罩让行的进出呈玻璃渐隐（顶行自然滑出+渐隐，用户
+         定案）。底部"不够一整板"的半截行由 JS 把 --fade-btm 推到该行顶、渐隐隐去，
+         空出的残余区亮出大号闪烁 ▼ ===== */
+#todo-active {
+  scroll-snap-type: y mandatory;
+  scroll-padding: 4px 0 8px; /* 停点 = 行首对齐顶内距 4px，与首屏视觉一致 */
+  --fade-btm: calc(100% - 14px); /* 默认软边：底缘上 14px（落定加深/滚动回弹由 JS 改写） */
+  transition: --fade-btm 1s ease; /* 1s（用户定案，原 0.25s） */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 6px,
+    #000 var(--fade-btm),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 6px,
+    #000 var(--fade-btm),
+    transparent
+  );
+}
+
+/* 拖拽期间关吸附：自动滚动逐帧设 scrollTop，mandatory 会逐帧回拉打架 */
+#todo-active.drag-live {
+  scroll-snap-type: none;
+}
+
+#todo-active .todo-item {
+  scroll-snap-align: start;
+}
+
+/* 边缘三角（用户定案：醒目、要大、占用滑出空间）：锚卡片层悬浮于清单上下缘
+         通栏居中，上下还有内容即闪烁提示；不挡点击 */
+.edge-hint {
+  position: absolute;
+  height: 26px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px; /* 原 20px 的 60%（用户定案） */
+  line-height: 1;
+  color: #ffd54a;
+  text-shadow:
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  animation: edge-blink 1s ease-in-out infinite;
+}
+
+/* display:flex 会盖过 hidden 属性的 UA display:none（同低优先级但作者样式胜出），
+         必须显式声明 */
+.edge-hint[hidden] {
+  display: none;
+}
+
+@keyframes edge-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-hint {
+    animation: none;
+  }
+}

@@ -1,0 +1,149 @@
+/* 页签：uiverse heavy-dragonfly-92 改造（RESEARCH R001 引入规范——令牌化/重排尺寸/红色徽章/reduced-motion 守卫） */
+.tabs {
+  display: flex;
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  background-color: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
+  padding: 0.75rem;
+  margin-bottom: 10px; /* 页签 → 内容区 10px（用户定案） */
+  border-radius: 99px;
+  box-sizing: border-box;
+}
+
+.tabs * {
+  z-index: 2;
+}
+
+.tabs input[type="radio"] {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  height: 30px;
+  width: 80px; /* 三页签平分板内宽：(300-36-24)/3 */
+  font-size: 0.8rem;
+  color: var(--ink);
+  font-weight: 500;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: color 0.15s ease-in;
+}
+
+/* 气泡徽章：红色固定正圆（用户定案），≥10 显示"9+"保持圆形 */
+.notification {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: -4px;
+  right: 8px;
+  width: 1rem;
+  height: 1rem;
+  font-size: 10px;
+  font-weight: 700; /* 数字加粗更醒目（用户定案） */
+  line-height: 1; /* 行盒收紧到字面高，数字随 flex 真居中（用户定案） */
+  /* 数字墨迹对称渲染（用户定案）：实测 Arial 垂直偏移 0/水平 0.22px，Segoe 系为 0.5/0.3px；
+           tabular-nums 保障多位数（9+）等宽稳定 */
+  font-family: Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+  border-radius: 50%;
+  background-color: var(--danger);
+  color: #fff;
+  transition: 0.15s ease-in;
+}
+
+.tabs input[type="radio"]:checked + .tab {
+  color: var(--accent);
+}
+
+.tabs input[id="radio-1"]:checked ~ .glider {
+  transform: translateX(0);
+}
+
+.tabs input[id="radio-2"]:checked ~ .glider {
+  transform: translateX(100%);
+}
+
+.tabs input[id="radio-3"]:checked ~ .glider {
+  transform: translateX(200%);
+}
+
+.glider {
+  position: absolute;
+  display: flex;
+  height: 30px;
+  width: 80px;
+  background-color: var(--glider-bg);
+  box-shadow: 0 0 12px var(--glider-glow); /* 同色辉光（用户定案，配方沿输入框聚焦辉光） */
+  z-index: 1;
+  border-radius: 99px;
+  transition: 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glider,
+  .tab,
+  .input {
+    transition: none;
+  }
+
+  /* 标题粒子：reduced-motion 下画布整个不显示（JS 侧同样不初始化，保静态文字） */
+  .title-canvas {
+    display: none;
+  }
+
+  /* 归档/设置/详情板：揭示动画全关（显隐瞬时完成，动画在 .board-glass 的 transform 上） */
+  #board-overlay,
+  #settings-overlay,
+  #detail-overlay,
+  #board-overlay .board-glass,
+  #settings-overlay .board-glass,
+  #detail-overlay .board-glass {
+    transition: none;
+  }
+
+  /* 归档按钮出入场与粒子全关（JS 侧同样跳过编排直接显隐，防粒子元素滞留） */
+  .deleteButton.leaving,
+  .deleteButton.entering,
+  .archive-particle {
+    animation: none;
+  }
+
+  /* 双开关动效全关（日夜云星月亮/滑块） */
+  .theme-switch__container,
+  .theme-switch__circle-container,
+  .theme-switch__sun-moon-container,
+  .theme-switch__moon,
+  .theme-switch__clouds,
+  .theme-switch__stars-container,
+  .switch .slider,
+  .switch .slider:before {
+    transition: none;
+  }
+
+  /* 霓虹勾选框：动效全关（粒子/流光/爆闪 + 对勾描画），勾选态瞬时呈现 */
+  .neon-checkbox,
+  .neon-checkbox * {
+    animation: none;
+    transition: none;
+  }
+
+  /* 删除按钮：展宽/图标位移/文字滑入全部瞬时 */
+  .del,
+  .del::before,
+  .del-icon {
+    transition: none;
+  }
+
+  /* 添加按钮（REC）：按压位移/落影变化瞬时 */
+  .btn-add,
+  .btn-add-face {
+    transition: none;
+  }
+}

@@ -1,0 +1,910 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 添加行（AddBar） */
+.addbar .row {
+  display: flex;
+  gap: 6px;
+}
+
+/* 输入框：uiverse plastic-parrot-88 改造（聚焦环改主题 accent 色 + 底色与面板统一 + 正常字体——用户定案） */
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 22px; /* 用户定案（原≈24px 的四分之三为 18px，现定 22px） */
+  padding: 0 16px; /* px-4；高度改定值后垂直居中靠 height */
+  border: none;
+  outline: none;
+  border-radius: 9999px; /* rounded-full 胶囊端头（是否收窄待用户定） */
+  background-color: var(--panel-bg); /* 与其他面板统一 */
+  color: var(--ink);
+  font: inherit; /* 正常字体（弃 mono，用户定案） */
+  font-size: 13px;
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 与其他面板统一（含落影） */
+  transition:
+    box-shadow 300ms ease,
+    background-color 300ms ease; /* duration-300 */
+}
+
+.input:focus {
+  box-shadow:
+    var(--panel-stroke),
+    0 0 0 2px var(--input-focus-ring),
+    0 10px 15px -3px var(--input-focus-glow),
+    0 4px 6px -4px var(--input-focus-glow); /* 聚焦：主题色环 + 柔光 */
+}
+
+.input::placeholder {
+  color: var(--ink-2);
+  opacity: 0.75;
+}
+
+/* 添加按钮：uiverse average-swan-99（Praashoo7，Teenage Engineering EP-133 按钮组）源码直引
+         ——只取 record 红钮（.button3）+ 外黑方（.btn）；颜色/阴影/圆角/过渡均为源码值（用户要求 100% 表达，未令牌化）；
+         仅三处用户定制：外黑圆角与内红一致（10px，源码 5px）、REC 居中（源码 flex-start + padding-top）、
+         组件落影距离减半（10px→5px）；em 几何经 font-size 缩放（6px → 红钮 34.2px 方，源码 1em=16px → 91px） */
+.btn-add {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  /* 黑方随输入框 22px 同高（50% 黑透）；圆角随高度 5→6px */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background-color: var(--rec-frame); /* 外框底：panel-bg 加深一倍（用户定案） */
+  /* 组件落影以外框为标定（用户定案，前值挂在红方上）；大小减半：3.3px/8px → 1.7px/4px，深度不变 */
+  box-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+  font-size: 6px; /* 缩放旋钮（红钮已改 px 定值，仅 em 文字间距仍在用） */
+  cursor: pointer;
+}
+
+.btn-add:active {
+  /* 按压塌影（塌小塌淡，用户定案）：落影减半但轮廓始终在，玻璃板不融进亮背景 */
+  box-shadow: rgba(0, 0, 0, 0.28) 0.9px 0.9px 2px;
+}
+
+.btn-add-face {
+  display: flex;
+  align-items: center; /* REC 居中（源码 flex-start） */
+  justify-content: center;
+  width: 18px; /* 黑方 22px − 2px 黑边×2 */
+  height: 18px;
+  border: none;
+  outline: none;
+  border-radius: 4px; /* 随高度 18/14 ≈ 4→5px 档 */
+  background-color: #d42a02;
+  /* 常态零阴影（用户定案：单纯红色），落影已移至外框 */
+  cursor: pointer;
+  transition: 0.1s ease-in-out;
+}
+
+.btn-add-text {
+  color: white;
+  font-family: Montserrat, sans-serif;
+  font-size: 6px; /* 用户定案 */
+  letter-spacing: 0.075em;
+}
+
+.btn-add:active .btn-add-face {
+  /* 按下仅保留黑色内阴影（用户定案），深度 50% 透明（用户定案：压红底呈深一档红，非死黑） */
+  box-shadow: inset 0.5px 0.5px 4px rgba(0, 0, 0, 0.5);
+}
+
+.btn-add:active .btn-add-text {
+  transform: translateY(0.5px);
+}
+
+/* 清单行（TodoList） */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* 虚拟外框（用户定案公式）：不设宽 + 左右负外边距各拉出 8px → 框距卡边恒 10px、
+           框宽 = 卡宽 − 20 随卡片动态；内边距 左右/下 8、上 4 → 行宽 = 框宽 − 16，与其他玻璃面板等宽对齐；
+           顶边 -4px（用户定案整体下移 4px），底边 -10px（用户定案）：裁切线距卡底 10px 与左右一致 */
+  margin: -4px -8px -10px;
+  padding: 4px 8px 8px; /* 组内边距：上 4 → input→首行 = gap 6 + 4 = 10（用户定案）；左右/下 8 */
+  list-style: none;
+  overflow-y: auto;
+}
+
+.todo-row {
+  position: relative; /* 删除按钮右缘锚定基准（悬停向左展开、覆盖文字） */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 霓虹勾选框装饰层（环/粒子）伸出行外且未勾选态也常驻（opacity:0 仍占滚动区），
+           会给下方 overflow-y:auto 的分组容器制造 ~40px 幻影滚动区——裁剪回行界 */
+  overflow: clip;
+  padding: 9px 12px;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
+  cursor: pointer; /* 悬停指向手同页签（用户定案）；点击开详情板，长按 0.25s 进拖拽 */
+}
+
+/* 勾选框：uiverse hot-dragonfly-56（00Kubi，纯 CSS，R001 规范改造）
+         颜色令牌化（glass.css --check-*）；原型交互 = 整行点击驱动，
+         组件 pointer-events 关闭、input 仅作视觉状态位（勾选由 JS 置位后播过渡） */
+.neon-checkbox {
+  --primary: var(--check-primary);
+  --primary-dark: var(--check-primary-dark);
+  --size: 20px; /* 原型行高适配（组件默认 30px） */
+  position: relative;
+  flex-shrink: 0;
+  width: var(--size);
+  height: var(--size);
+  pointer-events: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.neon-checkbox input {
+  display: none;
+}
+
+.neon-checkbox__frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.neon-checkbox__box {
+  position: absolute;
+  inset: 0;
+  background: var(--check-box-bg);
+  border-radius: 4px;
+  border: 2px solid var(--primary-dark);
+  transition: all 0.4s ease;
+}
+
+.neon-checkbox__check-container {
+  position: absolute;
+  inset: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.neon-checkbox__check {
+  width: 80%;
+  height: 80%;
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  transform-origin: center;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.neon-checkbox__glow {
+  position: absolute;
+  inset: -2px;
+  border-radius: 6px;
+  background: var(--primary);
+  opacity: 0;
+  filter: blur(8px);
+  transform: scale(1.2);
+  transition: all 0.4s ease;
+}
+
+.neon-checkbox__borders {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.neon-checkbox__borders span {
+  position: absolute;
+  width: 40px;
+  height: 1px;
+  background: var(--primary);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.neon-checkbox__borders span:nth-child(1) {
+  top: 0;
+  left: -100%;
+  animation: borderFlow1 2s linear infinite;
+}
+
+.neon-checkbox__borders span:nth-child(2) {
+  top: -100%;
+  right: 0;
+  width: 1px;
+  height: 40px;
+  animation: borderFlow2 2s linear infinite;
+}
+
+.neon-checkbox__borders span:nth-child(3) {
+  bottom: 0;
+  right: -100%;
+  animation: borderFlow3 2s linear infinite;
+}
+
+.neon-checkbox__borders span:nth-child(4) {
+  bottom: -100%;
+  left: 0;
+  width: 1px;
+  height: 40px;
+  animation: borderFlow4 2s linear infinite;
+}
+
+.neon-checkbox__particles span {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--primary);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  top: 50%;
+  left: 50%;
+  box-shadow: 0 0 6px var(--primary);
+}
+
+.neon-checkbox__rings {
+  position: absolute;
+  inset: -20px;
+  pointer-events: none;
+}
+
+.neon-checkbox__rings .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--primary);
+  opacity: 0;
+  transform: scale(0);
+}
+
+.neon-checkbox__sparks span {
+  position: absolute;
+  width: 20px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--primary), transparent);
+  opacity: 0;
+}
+
+/* 悬停态（原型整行点击驱动 + pointer-events 关闭，此态不触发，保留组件原样） */
+.neon-checkbox:hover .neon-checkbox__box {
+  border-color: var(--primary);
+  transform: scale(1.05);
+}
+
+/* 勾选态 */
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__box {
+  border-color: var(--primary);
+  background: var(--check-box-bg-checked);
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__check {
+  stroke-dashoffset: 0;
+  transform: scale(1.1);
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__glow {
+  opacity: 0.2;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span {
+  opacity: 1;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__particles span {
+  animation: particleExplosion 0.6s ease-out forwards;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__rings .ring {
+  animation: ringPulse 0.6s ease-out forwards;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__sparks span {
+  animation: sparkFlash 0.6s ease-out forwards;
+}
+
+@keyframes borderFlow1 {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes borderFlow2 {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(200%);
+  }
+}
+
+@keyframes borderFlow3 {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-200%);
+  }
+}
+
+@keyframes borderFlow4 {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-200%);
+  }
+}
+
+@keyframes particleExplosion {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--x, 20px)), calc(-50% + var(--y, 20px))) scale(0);
+    opacity: 0;
+  }
+}
+
+@keyframes ringPulse {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+@keyframes sparkFlash {
+  0% {
+    transform: rotate(var(--r, 0deg)) translateX(0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(var(--r, 0deg)) translateX(30px) scale(0);
+    opacity: 0;
+  }
+}
+
+.neon-checkbox__particles span:nth-child(1) {
+  --x: 25px;
+  --y: -25px;
+}
+.neon-checkbox__particles span:nth-child(2) {
+  --x: -25px;
+  --y: -25px;
+}
+.neon-checkbox__particles span:nth-child(3) {
+  --x: 25px;
+  --y: 25px;
+}
+.neon-checkbox__particles span:nth-child(4) {
+  --x: -25px;
+  --y: 25px;
+}
+.neon-checkbox__particles span:nth-child(5) {
+  --x: 35px;
+  --y: 0px;
+}
+.neon-checkbox__particles span:nth-child(6) {
+  --x: -35px;
+  --y: 0px;
+}
+.neon-checkbox__particles span:nth-child(7) {
+  --x: 0px;
+  --y: 35px;
+}
+.neon-checkbox__particles span:nth-child(8) {
+  --x: 0px;
+  --y: -35px;
+}
+.neon-checkbox__particles span:nth-child(9) {
+  --x: 20px;
+  --y: -30px;
+}
+.neon-checkbox__particles span:nth-child(10) {
+  --x: -20px;
+  --y: 30px;
+}
+.neon-checkbox__particles span:nth-child(11) {
+  --x: 30px;
+  --y: 20px;
+}
+.neon-checkbox__particles span:nth-child(12) {
+  --x: -30px;
+  --y: -20px;
+}
+
+.neon-checkbox__sparks span:nth-child(1) {
+  --r: 0deg;
+  top: 50%;
+  left: 50%;
+}
+.neon-checkbox__sparks span:nth-child(2) {
+  --r: 90deg;
+  top: 50%;
+  left: 50%;
+}
+.neon-checkbox__sparks span:nth-child(3) {
+  --r: 180deg;
+  top: 50%;
+  left: 50%;
+}
+.neon-checkbox__sparks span:nth-child(4) {
+  --r: 270deg;
+  top: 50%;
+  left: 50%;
+}
+
+.neon-checkbox__rings .ring:nth-child(1) {
+  animation-delay: 0s;
+}
+.neon-checkbox__rings .ring:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.neon-checkbox__rings .ring:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.t-text {
+  flex: 1;
+  /* 右侧预留收起态删除按钮位（25px，收起左缘距行右缘 36px）；悬停展开时按钮再覆盖上来 */
+  padding-right: 36px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+/* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规 */
+.t-edit {
+  flex: 1;
+  min-width: 0;
+  padding-right: 36px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+
+.is-done .t-text {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* 单条目出入场（用户定案 2026-09-21）：出场=原位 60% 弹到 100%（沿归档板过冲曲线）；
+         退场=塌缩一格：缩小淡出 + 高度收到 0，下方条目上移补位。类挂 li（高度塌缩须在外层，
+         行 div 与超时提醒同住 li）；全程 transform/opacity/height，玻璃条已验证的安全路线 */
+li.todo-item.entering {
+  animation: todo-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+@keyframes todo-in {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 退场：JS 先钉实测高度再挂类（内联高度起步、类内收 0），transition 三通道收拢；
+         时长 0.3s 须与 JS collapseRow 定时器同步 */
+li.todo-item.leaving {
+  overflow: hidden; /* 高度塌缩时内容不许溢出 */
+  pointer-events: none; /* 塌缩中不可再点（勾选/删除） */
+  height: 0;
+  transform: scale(0.6);
+  opacity: 0;
+  transition:
+    height 0.3s ease-in,
+    transform 0.3s ease-in,
+    opacity 0.3s ease-in;
+}
+
+/* 拖拽排序视觉（生产级重挂模型，用户定案 2026-09-21）：被拖行重挂卡片层浮起——
+         translateY 跟指针 + 放大 1.03 由 JS 内联合成（不得挂 transition，须 1:1 跟手），
+         这里只管压层/落影加深/抓手；其余行 .shifting 平移让位（只动 transform，不重排 DOM） */
+li.todo-item.dragging {
+  z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
+  cursor: grabbing;
+}
+
+li.todo-item.dragging .todo-row {
+  z-index: 2; /* 行本体 position:relative，压过相邻行 */
+  cursor: grabbing;
+  box-shadow:
+    var(--panel-stroke),
+    var(--panel-shadow),
+    0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
+}
+
+/* 等高占位符：行本体重挂卡片层期间留在清单里的落点指示，重排时滑向目标槽。
+         禁止 flex 收缩：清单是限高纵向 flex，内容溢出（>5 条触发滑杆）时空占位符
+         会被压成 0 高，让位快照全盘失真——拖拽只在溢出时错位的根因（2026-09-22） */
+li.todo-ghost {
+  flex-shrink: 0;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  opacity: 0.4;
+}
+
+li.todo-item.shifting {
+  transition: transform 0.2s ease; /* 让位平移的顺滑过渡 */
+}
+
+/* 拖拽期间锁定清单滚动：防中途滚动令布局快照失真（重挂后行本体已不在清单内） */
+.group.drag-live {
+  overflow-y: hidden;
+}
+
+/* 拖拽期间删除按钮整体失效（用户定案）：不响应悬停展开、不可能误删，松手即恢复 */
+.group.drag-live .del,
+li.todo-item.dragging .del {
+  pointer-events: none;
+}
+
+/* 超时提醒（用户定案）：10px 加粗、真黄色、实体黑阴影且贴近字体；渲染在玻璃条外下方 */
+.age-alert {
+  margin: 2px 0 0 12px; /* 与玻璃条左缘内容对齐 */
+  font-size: 10px;
+  font-weight: 700;
+  text-shadow: 0.5px 0.5px 2px #000; /* 偏移 0.5 + 模糊 2px（用户定案） */
+}
+
+.age-alert--yellow {
+  color: #ffd700; /* 真黄（用户定案，原琥珀 #d97706 过深） */
+}
+
+.age-alert--red {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* 删除按钮：uiverse smart-emu-83 改造（R001 规范，类名隔离 .del/.del-icon）
+         实底改 25% 透明黑（用户定案）；整套按组件 0.5 等比缩放（25px，用户定案：原组件的一半）；
+       中心缩放：收起位 right:11px（圆心 23.5px），悬停展宽向两侧各涨 5px——translateX(+5px)
+       补偿右缘锚定，展开后右缘落回 right:6px（用户定案 ②） */
+.del {
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  transform: translateY(-50%);
+  z-index: 1;
+  display: flex;
+  width: 25px;
+  height: 25px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.25);
+  font-weight: 600;
+  cursor: pointer;
+  transition-duration: 0.3s;
+  overflow: hidden;
+}
+
+.del-icon {
+  width: 6px;
+  transition-duration: 0.3s;
+}
+
+.del-icon path {
+  fill: #fff;
+}
+
+.del:hover {
+  width: 35px;
+  transform: translateY(-50%) translateX(5px);
+  border-radius: 50px;
+  background-color: rgb(255, 69, 69);
+  /* 红辉光：分层与浓度参数抄 input 聚焦紫辉光（--del-hover-glow） */
+  box-shadow:
+    0 10px 15px -3px var(--del-hover-glow),
+    0 4px 6px -4px var(--del-hover-glow);
+}
+
+.del:hover .del-icon {
+  width: 25px;
+  transform: translateY(60%);
+}
+
+.del::before {
+  position: absolute;
+  top: -10px;
+  content: "Delete";
+  color: #fff;
+  font-size: 2px;
+  transition-duration: 0.3s;
+}
+
+.del:hover::before {
+  font-size: 6.5px;
+  opacity: 1;
+  transform: translateY(15px);
+  transition-duration: 0.3s;
+}
+
+/* 左上角归档按钮（功能 = 收拢/展开"已完成"，用户定案）：布局移植自 uiverse slippery-fox-79
+         （vinodjangid07，MIT），位置距上/左 10px。两点适配：① position:absolute 落位卡角；
+         ② 气泡翻转到按钮下方弹出——原组件在上方（top:-40px），会被卡片 overflow:hidden 裁掉。
+         图形换 Bootstrap Icons archive（收拢语义）；#B5BAC1 填色 + 同色描边加粗（用户定案），悬停翻白 */
+.deleteButton {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2; /* 盖过标题粒子画布（画布 pointer-events:none，仅绘制层级） */
+  width: 30px; /* 几何整套照搬 CapsulePulse sideButton（用户定案）：30×30、圆角 9、图标 17 */
+  height: 30px;
+  padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，图标会被 flex 压缩 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background-color: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  /* transform 弹簧回位沿 CapsulePulse sideButton（松手经 0.22s 过冲曲线弹回） */
+  transition:
+    all 0.2s,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
+}
+
+.deleteButton svg {
+  width: 15px; /* 15px（用户定案，17→16→15）；viewBox 方形，高同宽 */
+  height: 15px;
+}
+
+.deleteButton:hover {
+  background-color: #1e90ff; /* 悬停底色改 DodgerBlue（用户定案，原组件红 rgb(237,56,56)） */
+  overflow: visible; /* 气泡可溢出按钮框（卡片裁剪已由下方弹出规避） */
+}
+
+.bin path {
+  transition: all 0.2s;
+}
+
+.deleteButton:hover .bin path {
+  fill: #fff; /* 悬停全白：填色 + 描边一起翻（描边留灰会残留灰边框，用户定案全白） */
+  stroke: #fff;
+}
+
+.deleteButton.open {
+  background-color: #1e90ff; /* 归档板打开期间保持蓝底（用户定案：开时保持、收板经 0.2s 褪去） */
+  overflow: visible;
+}
+
+.deleteButton.open .bin path {
+  fill: #fff; /* 图标随板开保持全白，收板褪回 #B5BAC1 */
+  stroke: #fff;
+}
+
+.deleteButton[hidden] {
+  display: none; /* 类内 display:flex 会压过 UA 的 [hidden] 规则，需显式声明（归档仅清单页生效） */
+}
+
+/* 右上角设置按钮（参考 uiverse red-dragonfly-22 · thomas-m-njuguna）：与归档按钮同款几何与表现
+         （20px、tooltip 翻下共享样式、悬停图标翻白），位置距上/右 10px 镜像（用户定案）；
+         悬停底色 50% 黑透（用户定案，替代归档的蓝）；动态效果 = 齿轮悬停旋转半圈 */
+.settingsButton {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 30px; /* 几何照搬 CapsulePulse sideButton：30×30（用户定案） */
+  height: 30px;
+  padding: 0; /* UA 给 button 默认 6px 内距：不清零则内容区只剩 8px，flex 会把齿轮压扁 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  /* transform 弹簧回位与归档钮同款（沿 CapsulePulse sideButton） */
+  transition:
+    all 0.2s,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
+}
+
+.settingsButton svg {
+  width: 17px; /* 17px（照搬 CapsulePulse sideButton svg，用户定案） */
+  height: 17px;
+  fill: #b5bac1; /* 静息与归档图标同灰 */
+  transition:
+    transform 0.45s ease,
+    fill 0.2s;
+}
+
+.settingsButton:hover {
+  background-color: rgba(0, 0, 0, 0.5);
+  overflow: visible; /* 气泡可溢出按钮框 */
+}
+
+.settingsButton:hover svg {
+  transform: rotate(180deg); /* 齿轮动态：悬停转半圈 */
+  fill: #fff;
+}
+
+.settingsButton.open {
+  background-color: rgba(0, 0, 0, 0.5); /* 设置板打开期间保持 50% 黑透（用户定案） */
+  overflow: visible;
+}
+
+.settingsButton.open svg {
+  fill: #fff;
+}
+
+/* 归档按钮换页出入场（用户定案）：离场=吸气放大→快速塌缩成点；入场=从点带回弹弹出。
+         粒子迸裂/汇聚见 .archive-particle；时序编排见 JS setArchiveVisible */
+.deleteButton.leaving {
+  animation: archive-btn-out 0.32s forwards;
+}
+
+@keyframes archive-btn-out {
+  0% {
+    transform: scale(1);
+    animation-timing-function: ease-out;
+  }
+
+  28% {
+    transform: scale(1.15); /* 吸气：先放大一点点 */
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4); /* 随后加速塌缩 */
+  }
+
+  100% {
+    transform: scale(0);
+  }
+}
+
+.deleteButton.entering {
+  animation: archive-btn-in 0.27s cubic-bezier(0.34, 1.4, 0.64, 1) both; /* 提速 50%（原 0.4s） */
+}
+
+@keyframes archive-btn-in {
+  from {
+    transform: scale(0);
+  }
+
+  to {
+    transform: scale(1);
+  }
+}
+
+/* 出入场粒子：accent 主题色小圆点，中心与 (--dx,--dy) 偏移间定向飞行，播完即删零残留 */
+.archive-particle {
+  position: absolute;
+  left: 25px; /* 按钮中心恒定：落位10px + 半宽15px（30×30 按钮，随 CP 几何调整；JS 同值覆盖） */
+  top: 25px;
+  width: 2px; /* 粒子 2px（用户定案，原 4px）；飞行距离同比缩减为 5~10px */
+  height: 2px;
+  margin: -1px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 3; /* 盖过归档板（z1）与按钮（z2），汇聚时粒子在最前 */
+  animation: archive-particle-out 0.42s ease-out forwards;
+}
+
+.archive-particle.in {
+  animation-name: archive-particle-in;
+  animation-duration: 0.28s; /* 入场整体提速 50%（用户定案）：0.42→0.28s */
+  animation-timing-function: ease-in;
+}
+
+@keyframes archive-particle-out {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.4);
+    opacity: 0;
+  }
+}
+
+@keyframes archive-particle-in {
+  0% {
+    transform: translate(var(--dx), var(--dy)) scale(1);
+    opacity: 0;
+  }
+
+  30% {
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(0, 0) scale(0.5);
+    opacity: 0;
+  }
+}
+
+/* 按压回弹（左右钮共用，沿 CapsulePulse）：按下 0.08s 快缩一档，松手经基础过渡
+         的过冲曲线弹回；缩放幅度 0.9（用户定案沿用，原 0.98 观感近乎不可见） */
+.deleteButton:active,
+.settingsButton:active {
+  transform: scale(0.9);
+  transition: transform 0.08s ease;
+}
+
+.tooltip {
+  --tooltip-color: rgba(
+    0,
+    0,
+    0,
+    0.25
+  ); /* 25% 黑透（用户定案，原 rgb(41,41,41) 实底）；箭头同 var 联动 */
+  position: absolute;
+  top: calc(100% + 4px); /* 翻转到下方（原组件在上方，被卡片裁剪）；间距 4px（用户定案） */
+  background-color: var(--tooltip-color);
+  color: white;
+  /* 气泡 = 原组件的 1/2（用户定案：圆角 5→2.5、阴影 10→5）；字号定案 8px（原 12，曾 6）；
+           总高定案 12px = 字高 8 + 上下内距 2，flex + line-height 1 保证文字垂直居中 */
+  border-radius: 2.5px;
+  font-size: 8px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0px 5px 5px rgba(0, 0, 0, 0.105);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.5s;
+  pointer-events: none; /* 气泡不拦鼠标，移向气泡不闪断 hover */
+}
+
+.tooltip::before {
+  position: absolute;
+  content: "";
+  left: 50%;
+  top: -4.5px; /* 沿 CapsulePulse 定案上移 0.5px：三角与气泡全叠会叠出一道加深的黑透带 */
+  transform: translateX(-50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 5px solid var(--tooltip-color); /* 指向上方按钮的实心三角 */
+}
+
+.deleteButton:hover .tooltip {
+  opacity: 1;
+}
+
+/* 归档钮 tooltip 与归档钮按下色一致（用户定案，沿 CapsulePulse 统计钮方案） */
+.deleteButton .tooltip {
+  --tooltip-color: #1e90ff;
+}

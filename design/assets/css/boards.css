@@ -1,0 +1,63 @@
+#board-overlay,
+#settings-overlay,
+#detail-overlay {
+  position: absolute;
+  top: 54px; /* 兜底值：开板时 JS 按页签实测再上扩 4px 覆盖 */
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 1;
+  color: var(--ink);
+  visibility: hidden;
+  transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
+}
+
+#board-overlay.open,
+#settings-overlay.open,
+#detail-overlay.open {
+  visibility: visible;
+  transition: none;
+}
+
+/* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从开关图标中心缩放飞出（带轻微回弹） */
+.board-glass {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow-y: auto;
+  border-radius: var(--radius-board);
+  background: var(--glass-bg);
+  /* 贴边落影对齐页签家族（--panel-shadow，14px 缝里也可见，用户定案）；candy 留作环境柔影垫底 */
+  box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
+  transform: scale(0);
+  /* 收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
+           变负值、以图标为轴镜像闪动（2026-09-18 目验发现，用户确认修） */
+  transition: transform 0.35s ease;
+}
+
+#board-overlay.open .board-glass,
+#settings-overlay.open .board-glass,
+#detail-overlay.open .board-glass {
+  transform: scale(1);
+  transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
+}
+
+.board-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.board-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px; /* 行间距对齐 .group（用户反馈：归档行几乎无间隔） */
+}
