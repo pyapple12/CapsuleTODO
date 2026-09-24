@@ -754,8 +754,11 @@
           0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
       }
 
-      /* 等高占位符：行本体重挂卡片层期间留在清单里的落点指示，重排时滑向目标槽 */
+      /* 等高占位符：行本体重挂卡片层期间留在清单里的落点指示，重排时滑向目标槽。
+         禁止 flex 收缩：清单是限高纵向 flex，内容溢出（>5 条触发滑杆）时空占位符
+         会被压成 0 高，让位快照全盘失真——拖拽只在溢出时错位的根因（2026-09-22） */
       li.todo-ghost {
+        flex-shrink: 0;
         border-radius: var(--radius-panel);
         background: var(--panel-bg);
         opacity: 0.4;
@@ -2036,7 +2039,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.010</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.011</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -2375,10 +2378,14 @@
       // 长按模型：悬停/点击不亮抓手（点击开详情板），按住 0.5s 才进入拖拽——光标变
       // 抓手、行本体重挂卡片层浮起；等待期移动超阈值即取消手势。起拖三步：等高占位
       // 符留槽 → 行本体重挂卡片层随指针浮起 → 其余行平移让位、占位符滑向目标槽。松手
-      // 一次性重排 todos 并全量重绘。勾选框与删除按钮不参与拖拽 =====
+      // 一次性重排 todos 并全量重绘。拖拽中被拖行中心贴近清单上下边缘 32px 带自动滚动
+      // （滚动增量补偿换位判定，玻璃滑杆沿 scroll→sync 自动跟随）。勾选框与删除按钮
+      // 不参与拖拽 =====
       const DRAG_THRESHOLD = 6; // 长按等待期允许的抖动幅度：超出即取消本次手势
       const HOLD_MS = 250; // 长按时长（用户定案：0.5s 缩减一半）
       const ROW_GAP = 6; // 与 .group 的 gap 对应：一个槽位 = 被拖行高 + 间隙
+      const AUTO_SCROLL_ZONE = 32; // 自动滚动边缘带宽度（用户定案按推荐值）
+      const AUTO_SCROLL_SPEED = 10; // 自动滚动全速：每帧像素数（约 600px/s）
       let dragCtx = null;
       let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作"点正文开详情"
 
@@ -2446,6 +2453,7 @@
           return;
         }
         ctx.fromIdx = ctx.rows.findIndex((x) => x.el === ctx.ghost);
+        ctx.toIdx = ctx.fromIdx; // 未移动即松手 = 原位（toIdx 缺省 0 会把行误排到顶）
         ctx.rows.forEach((r, i) => {
           if (i !== ctx.fromIdx) r.el.classList.add("shifting");
         });
@@ -2454,6 +2462,74 @@
         const sel = window.getSelection();
         if (sel) sel.removeAllRanges();
         ctx.li.style.transform = "translateY(0px) scale(1.03)"; // 起拖浮起反馈
+        // 自动滚动状态：滚动补偿累加器、当前被拖行中心、清单上下内距（边缘带基准）；
+        // rAF 循环在 mouseup 取消
+        ctx.scrollDelta = 0;
+        ctx.center = ctx.selfMid;
+        const cs = getComputedStyle(ctx.listEl);
+        ctx.padTop = parseFloat(cs.paddingTop) || 0;
+        ctx.padBottom = parseFloat(cs.paddingBottom) || 0;
+        ctx.raf = requestAnimationFrame(dragAutoScroll);
+      }
+
+      // 拖拽让位编排：按被拖行中心算目标槽——占位符滑向目标槽、途经行 ±一槽平移。
+      // mousemove 与自动滚动循环共用；公式均为坐标差值，清单滚动只在换位判定补偿
+      function applyDragShifts(ctx, center) {
+        const eff = center + ctx.scrollDelta; // 快照定格在起拖视口：滚过的增量须加回
+        let to = 0;
+        ctx.rows.forEach((r, i) => {
+          if (i !== ctx.fromIdx && r.mid < eff) to += 1;
+        });
+        ctx.toIdx = to;
+        const unit = ctx.selfHeight + ROW_GAP;
+        const target = ctx.rows[to]; // 目标槽相邻参照行（to === fromIdx 时即占位符自身，位移为零）
+        ctx.rows.forEach((r, i) => {
+          if (i === ctx.fromIdx) {
+            // 占位符滑向目标槽位：变高行按实测行高推算落点（to>from 取行[to]新底 + 半隙，
+            // to<from 对齐行[to]原顶），与让位行的位移严格咬合
+            let pShift = 0;
+            if (to > ctx.fromIdx)
+              pShift = target.top + target.height - ctx.selfHeight - ctx.selfTop;
+            else if (to < ctx.fromIdx) pShift = target.top - ctx.selfTop;
+            r.el.style.transform = pShift ? `translateY(${pShift}px)` : "";
+            return;
+          }
+          let shift = 0;
+          if (ctx.fromIdx < to && i > ctx.fromIdx && i <= to) shift = -unit; // 下拖：途经行上移
+          if (to < ctx.fromIdx && i >= to && i < ctx.fromIdx) shift = unit; // 上拖：途经行下移
+          r.el.style.transform = shift ? `translateY(${shift}px)` : "";
+        });
+      }
+
+      // 拖拽边缘自动滚动（用户定案 2026-09-24）：被拖行中心进入清单可视区上下边缘带即
+      // 按贴近程度渐加速，越出边缘全速；drag-live 只锁用户滚轮，程序设 scrollTop 不受限。
+      // 实际滚量补偿进换位判定；玻璃滑杆沿既有 scroll→sync 链路自动跟随
+      function dragAutoScroll() {
+        const ctx = dragCtx;
+        if (!ctx || !ctx.engaged) return; // 松手/收场后下一帧自然终止
+        const sr = ctx.listEl.getBoundingClientRect();
+        const topEdge = sr.top + ctx.padTop;
+        const bottomEdge = sr.bottom - ctx.padBottom;
+        let speed = 0;
+        if (ctx.center < topEdge + AUTO_SCROLL_ZONE) {
+          speed =
+            -AUTO_SCROLL_SPEED *
+            Math.min(1, (topEdge + AUTO_SCROLL_ZONE - ctx.center) / AUTO_SCROLL_ZONE);
+        } else if (ctx.center > bottomEdge - AUTO_SCROLL_ZONE) {
+          speed =
+            AUTO_SCROLL_SPEED *
+            Math.min(1, (ctx.center - (bottomEdge - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE);
+        }
+        if (speed) {
+          const before = ctx.listEl.scrollTop;
+          ctx.listEl.scrollTop = before + speed;
+          const moved = ctx.listEl.scrollTop - before; // 滚到头被截断：只补实际增量
+          if (moved) {
+            ctx.scrollDelta += moved;
+            applyDragShifts(ctx, ctx.center);
+          }
+        }
+        ctx.raf = requestAnimationFrame(dragAutoScroll);
       }
 
       document.addEventListener("mousemove", (e) => {
@@ -2476,31 +2552,9 @@
         const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;
         const cdy = Math.min(Math.max(ctx.selfMid + dy, minCenter), maxCenter) - ctx.selfMid;
         ctx.li.style.transform = `translateY(${cdy}px) scale(1.03)`; // 只 Y 轴跟手，锁 X 防晃
-        // 目标槽位 = 除占位符外，行中心线在被拖中心之上的行数（越过中心线即换位）
         const center = ctx.selfMid + cdy;
-        let to = 0;
-        ctx.rows.forEach((r, i) => {
-          if (i !== ctx.fromIdx && r.mid < center) to += 1;
-        });
-        ctx.toIdx = to;
-        const unit = ctx.selfHeight + ROW_GAP;
-        const target = ctx.rows[to]; // 目标槽相邻参照行（to === fromIdx 时即占位符自身，位移为零）
-        ctx.rows.forEach((r, i) => {
-          if (i === ctx.fromIdx) {
-            // 占位符滑向目标槽位：变高行按实测行高推算落点（to>from 取行[to]新底 + 半隙，
-            // to<from 对齐行[to]原顶），与让位行的位移严格咬合
-            let pShift = 0;
-            if (to > ctx.fromIdx)
-              pShift = target.top + target.height - ctx.selfHeight - ctx.selfTop;
-            else if (to < ctx.fromIdx) pShift = target.top - ctx.selfTop;
-            r.el.style.transform = pShift ? `translateY(${pShift}px)` : "";
-            return;
-          }
-          let shift = 0;
-          if (ctx.fromIdx < to && i > ctx.fromIdx && i <= to) shift = -unit; // 下拖：途经行上移
-          if (to < ctx.fromIdx && i >= to && i < ctx.fromIdx) shift = unit; // 上拖：途经行下移
-          r.el.style.transform = shift ? `translateY(${shift}px)` : "";
-        });
+        ctx.center = center; // 自动滚动循环按当前中心决定是否进边缘带
+        applyDragShifts(ctx, center);
       });
 
       document.addEventListener("mouseup", () => {
@@ -2508,6 +2562,7 @@
         if (!ctx) return;
         dragCtx = null;
         window.clearTimeout(ctx.timer); // 长按未到点：撤销定时器
+        if (ctx.raf) cancelAnimationFrame(ctx.raf); // 停自动滚动循环
         document.body.style.userSelect = "";
         if (!ctx.engaged) return; // 长按前的松手 = 点击（详情板接管）
         suppressDetailUntil = Date.now() + 350; // 拖拽结束的落点点击不当作"点正文开详情"
