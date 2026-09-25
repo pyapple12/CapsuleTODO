@@ -98,6 +98,7 @@ function engageDrag(ctx) {
   // rAF 循环在 mouseup 取消
   ctx.scrollDelta = 0;
   ctx.center = ctx.selfMid;
+  ctx.moved = false; // 边缘自动滚动的解锁钥匙：指针实际位移超 3px 才置真（见 mousemove）
   const cs = getComputedStyle(ctx.listEl);
   ctx.padTop = parseFloat(cs.paddingTop) || 0;
   ctx.padBottom = parseFloat(cs.paddingBottom) || 0;
@@ -134,10 +135,16 @@ function applyDragShifts(ctx, center) {
 
 // 拖拽边缘自动滚动（用户定案 2026-09-24）：被拖行中心进入清单可视区上下边缘带即
 // 按贴近程度渐加速，越出边缘全速；drag-live 只锁用户滚轮，程序设 scrollTop 不受限。
-// 实际滚量补偿进换位判定；玻璃滑杆沿既有 scroll→sync 链路自动跟随
+// 实际滚量补偿进换位判定；玻璃滑杆沿既有 scroll→sync 链路自动跟随。
+// 移动门槛（用户定案 2026-09-25）：指针位移超 3px 前循环空转——半行停靠顶缘的行
+// 中心天然深入边缘带，无门槛则一按住就突然自动上滑
 function dragAutoScroll() {
   const ctx = dragCtx;
   if (!ctx || !ctx.engaged) return; // 松手/收场后下一帧自然终止
+  if (!ctx.moved) {
+    ctx.raf = requestAnimationFrame(dragAutoScroll);
+    return;
+  }
   const sr = ctx.listEl.getBoundingClientRect();
   const topEdge = sr.top + ctx.padTop;
   const bottomEdge = sr.bottom - ctx.padBottom;
@@ -179,6 +186,7 @@ document.addEventListener("mousemove", (e) => {
   }
   // 被拖行中心钳制在卡片内（上下留 12px）：行已重挂卡片层，浮起不受清单容器裁剪
   const dy = e.clientY - ctx.startY;
+  if (!ctx.moved && Math.abs(dy) > 3) ctx.moved = true; // 指针位移超 3px：解锁边缘自动滚动
   const minCenter = ctx.cardRect.top + 12 + ctx.selfHeight / 2;
   const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;
   const cdy = Math.min(Math.max(ctx.selfMid + dy, minCenter), maxCenter) - ctx.selfMid;

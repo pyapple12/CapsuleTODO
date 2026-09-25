@@ -86,9 +86,3 @@
   min-height: 0;
   overflow-y: auto;
 }
-
-/* 归档列表停点：顶 10 与列表顶内距同步（.board-read 共享的 4px 只归清单）——
-   scrollTop 0 仍为首吸附点、首行静止位板下 12px 不变（用户定案 2026-09-25） */
-#archive-list {
-  scroll-padding-top: 10px;
-}

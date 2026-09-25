@@ -5,9 +5,12 @@ function syncBubbleChrome() {
   $("bubble-empty").hidden = bubbles.length > 0;
   $("bubble-list").hidden = bubbles.length === 0;
   // 满仓警告：滚动容器内部首项，随内容一起滚动（用户定案 2026-09-25）——
-  // 超过上限动态增删；渲染路径 innerHTML 会抹掉它，此处统一重建/移除
+  // 超过上限动态增删；渲染路径 innerHTML 会抹掉它，此处统一重建/移除。
+  // has-warning 类同步切换容器偏移（-4 ↔ -9.5）：无警告恢复节奏、有警告定位墨迹 4.5px
+  const hasWarning = bubbles.length > MAX_BUBBLES;
+  $("bubble-list").classList.toggle("has-warning", hasWarning);
   const existing = $("bubble-banner");
-  if (bubbles.length > MAX_BUBBLES) {
+  if (hasWarning) {
     const text = `气泡已经超过${MAX_BUBBLES}个啦！都溢出来啦！(*ﾉωﾉ) EEK`;
     if (existing) existing.textContent = text;
     else {
