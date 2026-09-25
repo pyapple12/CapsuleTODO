@@ -93,6 +93,7 @@ function makeBoardRead(el, opts = {}) {
     el,
     hints: [up, down],
     padB: opts.padB ?? 8, // 底缘判定：与 CSS scroll-padding-bottom 同源
+    rowSel: opts.rowSel ?? ".todo-item", // 半截行判定用行选择器（气泡列表为 .bubble-row）
   };
 
   // 边缘三角几何与显隐：上下缘各占 26px 通栏；容器可滚动且未到对应尽头才显示
@@ -131,7 +132,7 @@ function makeBoardRead(el, opts = {}) {
     el.classList.remove("at-bottom"); // 非到底态：回落默认 1s 时长
     const bottomEdge = sr.bottom - inst.padB;
     let fadeStart = null;
-    for (const li of el.querySelectorAll(".todo-item")) {
+    for (const li of el.querySelectorAll(inst.rowSel)) {
       const r = li.getBoundingClientRect();
       if (r.top < bottomEdge && r.bottom > bottomEdge + 0.5) {
         fadeStart = r.top - sr.top - 2; // 半截行顶略上 2px，连间隙一起隐去
@@ -166,6 +167,7 @@ function makeBoardRead(el, opts = {}) {
 
 makeBoardRead($("todo-active"), { skipDuringDrag: true }); // 清单（拖拽收尾互斥）
 makeBoardRead($("archive-list")); // 归档板（P1 泛化，2026-09-25）
+makeBoardRead($("bubble-list"), { rowSel: ".bubble-row" }); // 气泡列表（同套整板阅读规则，2026-09-25）
 
 // 全局别名：换页监听等既有挂点调用，逐实例重算三角显隐与几何
 function syncHints() {

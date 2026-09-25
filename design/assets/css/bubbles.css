@@ -14,16 +14,18 @@
   gap: 8px;
 }
 
+/* 捕获按钮：紫染玻璃卡（用户定案 2026-09-25）——玻璃板配方 + accent 淡染（深度对齐页签滑块 21%） */
 .capture {
   flex: 1;
   padding: 8px 0;
   border: none;
   border-radius: var(--radius-panel);
-  background: var(--accent);
-  color: #fff;
+  background: color-mix(in srgb, var(--accent) 21%, transparent);
+  color: var(--ink);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
 }
 
 .copied {
@@ -38,33 +40,46 @@
   color: var(--danger);
 }
 
-.banner {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: var(--radius-panel);
-  background: rgba(230, 170, 0, 0.15);
-  font-size: 12.5px;
-}
-
+/* 一键清空：红染玻璃卡（用户定案 2026-09-25）——深度与捕获对称；无气泡转灰染且不可点 */
 .clear {
   flex-shrink: 0;
-  padding: 4px 10px;
+  padding: 8px 12px;
   border: none;
-  border-radius: 8px;
-  background: rgba(229, 72, 77, 0.15);
-  color: inherit;
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--danger) 21%, transparent);
+  color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.clear:disabled {
+  background: rgba(128, 128, 128, 0.18);
+  cursor: default;
 }
 
 .clear.confirming {
   background: var(--danger);
   color: #fff;
+}
+
+/* 满仓警告（用户定案 2026-09-25）：一行红色小字，阴影与大小复制清单超时提醒（.age-alert）。
+   位于滚动容器内部首项——随内容一起滚动（用户定案），由 JS 按超过上限动态增删 */
+.full-warning {
+  margin: 0 0 0 12px; /* 与玻璃卡内文字左缘对齐（age-alert 同款）；顶距由容器统一承担（见 #bubble-list） */
+  line-height: 1; /* 显式行高：防回退字体度量撑高行盒（normal 曾达 ~28px） */
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--danger);
+  text-shadow: 0.5px 0.5px 2px #000; /* age-alert 同阴影 */
+}
+
+/* 满仓警告的顶距偏移放在容器上（用户定案 2026-09-25）：警告行自身的负 margin 会把
+   它顶出滚动起点（裁切 + 渐显带叠加），上移到容器则内容整体平移、零元素越界——
+   墨迹到捕获行恢复 4.5px：页面 gap 10 + 容器 margin -9.5 + 内距 4 = 4.5 */
+#bubble-list {
+  margin-top: -9.5px;
 }
 
 .bubble-row {
@@ -90,4 +105,23 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* 行出入场（用户定案 2026-09-25）：复用清单同款动效（keyframes todo-in 复用，
+   离场塌缩含 flex-shrink:0 防 min-height 归零——与 V0.014 清单同族修复） */
+li.bubble-row.entering {
+  animation: todo-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+li.bubble-row.leaving {
+  flex-shrink: 0;
+  overflow: hidden; /* 高度塌缩时内容不许溢出 */
+  pointer-events: none; /* 塌缩中不可再点 */
+  height: 0;
+  transform: scale(0.6);
+  opacity: 0;
+  transition:
+    height 0.3s ease-in,
+    transform 0.3s ease-in,
+    opacity 0.3s ease-in;
 }

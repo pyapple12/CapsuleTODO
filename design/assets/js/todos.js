@@ -82,17 +82,18 @@ function popInRow(id) {
 }
 
 // 退场：钉住实测高度再挂 leaving（行高不一：超时提醒行更高），塌缩 0.3s 后执行 after；
-// 时长与 CSS li.todo-item.leaving 的 transition 同步
+// 时长与 CSS li.todo-item.leaving 的 transition 同步。after 可缺省（气泡一键清空只
+// 要塌缩本身，收尾由调用方统一在 300ms 后重绘）
 function collapseRow(li, after) {
   if (!li || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    after();
+    after?.();
     return;
   }
   li.style.height = `${li.offsetHeight}px`;
   li.classList.add("leaving");
   void li.offsetHeight; // 强制回流：锁定起步高度，随后收 0 才有过渡
   li.style.height = "0";
-  window.setTimeout(after, 300);
+  window.setTimeout(() => after?.(), 300);
 }
 
 // 空态外壳（未完成条目驱动；"已完成"已迁入归档板）
@@ -135,9 +136,15 @@ document.addEventListener("click", (e) => {
     // 通道但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删
     // todo id=1 命中气泡 id=1），故以容器为准
     if (del.closest("#bubble-list")) {
-      const bi = bubbles.findIndex((x) => x.id === id);
-      if (bi >= 0) bubbles.splice(bi, 1);
-      renderBubbles();
+      // 气泡删除：塌缩一格再增量摘除（与清单同款退场，2026-09-25）——全量重绘会
+      // 拔掉其他行在飞的动画；外围状态壳由 syncBubbleChrome 就地刷新
+      const li = del.closest(".bubble-row");
+      collapseRow(li, () => {
+        const i = bubbles.findIndex((x) => x.id === id);
+        if (i >= 0) bubbles.splice(i, 1);
+        li?.remove();
+        syncBubbleChrome();
+      });
       return;
     }
     const idx = todos.findIndex((t) => t.id === id);
