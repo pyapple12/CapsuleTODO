@@ -516,8 +516,11 @@ li.todo-item.entering {
 }
 
 /* 退场：JS 先钉实测高度再挂类（内联高度起步、类内收 0），transition 三通道收拢；
-         时长 0.3s 须与 JS collapseRow 定时器同步 */
+         时长 0.3s 须与 JS collapseRow 定时器同步。禁止 flex 收缩：overflow:hidden 使
+         自动最小尺寸归零，清单溢出时（>5 条触发滑杆）全部收缩缺口倾泻到本行——使用
+         高度被 flex 直接算成 0，绕过 height 过渡（塌缩动画消失的根因，2026-09-25） */
 li.todo-item.leaving {
+  flex-shrink: 0;
   overflow: hidden; /* 高度塌缩时内容不许溢出 */
   pointer-events: none; /* 塌缩中不可再点（勾选/删除） */
   height: 0;

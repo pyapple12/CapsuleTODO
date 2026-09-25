@@ -184,8 +184,11 @@ document.addEventListener("click", (e) => {
         // 全量重渲染/删除会换掉节点，已脱离文档则跳过
         if (!row.isConnected) return;
         collapseRow(row.closest(".todo-item"), () => {
-          renderTodos();
+          // 增量摘除（用户定案）：塌缩行已收到 0 高，摘壳替代全量重绘——
+          // 快速连勾两行时，另一行在飞的塌缩动画不再被重建连根拔除
+          row.closest(".todo-item")?.remove();
           renderBoard();
+          updateTodoChrome();
         });
       }, 300); // 勾选动效主拍 300ms（用户定案，原 600）：粒子尾巴会被塌缩轻微截断
       // 入档即离场：详情板若正开着这条，随行一起收起
