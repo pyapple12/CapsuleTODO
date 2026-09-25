@@ -13,9 +13,15 @@ const setBoard = (open) => {
     boardOverlay.style.setProperty("--origin-x", "6px");
     boardOverlay.style.setProperty("--origin-y", `${20 - top}px`);
     renderBoard();
+    // 揭示动画期间几何在缩放：动画落定后再重算滑杆/三角（否则锚点停在中间态，2026-09-25）
+    window.setTimeout(() => {
+      for (const g of glassBars) g.sync();
+      syncHints();
+    }, 450);
   }
   boardOverlay.classList.toggle("open", open);
   $("card-archive").classList.toggle("open", open); // 按钮随开合保色/褪色（用户定案）
+  syncVeils(); // 滑杆/三角随浮板开合隐现（归档自家滑杆与三角豁免）
 };
 
 $("card-archive").addEventListener("click", () => {
@@ -61,6 +67,7 @@ const setSettings = (open) => {
   }
   settingsOverlay.classList.toggle("open", open);
   $("card-settings").classList.toggle("open", open); // 开板保色、收板褪色（用户定案）
+  syncVeils(); // 滑杆/三角随浮板开合隐现
 };
 
 $("card-settings").addEventListener("click", () => {

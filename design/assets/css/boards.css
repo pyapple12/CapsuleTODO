@@ -19,9 +19,13 @@
   transition: none;
 }
 
-/* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从开关图标中心缩放飞出（带轻微回弹） */
+/* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从开关图标中心缩放飞出（带轻微回弹）。
+   纵向 flex：标题固定、列表占满余高并内部滚动（归档列表因此成为真滚动容器，
+   玻璃滑杆与整板阅读得以挂载，2026-09-25） */
 .board-glass {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   padding: 12px;
@@ -47,17 +51,23 @@
 }
 
 .board-title {
-  margin: 0 0 10px;
+  margin: 0 0 8px; /* 标题到首行 12px（8 + 列表顶内距 4，与顶缘/左右间距同节奏，用户定案 2026-09-25） */
   font-size: 13px;
+  line-height: 1; /* 盒高=字高：排版内衬清零，墨迹顶≈盒顶（与主标题 .title 同款做法） */
   font-weight: 600;
   opacity: 0.85;
 }
 
 .board-list {
-  margin: 0;
-  padding: 0;
+  margin: 0 -8px -8px; /* 左右拉出 8px 缓冲带（伸进玻璃内距），行宽不变；下 -8：底缘向玻璃底边
+     拉回 8px，底部可见间距与左右同为 12px（用户定案 2026-09-25） */
+  padding: 4px 8px 8px; /* 横向内距 8px = 行缘与裁切边的缓冲：行右侧落影不被滚动裁切；
+     顶4/底8 与 scroll-padding 同源：行悬在遮罩带内侧，拖到底不触发末行溶解（对齐清单节奏） */
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 6px; /* 行间距对齐 .group（用户反馈：归档行几乎无间隔） */
+  flex: 1; /* 占满余高并内部滚动：列表成为真滚动容器（标题固定在外） */
+  min-height: 0;
+  overflow-y: auto;
 }

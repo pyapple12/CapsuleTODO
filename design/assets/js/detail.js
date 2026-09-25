@@ -8,6 +8,7 @@ const setDetail = (open) => {
   if (!open) {
     detailOverlay.classList.remove("open");
     detailTodo = null;
+    syncVeils(); // 收板：滑杆/三角淡入恢复
   }
 };
 const openDetail = (t, rowEl) => {
@@ -29,6 +30,7 @@ const openDetail = (t, rowEl) => {
   );
   detailOverlay.style.setProperty("--origin-y", `${Math.round(rr.top + rr.height / 2 - or.top)}px`);
   detailOverlay.classList.add("open");
+  syncVeils(); // 开板：被覆盖内容的滑杆/三角淡出隐去
   syncDetailBar(); // 打开即同步浮钮显隐与位置（内容可滚才显示）
 };
 

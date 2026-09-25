@@ -67,62 +67,101 @@ makeGlassBar($("todo-active"), { inset: true }); // 清单
 makeGlassBar($("bubble-list"), { inset: true }); // 气泡
 makeGlassBar($("archive-list"), { inset: true }); // 归档板列表
 
-// ===== 整板阅读边缘三角 + 吸附收尾（用户定案 2026-09-24）：▲/▼ 锚卡片层悬浮于
-// 清单上下缘通栏居中，上下还有内容即闪烁提示（换页经页签监听里 syncHints 重算）；
-// scrollend 把底部"不够一整板"的半截行用 --fade-btm 渐隐隐去，残余空间让给三角 =====
-const todoList = $("todo-active");
-const upHint = document.createElement("div");
-upHint.className = "edge-hint up";
-upHint.textContent = "▲";
-const downHint = document.createElement("div");
-downHint.className = "edge-hint down";
-downHint.textContent = "▼";
-$("board").append(upHint, downHint);
+// ===== 整板阅读边缘三角 + 吸附收尾（用户定案 2026-09-24，2026-09-25 泛化到归档板）：
+// 每个挂载容器一套实例——▲/▼ 三角对、scrollend 收尾（半截行 --fade-btm 渐隐）、滚动/
+// 变更监听；syncHints() 为全局别名（换页监听调用），逐实例重算显隐与几何 =====
+const boardReads = [];
 
-// 边缘三角几何与显隐：上下缘各占 26px 通栏；清单可滚动且未到对应尽头才显示
-function syncHints() {
-  const sr = todoList.getBoundingClientRect();
-  const hr = $("board").getBoundingClientRect();
-  const scrollable = todoList.scrollHeight > todoList.clientHeight + 1;
-  const showUp = scrollable && todoList.scrollTop > 2;
-  const showDown =
-    scrollable && todoList.scrollTop < todoList.scrollHeight - todoList.clientHeight - 2;
-  upHint.hidden = !showUp;
-  downHint.hidden = !showDown;
-  for (const hint of [upHint, downHint]) {
-    hint.style.left = `${sr.left - hr.left}px`;
-    hint.style.width = `${sr.width}px`;
-  }
-  upHint.style.top = `${sr.top - hr.top}px`;
-  downHint.style.top = `${sr.bottom - hr.top - 26}px`;
-}
+function makeBoardRead(el, opts = {}) {
+  el.classList.add("board-read"); // 吸附/遮罩/对齐样式（glass-bar.css 按类挂载）
+  const up = document.createElement("div");
+  up.className = "edge-hint up";
+  up.textContent = "▲";
+  const down = document.createElement("div");
+  down.className = "edge-hint down";
+  down.textContent = "▼";
+  $("board").append(up, down);
+  const inst = {
+    el,
+    hints: [up, down],
+    padB: opts.padB ?? 8, // 底缘判定：与 CSS scroll-padding-bottom 同源
+  };
 
-// 吸附收尾：mandatory snap 保证顶部已对齐行首，此处只处理底部残余——半截行顶
-// 推给 --fade-btm 渐隐（不足一整板的空位让给 ▼），无半截行则回落默认软边。
-// 拖拽中跳过：让位平移会令半截判定失真，松手重绘后由 MutationObserver 再收尾
-function settleBoardRead() {
-  if (dragCtx && dragCtx.engaged) return;
-  const sr = todoList.getBoundingClientRect();
-  if (!sr.height) return;
-  const bottomEdge = sr.bottom - 8; // 与 scroll-padding-bottom 同源
-  let fadeStart = null;
-  for (const li of todoList.querySelectorAll(".todo-item")) {
-    const r = li.getBoundingClientRect();
-    if (r.top < bottomEdge && r.bottom > bottomEdge + 0.5) {
-      fadeStart = r.top - sr.top - 2; // 半截行顶略上 2px，连间隙一起隐去
-      break;
+  // 边缘三角几何与显隐：上下缘各占 26px 通栏；容器可滚动且未到对应尽头才显示
+  inst.sync = () => {
+    const sr = el.getBoundingClientRect();
+    const hr = $("board").getBoundingClientRect();
+    const scrollable = el.scrollHeight > el.clientHeight + 1;
+    const showUp = scrollable && el.scrollTop > 2;
+    const showDown = scrollable && el.scrollTop < el.scrollHeight - el.clientHeight - 2;
+    up.hidden = !showUp;
+    down.hidden = !showDown;
+    for (const hint of inst.hints) {
+      hint.style.left = `${sr.left - hr.left}px`;
+      hint.style.width = `${sr.width}px`;
     }
-  }
-  if (fadeStart !== null) todoList.style.setProperty("--fade-btm", `${Math.round(fadeStart)}px`);
-  else todoList.style.removeProperty("--fade-btm");
-  syncHints();
+    up.style.top = `${sr.top - hr.top}px`;
+    down.style.top = `${sr.bottom - hr.top - 26}px`;
+  };
+
+  // 吸附收尾：mandatory snap 保证顶部已对齐行首，此处只处理底部残余——半截行顶
+  // 推给 --fade-btm 渐隐（不足一整板的空位让给 ▼），无半截行则回落默认软边。
+  // 拖拽中跳过（仅清单挂此选项）：让位平移会令半截判定失真，松手重绘后再收尾
+  inst.settle = () => {
+    if (opts.skipDuringDrag && dragCtx && dragCtx.engaged) return;
+    const sr = el.getBoundingClientRect();
+    if (!sr.height) return;
+    const bottomEdge = sr.bottom - inst.padB;
+    let fadeStart = null;
+    for (const li of el.querySelectorAll(".todo-item")) {
+      const r = li.getBoundingClientRect();
+      if (r.top < bottomEdge && r.bottom > bottomEdge + 0.5) {
+        fadeStart = r.top - sr.top - 2; // 半截行顶略上 2px，连间隙一起隐去
+        break;
+      }
+    }
+    if (fadeStart !== null) el.style.setProperty("--fade-btm", `${Math.round(fadeStart)}px`);
+    else el.style.removeProperty("--fade-btm");
+    inst.sync();
+  };
+
+  el.addEventListener("scrollend", () => inst.settle());
+  el.addEventListener("scroll", () => {
+    // 滚动途中回落默认软边：半截行允许短暂可见，停稳（scrollend）再隐
+    if (!(dragCtx && dragCtx.engaged)) el.style.removeProperty("--fade-btm");
+    inst.sync(); // 三角随滚动实时显隐（用户定案）：离开顶端即亮 ▲、滚到底即熄 ▼，不等落定
+  });
+  new MutationObserver(() => inst.settle()).observe(el, { childList: true });
+  inst.sync();
+  boardReads.push(inst);
+  return inst;
 }
 
-todoList.addEventListener("scrollend", () => settleBoardRead());
-todoList.addEventListener("scroll", () => {
-  // 滚动途中回落默认软边：半截行允许短暂可见，停稳（scrollend）再隐
-  if (!(dragCtx && dragCtx.engaged)) todoList.style.removeProperty("--fade-btm");
-  syncHints(); // 三角随滚动实时显隐（用户定案）：离开顶端即亮 ▲、滚到底即熄 ▼，不等落定
-});
-new MutationObserver(() => settleBoardRead()).observe(todoList, { childList: true });
-syncHints();
+makeBoardRead($("todo-active"), { skipDuringDrag: true }); // 清单（拖拽收尾互斥）
+makeBoardRead($("archive-list")); // 归档板（P1 泛化，2026-09-25）
+
+// 全局别名：换页监听等既有挂点调用，逐实例重算三角显隐与几何
+function syncHints() {
+  for (const r of boardReads) r.sync();
+}
+
+// ===== 浮板开合联动（用户定案 2026-09-25）：板子打开时，被覆盖内容的滑杆/三角淡出
+// 隐去、关板淡入；归档板自家的滑杆与三角例外（随归档板出现）——顺带根治"归档关闭
+// 且条目可滚时，归档滑杆浮在清单页"的泄漏。挂点：setBoard/setSettings/openDetail/setDetail
+function syncVeils() {
+  const boardOpen = boardOverlay.classList.contains("open");
+  const anyOpen =
+    boardOpen ||
+    settingsOverlay.classList.contains("open") ||
+    detailOverlay.classList.contains("open");
+  for (const g of glassBars) {
+    const veil = g.scroller.id === "archive-list" ? !boardOpen : anyOpen;
+    g.bar.classList.toggle("veiled", veil);
+  }
+  for (const r of boardReads) {
+    // 归档实例只在归档板打开时可见（关板即隐——否则收板后三角以最后已知位置
+    // 浮在清单页上，2026-09-25 实测）；清单实例随任意浮板开合隐现
+    const veil = r.el.id === "archive-list" ? !boardOpen : anyOpen;
+    for (const hint of r.hints) hint.classList.toggle("veiled", veil);
+  }
+}

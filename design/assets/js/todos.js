@@ -60,9 +60,10 @@ function renderTodos() {
   updateTodoChrome();
 }
 
-// 归档板渲染：已完成条目陈列（勾选退回清单 / 删除彻底移除）
+// 归档板渲染：已完成条目陈列（勾选退回清单 / 删除彻底移除），
+// 按 doneAt 倒序（最新完成的在最上，用户定案 2026-09-25）
 function renderBoard() {
-  const done = todos.filter((t) => t.done);
+  const done = todos.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
   $("archive-list").innerHTML = done.map(todoRowHtml).join("");
   $("archive-empty").hidden = done.length > 0;
   $("archive-count").textContent = String(done.length);
@@ -112,7 +113,14 @@ $("todo-input").addEventListener("input", (e) => {
 function addTodo() {
   const text = $("todo-input").value.trim();
   if (!text) return;
-  todos.push({ id: ++todoSeq, text, done: false, createdAt: Date.now(), note: "" });
+  todos.push({
+    id: ++todoSeq,
+    text,
+    done: false,
+    doneAt: null,
+    createdAt: Date.now(),
+    note: "",
+  });
   $("todo-input").value = "";
   $("todo-add").disabled = true;
   renderTodos();
@@ -134,13 +142,23 @@ document.addEventListener("click", (e) => {
     }
     const idx = todos.findIndex((t) => t.id === id);
     if (idx < 0) return;
-    // 彻底删除：先塌缩一格再提交数据重绘（清单/归档两处同款退场，用户定案）；
-    // 提交时重查下标，防塌缩期间新增条目导致序号漂移
-    collapseRow(del.closest(".todo-item"), () => {
+    const li = del.closest(".todo-item");
+    const inBoard = !!del.closest("#board-overlay"); // 板内删除：需同步计数与空态
+    // 彻底删除：先塌缩一格再提交数据（清单/归档两处同款退场，用户定案）；
+    // 提交时重查下标，防塌缩期间新增条目导致序号漂移。
+    // 收尾增量摘除（用户定案）：塌缩行已收 0 高直接摘壳、不做全量重绘——
+    // 归档板快速连删时，另一行在飞的塌缩动画不再被重建拔除
+    collapseRow(li, () => {
       const i = todos.findIndex((t) => t.id === id);
       if (i >= 0) todos.splice(i, 1);
-      renderTodos();
-      renderBoard(); // 板内彻底删除时同步收敛
+      li?.remove();
+      if (inBoard) {
+        const doneCount = todos.filter((t) => t.done).length;
+        $("archive-count").textContent = String(doneCount);
+        $("archive-empty").hidden = doneCount > 0;
+      } else {
+        updateTodoChrome(); // 清单侧删除：空态壳同步
+      }
     });
     return;
   }
@@ -156,17 +174,25 @@ document.addEventListener("click", (e) => {
       e.clientX <= cb.right &&
       e.clientY >= cb.top &&
       e.clientY <= cb.bottom;
-    // 板内行：点勾选框 = 退回清单（两拍动效）；点正文不动作（归档板只有归档功能）
+    // 板内行：点勾选框 = 退回清单（两拍动效）；点正文不动作（归档态 note 不可见，用户定案）
     if (row.closest("#board-overlay")) {
       if (!inBox) return;
       t.done = false;
+      t.doneAt = null; // 退回清单：清除入档时间
       row.querySelector(".neon-checkbox input").checked = false;
       row.classList.remove("is-done");
       clearTimeout(row._moveTimer);
       row._moveTimer = setTimeout(() => {
         if (!row.isConnected) return;
-        collapseRow(row.closest(".todo-item"), () => {
-          renderBoard();
+        const li = row.closest(".todo-item");
+        collapseRow(li, () => {
+          // 归档板增量摘除（用户定案）：塌缩行已收 0 高直接摘壳 + 计数/空态同步——
+          // 快速连点退回时，另一行在飞的动画不再被 renderBoard 重建拔除；
+          // 清单侧 renderTodos 在板遮挡下进行，可能的截断不可见
+          li?.remove();
+          const doneCount = todos.filter((t) => t.done).length;
+          $("archive-count").textContent = String(doneCount);
+          $("archive-empty").hidden = doneCount > 0;
           renderTodos();
           popInRow(t.id);
         });
@@ -177,6 +203,7 @@ document.addEventListener("click", (e) => {
     // 整页重渲染会打断），播完塌缩一格，再重绘进归档板（用户定案退场）
     if (inBox) {
       t.done = true;
+      t.doneAt = Date.now(); // 入档时间（归档板排序依据，退回清单时清空）
       row.querySelector(".neon-checkbox input").checked = true;
       row.classList.add("is-done");
       clearTimeout(row._moveTimer);
