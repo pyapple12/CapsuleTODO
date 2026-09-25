@@ -58,11 +58,26 @@
   opacity: 0.85;
 }
 
+/* 存档板标题玻璃板（用户定案 2026-09-25）：input 同款配方——胶囊圆角 + panel 底/描边/
+   落影，高度同 input 22px；板卡大小不变（余高由列表 flex 吸收），文字 13→12px 收窄适配 */
+.title-plate {
+  box-sizing: border-box;
+  margin-bottom: 2px; /* 覆盖 .board-title 的 8px：完全消失线（列表顶缘）= 板下 2px（用户定案 2026-09-25） */
+  height: 22px; /* input 同高 */
+  line-height: 22px; /* 盒高内垂直居中（覆盖 .board-title 的 line-height:1） */
+  padding: 0 12px; /* input 16px；这里取 12px 令文字左缘与下方行缘对齐 */
+  border-radius: 9999px; /* input 同款胶囊端头 */
+  background: var(--panel-bg); /* input 同底 */
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* input 同描边落影 */
+  font-size: 12px; /* 13 → 12：板内收窄（用户定案适当缩小） */
+}
+
 .board-list {
   margin: 0 -8px -8px; /* 左右拉出 8px 缓冲带（伸进玻璃内距），行宽不变；下 -8：底缘向玻璃底边
      拉回 8px，底部可见间距与左右同为 12px（用户定案 2026-09-25） */
-  padding: 4px 8px 8px; /* 横向内距 8px = 行缘与裁切边的缓冲：行右侧落影不被滚动裁切；
-     顶4/底8 与 scroll-padding 同源：行悬在遮罩带内侧，拖到底不触发末行溶解（对齐清单节奏） */
+  padding: 10px 8px 8px; /* 顶内距 10 与 scroll-padding-top 10 同步：板下 2px 起 6px 渐显带、
+     首行静止位 = 板下 12px 不变（用户定案 2026-09-25）；横向 8 = 行缘与裁切边的缓冲：
+     行右侧落影不被滚动裁切；底 8 与 scroll-padding-bottom 同源，拖到底不触发末行溶解 */
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -70,4 +85,10 @@
   flex: 1; /* 占满余高并内部滚动：列表成为真滚动容器（标题固定在外） */
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 归档列表停点：顶 10 与列表顶内距同步（.board-read 共享的 4px 只归清单）——
+   scrollTop 0 仍为首吸附点、首行静止位板下 12px 不变（用户定案 2026-09-25） */
+#archive-list {
+  scroll-padding-top: 10px;
 }

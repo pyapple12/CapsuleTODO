@@ -74,6 +74,13 @@
   );
 }
 
+/* 到底抬带单独时长（用户定案 2026-09-25）：滚动途中底缘贴齐/落定到底时挂此类走
+   100ms——褪遮罩要干脆且发生在滚动途中（落定零变化）；滚离底部回落与半截行溶解
+   仍走默认 1s（类随到底态挂摘） */
+.board-read.at-bottom {
+  transition-duration: 100ms;
+}
+
 /* 拖拽期间关吸附：自动滚动逐帧设 scrollTop，mandatory 会逐帧回拉打架 */
 .board-read.drag-live {
   scroll-snap-type: none;

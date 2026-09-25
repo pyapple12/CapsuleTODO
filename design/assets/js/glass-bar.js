@@ -5,6 +5,7 @@
 // 与详情板对齐 =====
 const glassBars = [];
 const makeGlassBar = (scroller, opts = {}) => {
+  const anchor = opts.anchor ?? $("board"); // 浮钮锚层：默认卡片层；归档板锚自家玻璃卡（用户定案 2026-09-25）
   scroller.classList.add("glass-scroll");
   const bar = document.createElement("div");
   bar.className = "glass-bar";
@@ -12,11 +13,11 @@ const makeGlassBar = (scroller, opts = {}) => {
   const thumb = document.createElement("i");
   thumb.className = "glass-thumb";
   bar.appendChild(thumb);
-  $("board").appendChild(bar);
+  anchor.appendChild(bar);
   bar.dataset.for = scroller.id || scroller.className; // 标识归属（调试/测试定位用）
   const sync = () => {
     const sr = scroller.getBoundingClientRect();
-    const hr = $("board").getBoundingClientRect();
+    const hr = anchor.getBoundingClientRect();
     if (!sr.height) {
       bar.hidden = true; // 所在页隐藏：无几何，先隐藏
       return;
@@ -65,7 +66,14 @@ const makeGlassBar = (scroller, opts = {}) => {
 makeGlassBar($("wb-board"), { right: 7.75 }); // 白板编辑区（居中于"编辑区右缘↔卡片描边"）
 makeGlassBar($("todo-active"), { inset: true }); // 清单
 makeGlassBar($("bubble-list"), { inset: true }); // 气泡
-makeGlassBar($("archive-list"), { inset: true }); // 归档板列表
+// 归档板列表：锚自家玻璃卡（原锚卡片层，浮钮落在卡右 14px 沟槽、悬在卡外——用户定案
+// 移上板子）；right 4.5 = 几何缝心 6 再左移 0.5px（用户定案：微避描边亮线视觉重量，
+// 浮钮中心距玻璃缘 6.5px、距行缘 5.5px）
+makeGlassBar($("archive-list"), {
+  inset: true,
+  anchor: document.querySelector("#board-overlay .board-glass"),
+  right: 4.5,
+});
 
 // ===== 整板阅读边缘三角 + 吸附收尾（用户定案 2026-09-24，2026-09-25 泛化到归档板）：
 // 每个挂载容器一套实例——▲/▼ 三角对、scrollend 收尾（半截行 --fade-btm 渐隐）、滚动/
@@ -111,6 +119,16 @@ function makeBoardRead(el, opts = {}) {
     if (opts.skipDuringDrag && dragCtx && dragCtx.engaged) return;
     const sr = el.getBoundingClientRect();
     if (!sr.height) return;
+    // 到底分支（用户定案 2026-09-25）：底部已是内容尽头，无下一行可邀请，遮罩失去
+    // 意义——带抬到 100% 全显（软边只在"底下还有内容"时才溶解）；滚离底部由 scroll
+    // 监听清内联值回落默认带。顺带根治：默认软边恒比底内距宽、末行底部永远泡在带里
+    if (el.scrollTop >= el.scrollHeight - el.clientHeight - 1) {
+      el.classList.add("at-bottom"); // 抬带走 100ms 单独时长（类随到底态挂摘）
+      el.style.setProperty("--fade-btm", "100%");
+      inst.sync();
+      return;
+    }
+    el.classList.remove("at-bottom"); // 非到底态：回落默认 1s 时长
     const bottomEdge = sr.bottom - inst.padB;
     let fadeStart = null;
     for (const li of el.querySelectorAll(".todo-item")) {
@@ -127,8 +145,17 @@ function makeBoardRead(el, opts = {}) {
 
   el.addEventListener("scrollend", () => inst.settle());
   el.addEventListener("scroll", () => {
-    // 滚动途中回落默认软边：半截行允许短暂可见，停稳（scrollend）再隐
-    if (!(dragCtx && dragCtx.engaged)) el.style.removeProperty("--fade-btm");
+    // 到底判定实时化（用户定案 2026-09-25）：滚动途中内容底缘一贴住容器底缘（接触
+    // 到最后一行）就地抬带（100ms 类）——落定时 settle 零变化，消除"停稳才闪没"的
+    // 一瞬间；拖拽中不抬（软边全程在位，对齐 engageDrag 清带语义）。未到底照旧清值
+    // 回落默认软边：半截行允许短暂可见，停稳（scrollend）再隐
+    if (el.scrollTop >= el.scrollHeight - el.clientHeight - 1 && !(dragCtx && dragCtx.engaged)) {
+      el.classList.add("at-bottom");
+      el.style.setProperty("--fade-btm", "100%");
+    } else {
+      el.classList.remove("at-bottom"); // 离底即摘类：回落必须回到 1s 时长，100ms 只属于到底抬带
+      if (!(dragCtx && dragCtx.engaged)) el.style.removeProperty("--fade-btm");
+    }
     inst.sync(); // 三角随滚动实时显隐（用户定案）：离开顶端即亮 ▲、滚到底即熄 ▼，不等落定
   });
   new MutationObserver(() => inst.settle()).observe(el, { childList: true });

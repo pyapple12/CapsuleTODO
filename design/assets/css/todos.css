@@ -218,7 +218,6 @@
 .neon-checkbox__borders span:nth-child(1) {
   top: 0;
   left: -100%;
-  animation: borderFlow1 2s linear infinite;
 }
 
 .neon-checkbox__borders span:nth-child(2) {
@@ -226,13 +225,11 @@
   right: 0;
   width: 1px;
   height: 40px;
-  animation: borderFlow2 2s linear infinite;
 }
 
 .neon-checkbox__borders span:nth-child(3) {
   bottom: 0;
   right: -100%;
-  animation: borderFlow3 2s linear infinite;
 }
 
 .neon-checkbox__borders span:nth-child(4) {
@@ -240,7 +237,6 @@
   left: 0;
   width: 1px;
   height: 40px;
-  animation: borderFlow4 2s linear infinite;
 }
 
 .neon-checkbox__particles span {
@@ -304,6 +300,25 @@
   opacity: 1;
 }
 
+/* 流光线发射逻辑（用户定案 2026-09-25）：动画随勾选态启停——原无条件常驻（未勾选
+   也在空跑、亮起时相位随机），现从勾选/渲染时刻 0% 起步，配合 borderFlow 的透明度
+   节点，循环读感 = 角上延展 → 满幅 → 消散，无收缩无跳变 */
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span:nth-child(1) {
+  animation: borderFlow1 2s linear infinite;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span:nth-child(2) {
+  animation: borderFlow2 2s linear infinite;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span:nth-child(3) {
+  animation: borderFlow3 2s linear infinite;
+}
+
+.neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span:nth-child(4) {
+  animation: borderFlow4 2s linear infinite;
+}
+
 .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__particles span {
   animation: particleExplosion 0.6s ease-out forwards;
 }
@@ -316,39 +331,85 @@
   animation: sparkFlash 0.6s ease-out forwards;
 }
 
+/* 流光线发射逻辑（用户定案 2026-09-25）：延展段亮起、满幅保持、收缩段藏进淡出——
+   循环读感 = 角上延展 → 消散，无收缩无跳变；transform 滑行节奏不变（0/100% 之间线性） */
 @keyframes borderFlow1 {
   0% {
     transform: translateX(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
   }
   100% {
     transform: translateX(200%);
+    opacity: 0;
   }
 }
 
 @keyframes borderFlow2 {
   0% {
     transform: translateY(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
   }
   100% {
     transform: translateY(200%);
+    opacity: 0;
   }
 }
 
 @keyframes borderFlow3 {
   0% {
     transform: translateX(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
   }
   100% {
     transform: translateX(-200%);
+    opacity: 0;
   }
 }
 
 @keyframes borderFlow4 {
   0% {
     transform: translateY(0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
   }
   100% {
     transform: translateY(-200%);
+    opacity: 0;
   }
 }
 

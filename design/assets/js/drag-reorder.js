@@ -85,6 +85,11 @@ function engageDrag(ctx) {
     if (i !== ctx.fromIdx) r.el.classList.add("shifting");
   });
   ctx.listEl.classList.add("drag-live"); // 拖拽中锁滚动：防布局快照失真
+  // 起拖清收尾带：拖拽从"到底静止"起步时内联 --fade-btm 停在 100%（到底分支所置），
+  // 拖拽期 scroll 监听不清内联值——不清会让自动滚动中越过底缘的行被硬切无软边；
+  // 连 at-bottom 类一起摘，回落默认带保持 1s（100ms 只属于到底抬带）
+  ctx.listEl.style.removeProperty("--fade-btm");
+  ctx.listEl.classList.remove("at-bottom");
   document.body.style.userSelect = "none";
   const sel = window.getSelection();
   if (sel) sel.removeAllRanges();

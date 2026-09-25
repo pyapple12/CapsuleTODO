@@ -13,9 +13,12 @@ const setBoard = (open) => {
     boardOverlay.style.setProperty("--origin-x", "6px");
     boardOverlay.style.setProperty("--origin-y", `${20 - top}px`);
     renderBoard();
-    // 揭示动画期间几何在缩放：动画落定后再重算滑杆/三角（否则锚点停在中间态，2026-09-25）
+    // 揭示动画期间几何在缩放：动画落定后再重算滑杆/三角/收尾带（否则锚点停在中间
+    // 态，2026-09-25）；settle 顺带清掉上次会话残留的内联 --fade-btm（settle 内联值
+    // 粘滞：收板冻结、开板复用，实测开板即罩错末行——逐实例重算是根治）
     window.setTimeout(() => {
       for (const g of glassBars) g.sync();
+      for (const r of boardReads) r.settle();
       syncHints();
     }, 450);
   }
