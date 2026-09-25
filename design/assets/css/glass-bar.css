@@ -49,24 +49,36 @@
   initial-value: 0px;
 }
 
+/* 隐区位移（用户定案 2026-09-25）：气泡列表盒上探进捕获行背后 5.5px，渐显带随之
+   上提——此属性把带的顶段下推，滚动越过阈值时 0.25s 回到原位（见 .board-read 遮罩） */
+@property --mask-shift {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* ===== 整板阅读（用户定案 2026-09-25，泛化到清单与归档板；滚动吸附已移除——
          滚动自由、停靠位置由用户掌控）：上下淡出遮罩让行的进出呈玻璃渐隐（顶行自然
          滑出+渐隐）。底部"不够一整板"的半截行由 JS 把 --fade-btm 推到该行顶、渐隐隐去，
          残余区亮出闪烁 ▼ ===== */
 .board-read {
   --fade-btm: calc(100% - 14px); /* 默认软边：底缘上 14px（用户定案回归，试验值 6/12/24 已否） */
-  transition: --fade-btm 1s ease; /* 1s（用户定案，原 0.25s） */
+  transition:
+    --fade-btm 1s ease,
+    --mask-shift 0.25s ease; /* 隐区位移 0.25s（用户定案） */
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 6px,
+    transparent var(--mask-shift, 0px),
+    #000 calc(var(--mask-shift, 0px) + 6px),
     #000 var(--fade-btm),
     transparent
   );
   mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 6px,
+    transparent var(--mask-shift, 0px),
+    #000 calc(var(--mask-shift, 0px) + 6px),
     #000 var(--fade-btm),
     transparent
   );

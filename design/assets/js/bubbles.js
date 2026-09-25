@@ -22,6 +22,7 @@ function syncBubbleChrome() {
     }
   } else {
     existing?.remove();
+    $("bubble-list").style.removeProperty("--mask-shift"); // 警告退场同步清隐区位移（防无警告残留下推带）
   }
   $("bubble-clear").disabled = bubbles.length === 0; // 无气泡灰染不可点（用户定案 2026-09-25）
   // 页签红色徽章：读实际气泡数，固定正圆，≥10 显示"9+"（用户定案）

@@ -157,6 +157,14 @@ function makeBoardRead(el, opts = {}) {
       el.classList.remove("at-bottom"); // 离底即摘类：回落必须回到 1s 时长，100ms 只属于到底抬带
       if (!(dragCtx && dragCtx.engaged)) el.style.removeProperty("--fade-btm");
     }
+    // 隐区位移（用户定案 2026-09-25）：警告行在场且完全没入捕获行背后（过阈值）时，
+    // 渐显带 0.25s 下移到无警告时的原位——后续行在可见间隙正常溶解；无警告（无侵入，
+    // 带本就该待在容器顶部）或滚回阈值上方则复位
+    if (opts.maskShift) {
+      const shifted =
+        el.classList.contains("has-warning") && el.scrollTop >= opts.maskShift.threshold;
+      el.style.setProperty("--mask-shift", shifted ? `${opts.maskShift.depth}px` : "0px");
+    }
     inst.sync(); // 三角随滚动实时显隐（用户定案）：离开顶端即亮 ▲、滚到底即熄 ▼，不等落定
   });
   new MutationObserver(() => inst.settle()).observe(el, { childList: true });
@@ -167,7 +175,14 @@ function makeBoardRead(el, opts = {}) {
 
 makeBoardRead($("todo-active"), { skipDuringDrag: true }); // 清单（拖拽收尾互斥）
 makeBoardRead($("archive-list")); // 归档板（P1 泛化，2026-09-25）
-makeBoardRead($("bubble-list"), { rowSel: ".bubble-row" }); // 气泡列表（同套整板阅读规则，2026-09-25）
+// 气泡列表（同套整板阅读规则，2026-09-25）；maskShift = 隐区位移：警告行入列使列表盒
+// 上探进捕获行背后 5.5px，渐显带随之没入——阈值 8.5（内距 4 + 警告高 10 − 侵入 5.5，
+// 警告完全没入捕获行背后的瞬间）过线即把带下推 6px（用户定案，11.5→8→6 一路收紧），
+// 0.25s 过渡；滚回阈值上方复位
+makeBoardRead($("bubble-list"), {
+  rowSel: ".bubble-row",
+  maskShift: { threshold: 8.5, depth: 6 },
+});
 
 // 全局别名：换页监听等既有挂点调用，逐实例重算三角显隐与几何
 function syncHints() {
