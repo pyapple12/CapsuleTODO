@@ -144,6 +144,11 @@
   width: var(--size);
   height: var(--size);
   pointer-events: none;
+  /* 罩死灰化/恢复双向过渡（用户定案 2026-09-26）：transition 落常态，摘类恢复
+     才有渐变（内层子元素的 all 0.4s 管不到外层容器的 opacity/filter） */
+  transition:
+    opacity 0.5s ease,
+    filter 0.5s ease;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -536,6 +541,9 @@
   font-size: 13.5px;
   line-height: 1.35;
   word-break: break-word;
+  /* 罩死灰化/恢复双向过渡（用户定案 2026-09-26）：transition 必须落常态——
+     只写在 .mask-dead 态则摘类恢复时无过渡瞬间跳回 */
+  transition: color 0.5s ease;
 }
 
 /* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规；
@@ -634,7 +642,6 @@ li.todo-item.mask-dead .todo-row {
 
 li.todo-item.mask-dead .t-text {
   color: color-mix(in srgb, var(--ink) 40%, transparent);
-  transition: color 0.5s ease;
 }
 
 li.todo-item.mask-dead .del {
@@ -644,19 +651,14 @@ li.todo-item.mask-dead .del {
   transition: opacity 0.5s ease;
 }
 
-/* 垃圾桶白填充对 grayscale 免疫（白色无色彩可去）——罩死态直改 fill 成灰，
-   与 opacity 同拍渐变成"烧尽的灰色垃圾桶" */
+/* 垃圾桶白填充对 grayscale 免疫（白色无色彩可去）——罩死态直改 fill 成灰 */
 li.todo-item.mask-dead .del-icon path {
   fill: rgba(255, 255, 255, 0.35);
-  transition: fill 0.5s ease;
 }
 
 li.todo-item.mask-dead .neon-checkbox {
   opacity: 0.35;
   filter: grayscale(1);
-  transition:
-    opacity 0.5s ease,
-    filter 0.5s ease;
 }
 
 /* 拖拽期间锁定清单滚动：防中途滚动令布局快照失真（重挂后行本体已不在清单内） */
@@ -719,6 +721,8 @@ li.todo-item.dragging .del {
 
 .del-icon path {
   fill: #fff;
+  /* 罩死灰化/恢复双向：fill 过渡落常态，摘类时灰→白同样 0.5s 渐变 */
+  transition: fill 0.5s ease;
 }
 
 .del:hover {
