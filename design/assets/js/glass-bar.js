@@ -98,19 +98,48 @@ function makeBoardRead(el, opts = {}) {
 
   // 边缘三角几何与显隐：上下缘各占 26px 通栏；容器可滚动且未到对应尽头才显示
   inst.sync = () => {
-    const sr = el.getBoundingClientRect();
-    const hr = $("board").getBoundingClientRect();
+    // 详情板场景（opts.layout）：祖先链上有揭示缩放动画，gBCR 会把 transform 中间态
+    // 算进几何（渲染节流冻结时尤其如此）——改走 offsetTop/offsetWidth 布局盒，
+    // 沿 offsetParent 链累加到 #board，得到的就是 board 相对坐标（不再减 hr），
+    // 动画任何时刻都拿到最终几何
+    let left;
+    let top;
+    let width;
+    let bottom;
+    if (opts.layout) {
+      let node = el;
+      let x = 0;
+      let y = 0;
+      const boardEl = $("board");
+      while (node && node !== boardEl) {
+        x += node.offsetLeft;
+        y += node.offsetTop;
+        node = node.offsetParent;
+      }
+      left = x;
+      top = y;
+      width = el.offsetWidth;
+      bottom = y + el.offsetHeight;
+    } else {
+      const sr = el.getBoundingClientRect();
+      const hr = $("board").getBoundingClientRect();
+      left = sr.left - hr.left;
+      top = sr.top - hr.top;
+      width = sr.width;
+      bottom = sr.bottom - hr.top;
+    }
     const scrollable = el.scrollHeight > el.clientHeight + 1;
-    const showUp = scrollable && el.scrollTop > 2;
-    const showDown = scrollable && el.scrollTop < el.scrollHeight - el.clientHeight - 2;
+    const active = !opts.gate || opts.gate(); // 门控（详情板 textarea：仅气泡模式亮三角）
+    const showUp = active && scrollable && el.scrollTop > 2;
+    const showDown = active && scrollable && el.scrollTop < el.scrollHeight - el.clientHeight - 2;
     up.hidden = !showUp;
     down.hidden = !showDown;
     for (const hint of inst.hints) {
-      hint.style.left = `${sr.left - hr.left}px`;
-      hint.style.width = `${sr.width}px`;
+      hint.style.left = `${left}px`;
+      hint.style.width = `${width}px`;
     }
-    up.style.top = `${sr.top - hr.top}px`;
-    down.style.top = `${sr.bottom - hr.top - 26}px`;
+    up.style.top = `${top}px`;
+    down.style.top = `${bottom - 26}px`;
   };
 
   // 吸附收尾：mandatory snap 保证顶部已对齐行首，此处只处理底部残余——半截行顶
@@ -119,7 +148,10 @@ function makeBoardRead(el, opts = {}) {
   inst.settle = () => {
     if (opts.skipDuringDrag && dragCtx && dragCtx.engaged) return;
     const sr = el.getBoundingClientRect();
-    if (!sr.height) return;
+    if (!sr.height) {
+      inst.sync(); // 列表转空被隐藏时也要走显隐判定：三角保持清空前的状态会残留（2026-09-25）
+      return;
+    }
     // 到底分支（用户定案 2026-09-25）：底部已是内容尽头，无下一行可邀请，遮罩失去
     // 意义——带抬到 100% 全显（软边只在"底下还有内容"时才溶解）；滚离底部由 scroll
     // 监听清内联值回落默认带。顺带根治：默认软边恒比底内距宽、末行底部永远泡在带里
@@ -183,6 +215,13 @@ makeBoardRead($("bubble-list"), {
   rowSel: ".bubble-row",
   maskShift: { threshold: 8.5, depth: 6 },
 });
+// 详情板 textarea（气泡全文板，用户定案 2026-09-25）：同套整板阅读——gate 门控仅
+// 气泡模式生效（detailBubble 在 detail.js，运行时求值），todo 笔记卡不受影响；
+// 半截行逐行 settle 对 textarea 退化为恒定软边带（顶 6/底 14）+ 到底抬带；
+// 玻璃浮钮（detail-bar）在容器外不受 mask 影响。初始不挂 board-read 类，
+// applyDetailMode 按模式切换
+makeBoardRead($("detail-note"), { gate: () => detailBubble !== null, layout: true });
+$("detail-note").classList.remove("board-read");
 
 // 全局别名：换页监听等既有挂点调用，逐实例重算三角显隐与几何
 function syncHints() {
@@ -204,8 +243,11 @@ function syncVeils() {
   }
   for (const r of boardReads) {
     // 归档实例只在归档板打开时可见（关板即隐——否则收板后三角以最后已知位置
-    // 浮在清单页上，2026-09-25 实测）；清单实例随任意浮板开合隐现
-    const veil = r.el.id === "archive-list" ? !boardOpen : anyOpen;
+    // 浮在清单页上，2026-09-25 实测）；详情板实例随详情板开合隐现（板开时自家
+    // 三角必须可见，不能吃 anyOpen 的帘）；清单实例随任意浮板开合隐现
+    const detailOpen = detailOverlay.classList.contains("open");
+    const veil =
+      r.el.id === "archive-list" ? !boardOpen : r.el.id === "detail-note" ? !detailOpen : anyOpen;
     for (const hint of r.hints) hint.classList.toggle("veiled", veil);
   }
 }

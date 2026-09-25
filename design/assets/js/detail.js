@@ -3,21 +3,36 @@
 // 内容区实时写入 todo.note，不设长度上限 =====
 const detailOverlay = $("detail-overlay");
 let detailTodo = null;
+let detailBubble = null; // 气泡模式：双击气泡行弹只读全文板（用户定案 2026-09-25）
 let detailOpenTimer = 0; // 单击开详情的延迟句柄（留双击窗口给行内改标题）
 const setDetail = (open) => {
   if (!open) {
     detailOverlay.classList.remove("open");
     detailTodo = null;
+    detailBubble = null; // gate 失效先于同步：三角立即隐去，不等 0.4s 收板动画
+    syncHints();
     syncVeils(); // 收板：滑杆/三角淡入恢复
   }
 };
-const openDetail = (t, rowEl) => {
-  if (boardOverlay.classList.contains("open")) setBoard(false); // 三板互斥（用户定案）
-  if (settingsOverlay.classList.contains("open")) setSettings(false);
-  detailTodo = t;
-  $("detail-title").value = t.text;
-  $("detail-note").value = t.note || "";
-  // top 落位同设置板；原点 = 被点行中心的板内坐标（从行处飞出）
+
+// 详情板双模式（用户定案 2026-09-25）：todo = 标签"标题"+ 标题笔记可编辑；
+// bubble = 单层玻璃——标签头整个隐藏、正文只读直接落板面（无内嵌卡），textarea
+// 自带滚动 + detail-bar 浮钮照常工作，内容超高即滑；board-read 类（三角+溶解带）
+// 只随气泡模式挂摘，摘时清残留态（到底抬带内联值）
+const applyDetailMode = (mode) => {
+  const isBubble = mode === "bubble";
+  detailOverlay.classList.toggle("bubble-mode", isBubble); // 标签头/内嵌卡由 CSS 按类摘除
+  const note = $("detail-note");
+  note.readOnly = isBubble;
+  note.classList.toggle("board-read", isBubble);
+  if (!isBubble) {
+    note.classList.remove("at-bottom");
+    note.style.removeProperty("--fade-btm");
+  }
+};
+
+// 落位与飞出原点（设置板同款，双模式共用）：top 对齐页签下缘，原点 = 行中心
+const positionDetailOverlay = (rowEl) => {
   const cr = $("board").getBoundingClientRect();
   const tr = document.querySelector(".tabs").getBoundingClientRect();
   const top = Math.max(0, tr.top - cr.top - 4);
@@ -29,9 +44,36 @@ const openDetail = (t, rowEl) => {
     `${Math.round(rr.left + rr.width / 2 - or.left)}px`,
   );
   detailOverlay.style.setProperty("--origin-y", `${Math.round(rr.top + rr.height / 2 - or.top)}px`);
+};
+
+const openDetail = (t, rowEl) => {
+  if (boardOverlay.classList.contains("open")) setBoard(false); // 三板互斥（用户定案）
+  if (settingsOverlay.classList.contains("open")) setSettings(false);
+  detailTodo = t;
+  detailBubble = null;
+  applyDetailMode("todo");
+  $("detail-title").value = t.text;
+  $("detail-note").value = t.note || "";
+  positionDetailOverlay(rowEl);
   detailOverlay.classList.add("open");
   syncVeils(); // 开板：被覆盖内容的滑杆/三角淡出隐去
   syncDetailBar(); // 打开即同步浮钮显隐与位置（内容可滚才显示）
+  syncHints(); // 详情板实例三角几何重算（todo 模式 gate 失效即隐）
+};
+
+// 气泡全文板（只读，用户定案 2026-09-25）：复用详情板骨架，只读展示全文不回写
+const openBubbleDetail = (b, rowEl) => {
+  if (boardOverlay.classList.contains("open")) setBoard(false);
+  if (settingsOverlay.classList.contains("open")) setSettings(false);
+  detailBubble = b;
+  detailTodo = null;
+  applyDetailMode("bubble");
+  $("detail-note").value = b.text;
+  positionDetailOverlay(rowEl);
+  detailOverlay.classList.add("open");
+  syncVeils();
+  syncDetailBar();
+  syncHints(); // 三角几何按 textarea 布局盒重算（layout 模式不受揭示动画 transform 污染）
 };
 
 $("detail-title").addEventListener("input", () => {
@@ -72,6 +114,9 @@ $("detail-thumb").addEventListener("pointerdown", (e) => {
   const range = ta.scrollHeight - ta.clientHeight;
   const move = (ev) => {
     ta.scrollTop = startScroll + ((ev.clientY - startY) / trackH) * range;
+    // textarea 程序赋值不派发 scroll 事件（Chromium 固有行为，实测 todo/气泡模式皆然），
+    // 手动补发驱动浮钮位置与整板阅读三角/到底抬带同步
+    ta.dispatchEvent(new Event("scroll"));
   };
   const up = () => {
     window.removeEventListener("pointermove", move);
@@ -82,9 +127,18 @@ $("detail-thumb").addEventListener("pointerdown", (e) => {
   e.preventDefault();
 });
 
-// 双击行正文：行内改标题（Enter/失焦保存、Esc 取消、≤12 字与详情板同规）；
+// 双击行正文：气泡行 = 开只读全文板（并取消未决的单击复制，双击不闪占字）；
+// 清单行 = 行内改标题（Enter/失焦保存、Esc 取消、≤12 字与详情板同规），
 // 同时取消未决的详情板弹出（双击窗口内第二次点击到此）
 document.addEventListener("dblclick", (e) => {
+  const brow = e.target.closest("#bubble-list .bubble-row");
+  if (brow) {
+    window.clearTimeout(bubbleCopyTimer);
+    cancelClearConfirm(); // 点气泡旁路取消一键清空确认（与单击语义一致）
+    const b = bubbles.find((x) => x.id === Number(brow.dataset.id));
+    if (b) openBubbleDetail(b, brow);
+    return;
+  }
   const row = e.target.closest("#todo-active .todo-row");
   if (!row || e.target.closest(".t-edit")) return;
   clearTimeout(detailOpenTimer);

@@ -59,6 +59,22 @@
   display: none; /* 隐藏原生滑杆（Chromium），自绘玻璃浮钮替代 */
 }
 
+/* 气泡全文只读态（用户定案 2026-09-25）：单层玻璃——标签头整个摘除、文字直接落
+   板面（去内嵌卡底与描边落影），只留文字与滑杆；保留文字选择与玻璃浮钮滚动 */
+.detail-note[readonly] {
+  cursor: default;
+}
+
+#detail-overlay.bubble-mode .detail-head {
+  display: none;
+}
+
+#detail-overlay.bubble-mode .detail-note {
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
 /* 自绘滚动浮钮（用户定案 2026-09-22）：仅滑杆中间部分，透明玻璃 4×16，
          悬于内容玻璃与外层玻璃的右缝隙（玻璃 12px 内距带），随滚动移动、可拖拽 */
 .detail-bar {

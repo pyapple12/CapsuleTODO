@@ -16,6 +16,10 @@
 
 /* 捕获按钮：紫染玻璃卡（用户定案 2026-09-25）——玻璃板配方 + accent 淡染（深度对齐页签滑块 21%） */
 .capture {
+  display: inline-flex; /* 图标与文案 flex 居中对齐（免 baseline 猜测），gap 管间距 */
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   flex: 1;
   padding: 8px 0;
   border: none;
@@ -24,14 +28,23 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
+  line-height: 18px; /* 显式行高：换字/换图标前后按钮高度不变（根治 fallback 字体度量 1px 上缩） */
   cursor: pointer;
+  white-space: nowrap; /* 让位/占字期间文字不许换行 */
+  transition: background 0.3s ease; /* 占字 50% 紫随换字一体渐变 */
   box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
 }
 
-.copied {
-  flex-shrink: 0;
-  font-size: 12px;
-  opacity: 0.7;
+.cap-icon {
+  flex-shrink: 0; /* 让位挤压时图标不许缩 */
+  width: 13px;
+  height: 13px;
+  fill: currentColor; /* 随文字色走（含禁用占字态） */
+}
+
+.capture:disabled {
+  background: color-mix(in srgb, var(--accent) 50%, transparent); /* 占字反馈 50% 紫（用户定案） */
+  cursor: default; /* disabled 已挡点击，只去手型 */
 }
 
 .error {
@@ -50,7 +63,13 @@
   color: var(--ink);
   font: inherit;
   font-size: 13px;
+  line-height: 18px; /* 与捕获钮同拍钉高：确认文案换字前后高度不变 */
   cursor: pointer;
+  white-space: nowrap; /* 确认文字较长，展开/缩回过渡帧不许换行 */
+  overflow: hidden; /* 宽度回弹过冲帧文字不出界 */
+  transition:
+    width 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
+    background 0.3s ease; /* width 由 JS 锁值驱动；background 覆盖确认加深/灰染切换 */
   box-shadow: var(--panel-stroke), var(--panel-shadow);
 }
 
@@ -60,7 +79,7 @@
 }
 
 .clear.confirming {
-  background: var(--danger);
+  background: color-mix(in srgb, var(--danger) 50%, transparent); /* 50% 透明红（用户定案） */
   color: #fff;
 }
 
