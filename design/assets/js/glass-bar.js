@@ -49,6 +49,9 @@ const makeGlassBar = (scroller, opts = {}) => {
     const range = scroller.scrollHeight - scroller.clientHeight;
     const move = (ev) => {
       scroller.scrollTop = startScroll + ((ev.clientY - startY) / trackH) * range;
+      // textarea 程序赋值 scrollTop 不派发 scroll 事件（Chromium 固有，白板编辑区实测），
+      // 补发合成事件驱动浮钮同步（列表容器本就派发，重复一次无害）
+      scroller.dispatchEvent(new Event("scroll"));
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -215,13 +218,17 @@ makeBoardRead($("bubble-list"), {
   rowSel: ".bubble-row",
   maskShift: { threshold: 8.5, depth: 6 },
 });
-// 详情板 textarea（气泡全文板，用户定案 2026-09-25）：同套整板阅读——gate 门控仅
-// 气泡模式生效（detailBubble 在 detail.js，运行时求值），todo 笔记卡不受影响；
-// 半截行逐行 settle 对 textarea 退化为恒定软边带（顶 6/底 14）+ 到底抬带；
-// 玻璃浮钮（detail-bar）在容器外不受 mask 影响。初始不挂 board-read 类，
-// applyDetailMode 按模式切换
-makeBoardRead($("detail-note"), { gate: () => detailBubble !== null, layout: true });
-$("detail-note").classList.remove("board-read");
+// 详情板 textarea（用户定案 2026-09-25 接入双模式）：同套整板阅读——gate 门控限详情
+// 板打开时（todo 笔记与气泡全文共用此容器），todo 笔记卡与气泡单层玻璃都出三角溶解带；
+// layout 模式走 offsetParent 链布局盒（揭示缩放动画不污染几何）。初始类由工厂挂上，
+// 常驻不摘——两种模式都要溶解带
+makeBoardRead($("detail-note"), {
+  gate: () => detailBubble !== null || detailTodo !== null,
+  layout: true,
+});
+// 白板编辑区（用户定案 2026-09-25 接入）：textarea 无行元素，settle 退化为恒定软边带
+// （顶 6/底 14）+ 到底抬带；同页 hidden 时 sr.height 0 三角自隐
+makeBoardRead($("wb-board"));
 
 // 全局别名：换页监听等既有挂点调用，逐实例重算三角显隐与几何
 function syncHints() {

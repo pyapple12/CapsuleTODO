@@ -12,23 +12,21 @@ const setDetail = (open) => {
     detailBubble = null; // gate 失效先于同步：三角立即隐去，不等 0.4s 收板动画
     syncHints();
     syncVeils(); // 收板：滑杆/三角淡入恢复
-  }
-};
-
-// 详情板双模式（用户定案 2026-09-25）：todo = 标签"标题"+ 标题笔记可编辑；
-// bubble = 单层玻璃——标签头整个隐藏、正文只读直接落板面（无内嵌卡），textarea
-// 自带滚动 + detail-bar 浮钮照常工作，内容超高即滑；board-read 类（三角+溶解带）
-// 只随气泡模式挂摘，摘时清残留态（到底抬带内联值）
-const applyDetailMode = (mode) => {
-  const isBubble = mode === "bubble";
-  detailOverlay.classList.toggle("bubble-mode", isBubble); // 标签头/内嵌卡由 CSS 按类摘除
-  const note = $("detail-note");
-  note.readOnly = isBubble;
-  note.classList.toggle("board-read", isBubble);
-  if (!isBubble) {
+    // 清到底抬带残留：类常驻后（双模式都出溶解带），下次开板不继承上次滚动态
+    const note = $("detail-note");
     note.classList.remove("at-bottom");
     note.style.removeProperty("--fade-btm");
   }
+};
+
+// 详情板双模式（用户定案 2026-09-25）：todo = 标签"标题"+ 标题笔记可编辑（笔记卡
+// 带溶解带，2026-09-25 双模式接入整板阅读）；bubble = 单层玻璃——标签头整个隐藏、
+// 正文只读直接落板面（无内嵌卡），textarea 自带滚动 + detail-bar 浮钮照常工作。
+// board-read 类常驻（双模式都出三角与溶解带），gate 限详情板打开时生效
+const applyDetailMode = (mode) => {
+  const isBubble = mode === "bubble";
+  detailOverlay.classList.toggle("bubble-mode", isBubble); // 标签头/内嵌卡由 CSS 按类摘除
+  $("detail-note").readOnly = isBubble;
 };
 
 // 落位与飞出原点（设置板同款，双模式共用）：top 对齐页签下缘，原点 = 行中心
@@ -54,6 +52,7 @@ const openDetail = (t, rowEl) => {
   applyDetailMode("todo");
   $("detail-title").value = t.text;
   $("detail-note").value = t.note || "";
+  resetDetailScroll(); // 换内容必复位滚动：上一次会话的 scrollTop 会残留
   positionDetailOverlay(rowEl);
   detailOverlay.classList.add("open");
   syncVeils(); // 开板：被覆盖内容的滑杆/三角淡出隐去
@@ -68,12 +67,22 @@ const openBubbleDetail = (b, rowEl) => {
   detailBubble = b;
   detailTodo = null;
   applyDetailMode("bubble");
-  $("detail-note").value = b.text;
+  const note = $("detail-note");
+  note.value = b.text;
+  resetDetailScroll(); // 换内容必复位滚动：上一次会话的 scrollTop 会残留（实测开板落在文末）
   positionDetailOverlay(rowEl);
   detailOverlay.classList.add("open");
   syncVeils();
   syncDetailBar();
   syncHints(); // 三角几何按 textarea 布局盒重算（layout 模式不受揭示动画 transform 污染）
+};
+
+// 滚动复位（双模式开板共用）：scrollTop 归零并补发合成 scroll——textarea 程序赋值
+// 不派发事件（Chromium 固有），不补发则三角/到底抬带停在复位前状态
+const resetDetailScroll = () => {
+  const note = $("detail-note");
+  note.scrollTop = 0;
+  note.dispatchEvent(new Event("scroll"));
 };
 
 $("detail-title").addEventListener("input", () => {

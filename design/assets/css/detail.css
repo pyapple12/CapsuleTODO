@@ -38,15 +38,24 @@
   font-weight: 600;
 }
 
-.detail-note {
+/* 笔记卡壳（2026-09-25）：textarea 身兼滚动容器（要被 mask）与玻璃卡本体（不该被
+   mask）冲突——卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字墨迹 */
+.note-shell {
   flex: 1;
   min-height: 0;
-  border: none;
-  outline: none;
-  padding: 8px 12px;
   border-radius: var(--radius-panel);
   background: var(--panel-bg);
   box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.detail-note {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  padding: 8px 12px;
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -69,9 +78,12 @@
   display: none;
 }
 
-#detail-overlay.bubble-mode .detail-note {
-  background: transparent;
+#detail-overlay.bubble-mode .note-shell {
+  background: transparent; /* 单层玻璃：壳也摘掉，文字直接落板面 */
   box-shadow: none;
+}
+
+#detail-overlay.bubble-mode .detail-note {
   padding: 0;
 }
 

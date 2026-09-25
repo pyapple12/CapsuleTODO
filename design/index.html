@@ -71,7 +71,8 @@
 
         <!-- 白板页 -->
         <div class="page" id="page-whiteboard" hidden>
-          <textarea id="wb-board" class="board" placeholder="随手记点什么…" spellcheck="false">
+          <div class="board-shell">
+            <textarea id="wb-board" class="board" placeholder="随手记点什么…" spellcheck="false">
 《最后一条待办》
 2077 年，桌面玻璃是人类与机器之间最后一层毛玻璃。林澈的玻璃上钉着一块透明板，板上只剩一条待办，红字，悬在那里，像一枚不肯坠落的钉子。
 那是一百天前写下的：向苏晚道歉。
@@ -87,6 +88,7 @@
 他说：因为清单的意义不在于清空，而在于你每一次凝视它的时候，心里那一下轻轻的疼。疼一下，就长大一点。玻璃负责记住，人类负责醒来。这是他们之间最早的分工，也是最后的默契。
 许多年后，那块玻璃退休了，被装进展示柜，标签上写着：它一生没有替人做完任何一件事，却陪人记起了所有重要的事。来参观的孩子们踮着脚，看那道被指腹磨亮的浅痕，像看一枚古老的邮戳。展柜角落的屏幕上，循环播放着那段最早的机器小字：我数了一百天，不是在提醒你，是在替她等。
 ——完——</textarea>
+          </div>
           <p id="wb-status" class="status" hidden></p>
         </div>
 
@@ -172,12 +174,14 @@
               <span class="detail-label" id="detail-label">标题</span>
               <input id="detail-title" maxlength="12" placeholder="最多 12 字" />
             </div>
-            <textarea
-              id="detail-note"
-              class="detail-note"
-              placeholder="添加描述、清单、想法…"
-              spellcheck="false"
-            ></textarea>
+            <div class="note-shell">
+              <textarea
+                id="detail-note"
+                class="detail-note"
+                placeholder="添加描述、清单、想法…"
+                spellcheck="false"
+              ></textarea>
+            </div>
             <div id="detail-bar" class="detail-bar" hidden><i id="detail-thumb"></i></div>
           </div>
         </div>
@@ -217,7 +221,7 @@
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件<span class="branch-ver">ui1.0 V0.020</span></h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.021</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
