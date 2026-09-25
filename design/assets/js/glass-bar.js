@@ -41,6 +41,10 @@ const makeGlassBar = (scroller, opts = {}) => {
   scroller.addEventListener("input", sync);
   // 内容增删改变滚动量：观测子树重建即同步（bar 在滚动体外部，无需重挂）
   new MutationObserver(sync).observe(scroller, { childList: true });
+  // 罩死类同步（用户定案 2026-09-26）：清单行侵入溶解带 ≥38% 灰化禁交互——
+  // 滚动与内容重建双挂点，与滑杆同频（函数在 drag-reorder.js，运行时存在）
+  scroller.addEventListener("scroll", () => syncMaskDead?.());
+  new MutationObserver(() => syncMaskDead?.()).observe(scroller, { childList: true });
   thumb.addEventListener("pointerdown", (e) => {
     const trackH = bar.getBoundingClientRect().height - 16; // 与 sync 同源：轨道实际高度
     if (trackH <= 0) return;

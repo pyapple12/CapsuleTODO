@@ -131,6 +131,9 @@ function addTodo() {
 document.addEventListener("click", (e) => {
   const del = e.target.closest("[data-del]");
   if (del) {
+    // 罩死行删除钮失效（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡死透；
+    // 仅约束清单行——归档板/气泡无此罩死语义
+    if (del.closest("#todo-active") && rowMaskDead(del.closest(".todo-row"))) return;
     const id = Number(del.dataset.del);
     // 行内删除按所在容器分流：气泡页删气泡，清单/归档删 todo。两类行共用 data-del
     // 通道但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删
@@ -173,6 +176,8 @@ document.addEventListener("click", (e) => {
   if (row) {
     const t = todos.find((x) => x.id === Number(row.dataset.id));
     if (!t) return;
+    // 罩死行勾选框失效（用户定案 2026-09-26）：仅约束清单行，归档板无罩死语义
+    if (row.closest("#todo-active") && rowMaskDead(row)) return;
     // 勾选框装饰层不参与命中（点击落在行元素上），清单/归档两页统一按点击坐标
     // 是否落在勾选框范围内判定（用户定案）
     const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
@@ -233,6 +238,7 @@ document.addEventListener("click", (e) => {
     // 拖拽落点 350ms 内的点击不算（见 mouseup）
     if (Date.now() < suppressDetailUntil) return;
     if (e.target.closest(".t-edit")) return; // 行内编辑中：点击是光标操作
+    if (rowMaskDead(row)) return; // 侵入溶解带 ≥30%：整卡罩死不可点开（用户定案 2026-09-26）
     clearTimeout(detailOpenTimer);
     detailOpenTimer = setTimeout(() => openDetail(t, row), 180);
     return;

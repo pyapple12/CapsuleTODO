@@ -10,13 +10,53 @@ const HOLD_MS = 250; // 长按时长（用户定案：0.5s 缩减一半）
 const ROW_GAP = 6; // 与 .group 的 gap 对应：一个槽位 = 被拖行高 + 间隙
 const AUTO_SCROLL_ZONE = 32; // 自动滚动边缘带宽度（用户定案按推荐值）
 const AUTO_SCROLL_SPEED = 10; // 自动滚动全速：每帧像素数（约 600px/s）
+const MASK_FADE_RATIO = 0.38; // 罩死阈值（用户定案 2026-09-26 微调）：行侵入溶解带
+// 超卡高 38% 即整卡禁交互（点/双击/拖拽/删除/勾选全失效 + 灰化，含可见部分）
+const MASK_FADE_HYST = 0.36; // 出死区迟滞（用户定案）：回到 36% 才摘罩死类，防阈值
+// 附近滚动反复穿越导致灰化闪烁
+const MASK_BAND_TOP = 6; // 顶部溶解带高（glass-bar.css 遮罩顶段同源）
+const MASK_BAND_BTM = 14; // 底部溶解带高（--fade-btm calc(100%-14px) 同源）
 let dragCtx = null;
 let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作"点正文开详情"
+
+// 行侵入溶解带比例（0 起）：行矩形与容器上下溶解带的侵入深度 ÷ 行高
+function rowInvadeRatio(row) {
+  const list = row.closest(".board-read") ?? document.getElementById("todo-active");
+  const rr = row.getBoundingClientRect();
+  const lr = list.getBoundingClientRect();
+  const topDead = lr.top + MASK_BAND_TOP; // 顶带下缘：侵入此线以上的部分被罩
+  const btmDead = lr.bottom - MASK_BAND_BTM; // 底带上缘
+  const h = rr.height;
+  if (!h) return 0;
+  return (Math.max(0, topDead - rr.top) + Math.max(0, rr.bottom - btmDead)) / h;
+}
+
+// 行是否被罩死：mousedown/click/dblclick 交互入口统一前置此判定
+function rowMaskDead(row) {
+  return rowInvadeRatio(row) >= MASK_FADE_RATIO;
+}
+
+// 罩死类同步（用户定案 2026-09-26）：滚动/变更时逐行翻转 .mask-dead——灰化+光标
+// 由 CSS 按类过渡；出死区迟滞 2 个百分点防阈值附近反复穿越闪烁。挂 makeBoardRead
+// 的 scroll 链路与 MutationObserver 不可行（跨文件时序），此处用独立节拍：
+// rAF 静态轮询成本高，改为 scroll/变更双挂点直呼（与 glass-bar sync 同频）
+function syncMaskDead() {
+  const list = document.getElementById("todo-active");
+  if (!list || list.hidden) return;
+  for (const row of list.querySelectorAll(".todo-row")) {
+    const ratio = rowInvadeRatio(row);
+    const li = row.closest(".todo-item");
+    const isDead = li.classList.contains("mask-dead");
+    if (!isDead && ratio >= MASK_FADE_RATIO) li.classList.add("mask-dead");
+    else if (isDead && ratio < MASK_FADE_HYST) li.classList.remove("mask-dead");
+  }
+}
 
 document.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || dragCtx) return;
   const row = e.target.closest("#todo-active .todo-row");
   if (!row) return;
+  if (rowMaskDead(row)) return; // 侵入溶解带 ≥30%：整卡罩死，点/拖全失效（用户定案）
   // 新按下即取代上一次点击的待开详情（用户定案）：单击开详情是 180ms 延迟定时器，
   // "点击后马上按住拖拽"时无人取消它，详情会与拖拽抢弹——按下瞬间掐掉即根治。
   // 双击改标题不受影响：第二次 click 重新登记定时器，dblclick 再取消并进编辑

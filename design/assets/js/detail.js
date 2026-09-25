@@ -150,6 +150,7 @@ document.addEventListener("dblclick", (e) => {
   }
   const row = e.target.closest("#todo-active .todo-row");
   if (!row || e.target.closest(".t-edit")) return;
+  if (rowMaskDead(row)) return; // 侵入溶解带 ≥30%：整卡罩死不可双击编辑（用户定案 2026-09-26）
   clearTimeout(detailOpenTimer);
   startInlineEdit(row);
 });
