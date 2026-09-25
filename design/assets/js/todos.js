@@ -44,7 +44,10 @@ const todoRowHtml = (t) => `
             <button class="del" data-del="${t.id}" aria-label="删除">
               <svg class="del-icon" viewBox="0 0 448 512">
                 <path
-                  d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.3C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.4 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z"
+                  d="M32 128H416V448c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128zm96 64c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16z"
+                ></path>
+                <path class="del-lid"
+                  d="M135.2 17.7C140.6 6.8 151.7 0 163.8 0H284.2c12.1 0 23.2 6.8 28.6 17.7L320 32h96c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 96 0 81.7 0 64S14.3 32 32 32h96l7.2-14.3z"
                 ></path>
               </svg>
             </button>
@@ -134,6 +137,22 @@ document.addEventListener("click", (e) => {
     // 罩死行删除钮失效（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡死透；
     // 仅约束清单行——归档板/气泡无此罩死语义
     if (del.closest("#todo-active") && rowMaskDead(del.closest(".todo-row"))) return;
+    // 清单行二态确认（用户定案 2026-09-26）：首点盖翻起 + Delete 字渐隐，再点执行
+    // 删除；3s 不动自动复位（盖合、字渐显）。归档/气泡保持一键直删
+    if (del.closest("#todo-active")) {
+      const li = del.closest(".todo-item");
+      if (li.classList.contains("del-open")) {
+        clearTimeout(li._delTimer);
+        li.classList.remove("del-open");
+        // 再点执行：落到下方通用删除链路（塌缩+数据摘除）
+      } else {
+        document.querySelector("#todo-active .todo-item.del-open")?.classList.remove("del-open"); // 单实例：开盖时点别的行，旧的先合盖
+        li.classList.add("del-open");
+        clearTimeout(li._delTimer);
+        li._delTimer = setTimeout(() => li.classList.remove("del-open"), 3000);
+        return;
+      }
+    }
     const id = Number(del.dataset.del);
     // 行内删除按所在容器分流：气泡页删气泡，清单/归档删 todo。两类行共用 data-del
     // 通道但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删
