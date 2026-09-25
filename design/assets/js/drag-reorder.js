@@ -16,7 +16,12 @@ let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作"点�
 document.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || dragCtx) return;
   const row = e.target.closest("#todo-active .todo-row");
-  if (!row || e.target.closest(".del") || e.target.closest(".t-edit")) return; // 删除按钮/行内编辑框自有语义
+  if (!row) return;
+  // 新按下即取代上一次点击的待开详情（用户定案）：单击开详情是 180ms 延迟定时器，
+  // "点击后马上按住拖拽"时无人取消它，详情会与拖拽抢弹——按下瞬间掐掉即根治。
+  // 双击改标题不受影响：第二次 click 重新登记定时器，dblclick 再取消并进编辑
+  clearTimeout(detailOpenTimer);
+  if (e.target.closest(".del") || e.target.closest(".t-edit")) return; // 删除按钮/行内编辑框自有语义
   const li = row.closest(".todo-item");
   if (!li || li.classList.contains("leaving")) return; // 塌缩中不可拖
   const cb = row.querySelector(".neon-checkbox").getBoundingClientRect();
@@ -40,6 +45,7 @@ document.addEventListener("mousedown", (e) => {
 // 长按到点：行浮起进入拖拽（重挂卡片层 + 让位快照，全套起拖动作）
 function engageDrag(ctx) {
   ctx.engaged = true;
+  setDetail(false); // 起拖即收详情板（用户定案）：详情已开时长按拖拽 = 板外收板同语义
   ctx.li.classList.remove("entering");
   const selfRect = ctx.li.getBoundingClientRect();
   ctx.selfTop = selfRect.top;

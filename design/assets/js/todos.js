@@ -192,12 +192,12 @@ document.addEventListener("click", (e) => {
       if (detailTodo === t) setDetail(false);
       return;
     }
-    // 清单行正文：单击开详情板（延迟 280ms 留双击窗口给行内改标题）；
+    // 清单行正文：单击开详情板（延迟 180ms 留双击窗口给行内改标题，用户定案缩短窗口）；
     // 拖拽落点 350ms 内的点击不算（见 mouseup）
     if (Date.now() < suppressDetailUntil) return;
     if (e.target.closest(".t-edit")) return; // 行内编辑中：点击是光标操作
     clearTimeout(detailOpenTimer);
-    detailOpenTimer = setTimeout(() => openDetail(t, row), 280);
+    detailOpenTimer = setTimeout(() => openDetail(t, row), 180);
     return;
   }
   const brow = e.target.closest(".bubble-row");
