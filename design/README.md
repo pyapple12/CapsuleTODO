@@ -28,6 +28,7 @@ accent 紫 #7c3aed · 暗色 accent 亮紫 #c0b0fd
 | 原型区块                                                                                                                  | 对应 Vue 组件               | 落点                                                   |
 | ------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ------------------------------------------------------ |
 | `.glass-card` + `::before` 分态纱 + 聚焦磨砂近似                                                                          | `App.vue`（.glass-card 根） | 令牌换血按定稿读数；聚焦真磨砂仍归一期 DWM 背板        |
+| `.title` 标题 Canvas 粒子化（开场汇聚 + 指针拨散，参考 text-particleization）                                             | `App.vue`（.title）         | 内联脚本可平移；reduced-motion 守卫与停帧逻辑随行      |
 | `.tabs` 页签（uiverse heavy-dragonfly-92 改造：glider 滑块 + 气泡页红色动态徽章）                                         | `App.vue`（.tabbar）        | 落地时整组件替换并按 R001 规范加类名前缀               |
 | `.addbar` 添加行（uiverse plastic-parrot-88 输入框 + average-swan-99 REC 添加按钮）                                       | `AddBar.vue`                | 落地时整组件替换并按 R001 规范加类名前缀               |
 | `.todo-row`/`.neon-checkbox`（hot-dragonfly-56 霓虹勾选框）+ `.del`（smart-emu-83 删除按钮：悬停向左展开覆盖文字）/折叠区 | `TodoList.vue`              | 落地时整组件替换；勾选/删除动效触发策略需适配 Vue 渲染 |

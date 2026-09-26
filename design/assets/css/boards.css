@@ -1,0 +1,88 @@
+#board-overlay,
+#settings-overlay,
+#detail-overlay {
+  position: absolute;
+  top: 54px; /* 兜底值：开板时 JS 按页签实测再上扩 4px 覆盖 */
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 1;
+  color: var(--ink);
+  visibility: hidden;
+  transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
+}
+
+#board-overlay.open,
+#settings-overlay.open,
+#detail-overlay.open {
+  visibility: visible;
+  transition: none;
+}
+
+/* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从开关图标中心缩放飞出（带轻微回弹）。
+   纵向 flex：标题固定、列表占满余高并内部滚动（归档列表因此成为真滚动容器，
+   玻璃滑杆与整板阅读得以挂载，2026-09-25） */
+.board-glass {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow-y: auto;
+  border-radius: var(--radius-board);
+  background: var(--glass-bg);
+  /* 贴边落影对齐页签家族（--panel-shadow，14px 缝里也可见，用户定案）；candy 留作环境柔影垫底 */
+  box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
+  transform: scale(0);
+  /* 收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
+           变负值、以图标为轴镜像闪动（2026-09-18 目验发现，用户确认修） */
+  transition: transform 0.35s ease;
+}
+
+#board-overlay.open .board-glass,
+#settings-overlay.open .board-glass,
+#detail-overlay.open .board-glass {
+  transform: scale(1);
+  transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
+}
+
+.board-title {
+  margin: 0 0 8px; /* 标题到首行 12px（8 + 列表顶内距 4，与顶缘/左右间距同节奏，用户定案 2026-09-25） */
+  font-size: 13px;
+  line-height: 1; /* 盒高=字高：排版内衬清零，墨迹顶≈盒顶（与主标题 .title 同款做法） */
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+/* 存档板标题玻璃板（用户定案 2026-09-25）：input 同款配方——胶囊圆角 + panel 底/描边/
+   落影，高度同 input 22px；板卡大小不变（余高由列表 flex 吸收），文字 13→12px 收窄适配 */
+.title-plate {
+  box-sizing: border-box;
+  margin-bottom: 2px; /* 覆盖 .board-title 的 8px：完全消失线（列表顶缘）= 板下 2px（用户定案 2026-09-25） */
+  height: 22px; /* input 同高 */
+  line-height: 22px; /* 盒高内垂直居中（覆盖 .board-title 的 line-height:1） */
+  padding: 0 12px; /* input 16px；这里取 12px 令文字左缘与下方行缘对齐 */
+  border-radius: 9999px; /* input 同款胶囊端头 */
+  background: var(--panel-bg); /* input 同底 */
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* input 同描边落影 */
+  font-size: 12px; /* 13 → 12：板内收窄（用户定案适当缩小） */
+}
+
+.board-list {
+  margin: 0 -8px -8px; /* 左右拉出 8px 缓冲带（伸进玻璃内距），行宽不变；下 -8：底缘向玻璃底边
+     拉回 8px，底部可见间距与左右同为 12px（用户定案 2026-09-25） */
+  padding: 10px 8px 8px; /* 顶内距 10 与 scroll-padding-top 10 同步：板下 2px 起 6px 渐显带、
+     首行静止位 = 板下 12px 不变（用户定案 2026-09-25）；横向 8 = 行缘与裁切边的缓冲：
+     行右侧落影不被滚动裁切；底 8 与 scroll-padding-bottom 同源，拖到底不触发末行溶解 */
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px; /* 行间距对齐 .group（用户反馈：归档行几乎无间隔） */
+  flex: 1; /* 占满余高并内部滚动：列表成为真滚动容器（标题固定在外） */
+  min-height: 0;
+  overflow-y: auto;
+}

@@ -1,0 +1,111 @@
+/* 归档板/设置板 = 卡片同款玻璃卡（用户定案）：glass-bg 纱底 + 玻璃描边/棱光/落影整套配方，
+         磨砂 3px。揭示动画只能用 transform scale——clip-path 加在玻璃本体上磨砂层不吃逐帧裁切
+        （瞬跳），加在父层上会切割 backdrop 采样范围（毛玻璃失效），两条路均被 Chromium 渲染层
+         合并否决；scale 加在玻璃自身则磨砂与动画兼得，origin 定在开关图标中心即"从图案处飞出"
+        （归档=左上图标、设置=右上齿轮，原点经 --origin-x/y 由 JS 注入）。
+         左右下各留 14px、上越页签顶 4px（用户定案：18px 基础外扩 4px） */
+/* 详情板专属（用户定案 2026-09-22）：标题行 + 白板式编辑区，纵向铺满玻璃板 */
+.detail-glass {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink);
+  opacity: 0.65;
+}
+
+#detail-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  padding: 7px 10px;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* 笔记卡壳（2026-09-25）：textarea 身兼滚动容器（要被 mask）与玻璃卡本体（不该被
+   mask）冲突——卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字墨迹 */
+.note-shell {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.detail-note {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+  scrollbar-width: none; /* 隐藏原生滑杆（Firefox），自绘玻璃浮钮替代 */
+}
+
+.detail-note::-webkit-scrollbar {
+  display: none; /* 隐藏原生滑杆（Chromium），自绘玻璃浮钮替代 */
+}
+
+/* 气泡全文只读态（用户定案 2026-09-25）：单层玻璃——标签头整个摘除、文字直接落
+   板面（去内嵌卡底与描边落影），只留文字与滑杆；保留文字选择与玻璃浮钮滚动 */
+.detail-note[readonly] {
+  cursor: default;
+}
+
+#detail-overlay.bubble-mode .detail-head {
+  display: none;
+}
+
+#detail-overlay.bubble-mode .note-shell {
+  background: transparent; /* 单层玻璃：壳也摘掉，文字直接落板面 */
+  box-shadow: none;
+}
+
+#detail-overlay.bubble-mode .detail-note {
+  padding: 0;
+}
+
+/* 自绘滚动浮钮（用户定案 2026-09-22）：仅滑杆中间部分，透明玻璃 4×16，
+         悬于内容玻璃与外层玻璃的右缝隙（玻璃 12px 内距带），随滚动移动、可拖拽 */
+.detail-bar {
+  position: absolute;
+  right: 4.75px; /* 视觉居中于两玻璃描边间的缝隙（几何中心外偏 0.75px，实测校正） */
+  width: 4px;
+  z-index: 2;
+}
+
+#detail-thumb {
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22); /* 透明玻璃 */
+  cursor: pointer;
+}
+
+#detail-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}

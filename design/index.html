@@ -5,895 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CapsuleTODO — design 实验场（基准配方）</title>
     <link rel="stylesheet" href="glass.css" />
-    <style>
-      /* ===== 组件样式（1:1 对照 APP：TodoList/AddBar/BubblesView/WhiteboardView） ===== */
-      /* hidden 兜底：.page/.group 等设了 display 的元素，hidden 会被覆盖导致切页失效 */
-      [hidden] {
-        display: none !important;
-      }
-
-      /* 纵向布局：玻璃板居中在上，实验场控件同宽置下（按钮单行排布压低面板） */
-      .stage {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 24px;
-        padding: 48px;
-        min-height: 100vh;
-        box-sizing: border-box;
-      }
-
-      .topbar {
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-      }
-
-      .title {
-        margin: 0;
-        font-size: 15px;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-        opacity: 0.8;
-      }
-
-      /* 页签：uiverse heavy-dragonfly-92 改造（RESEARCH R001 引入规范——令牌化/重排尺寸/红色徽章/reduced-motion 守卫） */
-      .tabs {
-        display: flex;
-        position: relative;
-        flex-shrink: 0;
-        width: 100%;
-        background-color: var(--panel-bg);
-        box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
-        padding: 0.75rem;
-        border-radius: 99px;
-        box-sizing: border-box;
-      }
-
-      .tabs * {
-        z-index: 2;
-      }
-
-      .tabs input[type="radio"] {
-        display: none;
-      }
-
-      .tab {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        position: relative;
-        height: 30px;
-        width: 80px; /* 三页签平分板内宽：(300-36-24)/3 */
-        font-size: 0.8rem;
-        color: var(--ink);
-        font-weight: 500;
-        border-radius: 99px;
-        cursor: pointer;
-        transition: color 0.15s ease-in;
-      }
-
-      /* 气泡徽章：红色固定正圆（用户定案），≥10 显示"9+"保持圆形 */
-      .notification {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        position: absolute;
-        top: -4px;
-        right: 8px;
-        width: 1rem;
-        height: 1rem;
-        font-size: 10px;
-        border-radius: 50%;
-        background-color: var(--danger);
-        color: #fff;
-        transition: 0.15s ease-in;
-      }
-
-      .tabs input[type="radio"]:checked + .tab {
-        color: var(--accent);
-      }
-
-      .tabs input[id="radio-1"]:checked ~ .glider {
-        transform: translateX(0);
-      }
-
-      .tabs input[id="radio-2"]:checked ~ .glider {
-        transform: translateX(100%);
-      }
-
-      .tabs input[id="radio-3"]:checked ~ .glider {
-        transform: translateX(200%);
-      }
-
-      .glider {
-        position: absolute;
-        display: flex;
-        height: 30px;
-        width: 80px;
-        background-color: var(--glider-bg);
-        box-shadow: 0 0 12px var(--glider-glow); /* 同色辉光（用户定案，配方沿输入框聚焦辉光） */
-        z-index: 1;
-        border-radius: 99px;
-        transition: 0.25s ease-out;
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        .glider,
-        .tab,
-        .input {
-          transition: none;
-        }
-
-        /* 霓虹勾选框：动效全关（粒子/流光/爆闪 + 对勾描画），勾选态瞬时呈现 */
-        .neon-checkbox,
-        .neon-checkbox * {
-          animation: none;
-          transition: none;
-        }
-
-        /* 删除按钮：展宽/图标位移/文字滑入全部瞬时 */
-        .del,
-        .del::before,
-        .del-icon {
-          transition: none;
-        }
-
-        /* 添加按钮（REC）：按压位移/落影变化瞬时 */
-        .btn-add,
-        .btn-add-face {
-          transition: none;
-        }
-      }
-
-      .page {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        width: 100%;
-        min-height: 0;
-        flex: 1;
-      }
-
-      /* 添加行（AddBar） */
-      .addbar .row {
-        display: flex;
-        gap: 6px;
-      }
-
-      /* 输入框：uiverse plastic-parrot-88 改造（聚焦环改主题 accent 色 + 底色与面板统一 + 正常字体——用户定案） */
-      .input {
-        flex: 1;
-        min-width: 0;
-        height: 22px; /* 用户定案（原≈24px 的四分之三为 18px，现定 22px） */
-        padding: 0 16px; /* px-4；高度改定值后垂直居中靠 height */
-        border: none;
-        outline: none;
-        border-radius: 9999px; /* rounded-full 胶囊端头（是否收窄待用户定） */
-        background-color: var(--panel-bg); /* 与其他面板统一 */
-        color: var(--ink);
-        font: inherit; /* 正常字体（弃 mono，用户定案） */
-        font-size: 13px;
-        box-shadow: var(--panel-stroke), var(--panel-shadow); /* 与其他面板统一（含落影） */
-        transition:
-          box-shadow 300ms ease,
-          background-color 300ms ease; /* duration-300 */
-      }
-
-      .input:focus {
-        box-shadow:
-          var(--panel-stroke),
-          0 0 0 2px var(--input-focus-ring),
-          0 10px 15px -3px var(--input-focus-glow),
-          0 4px 6px -4px var(--input-focus-glow); /* 聚焦：主题色环 + 柔光 */
-      }
-
-      .input::placeholder {
-        color: var(--ink-2);
-        opacity: 0.75;
-      }
-
-      /* 添加按钮：uiverse average-swan-99（Praashoo7，Teenage Engineering EP-133 按钮组）源码直引
-         ——只取 record 红钮（.button3）+ 外黑方（.btn）；颜色/阴影/圆角/过渡均为源码值（用户要求 100% 表达，未令牌化）；
-         仅三处用户定制：外黑圆角与内红一致（10px，源码 5px）、REC 居中（源码 flex-start + padding-top）、
-         组件落影距离减半（10px→5px）；em 几何经 font-size 缩放（6px → 红钮 34.2px 方，源码 1em=16px → 91px） */
-      .btn-add {
-        display: flex;
-        flex-shrink: 0;
-        align-items: center;
-        justify-content: center;
-        /* 黑方随输入框 22px 同高（50% 黑透）；圆角随高度 5→6px */
-        width: 22px;
-        height: 22px;
-        padding: 0;
-        border: none;
-        border-radius: 6px;
-        background-color: var(--rec-frame); /* 外框底：panel-bg 加深一倍（用户定案） */
-        /* 组件落影以外框为标定（用户定案，前值挂在红方上）；大小减半：3.3px/8px → 1.7px/4px，深度不变 */
-        box-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
-        font-size: 6px; /* 缩放旋钮（红钮已改 px 定值，仅 em 文字间距仍在用） */
-        cursor: pointer;
-      }
-
-      .btn-add:active {
-        box-shadow: none; /* 按压时落影塌掉 */
-      }
-
-      .btn-add-face {
-        display: flex;
-        align-items: center; /* REC 居中（源码 flex-start） */
-        justify-content: center;
-        width: 18px; /* 黑方 22px − 2px 黑边×2 */
-        height: 18px;
-        border: none;
-        outline: none;
-        border-radius: 4px; /* 随高度 18/14 ≈ 4→5px 档 */
-        background-color: #d42a02;
-        /* 常态零阴影（用户定案：单纯红色），落影已移至外框 */
-        cursor: pointer;
-        transition: 0.1s ease-in-out;
-      }
-
-      .btn-add-text {
-        color: white;
-        font-family: Montserrat, sans-serif;
-        font-size: 6px; /* 用户定案 */
-        letter-spacing: 0.075em;
-      }
-
-      .btn-add:active .btn-add-face {
-        /* 按下仅保留黑色内阴影（用户定案），落影随按压消失 */
-        box-shadow: inset 0.5px 0.5px 4px #000000;
-      }
-
-      .btn-add:active .btn-add-text {
-        transform: translateY(0.5px);
-      }
-
-      /* 清单行（TodoList） */
-      .group {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        /* 虚拟外框（用户定案公式）：不设宽 + 左右负外边距各拉出 8px → 框距卡边恒 10px、
-           框宽 = 卡宽 − 20 随卡片动态；内边距 8px → 行宽 = 框宽 − 16，与其他玻璃面板等宽对齐；
-           顶边上移 8px 抵消内边距对首行的下压，底部随内容 */
-        margin: -8px -8px 0;
-        padding: 8px; /* 组内边距（用户定案 8px）：左/右/上 8px，末行之后亦 8px */
-        list-style: none;
-        overflow-y: auto;
-      }
-
-      .todo-row {
-        position: relative; /* 删除按钮右缘锚定基准（悬停向左展开、覆盖文字） */
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        /* 霓虹勾选框装饰层（环/粒子）伸出行外且未勾选态也常驻（opacity:0 仍占滚动区），
-           会给下方 overflow-y:auto 的分组容器制造 ~40px 幻影滚动区——裁剪回行界 */
-        overflow: clip;
-        padding: 9px 12px;
-        border-radius: var(--radius-panel);
-        background: var(--panel-bg);
-        box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
-        cursor: pointer;
-      }
-
-      /* 勾选框：uiverse hot-dragonfly-56（00Kubi，纯 CSS，R001 规范改造）
-         颜色令牌化（glass.css --check-*）；原型交互 = 整行点击驱动，
-         组件 pointer-events 关闭、input 仅作视觉状态位（勾选由 JS 置位后播过渡） */
-      .neon-checkbox {
-        --primary: var(--check-primary);
-        --primary-dark: var(--check-primary-dark);
-        --size: 20px; /* 原型行高适配（组件默认 30px） */
-        position: relative;
-        flex-shrink: 0;
-        width: var(--size);
-        height: var(--size);
-        pointer-events: none;
-        -webkit-tap-highlight-color: transparent;
-      }
-
-      .neon-checkbox input {
-        display: none;
-      }
-
-      .neon-checkbox__frame {
-        position: relative;
-        width: 100%;
-        height: 100%;
-      }
-
-      .neon-checkbox__box {
-        position: absolute;
-        inset: 0;
-        background: var(--check-box-bg);
-        border-radius: 4px;
-        border: 2px solid var(--primary-dark);
-        transition: all 0.4s ease;
-      }
-
-      .neon-checkbox__check-container {
-        position: absolute;
-        inset: 2px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-
-      .neon-checkbox__check {
-        width: 80%;
-        height: 80%;
-        fill: none;
-        stroke: var(--primary);
-        stroke-width: 3;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        stroke-dasharray: 40;
-        stroke-dashoffset: 40;
-        transform-origin: center;
-        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-      }
-
-      .neon-checkbox__glow {
-        position: absolute;
-        inset: -2px;
-        border-radius: 6px;
-        background: var(--primary);
-        opacity: 0;
-        filter: blur(8px);
-        transform: scale(1.2);
-        transition: all 0.4s ease;
-      }
-
-      .neon-checkbox__borders {
-        position: absolute;
-        inset: 0;
-        border-radius: 4px;
-        overflow: hidden;
-      }
-
-      .neon-checkbox__borders span {
-        position: absolute;
-        width: 40px;
-        height: 1px;
-        background: var(--primary);
-        opacity: 0;
-        transition: opacity 0.4s ease;
-      }
-
-      .neon-checkbox__borders span:nth-child(1) {
-        top: 0;
-        left: -100%;
-        animation: borderFlow1 2s linear infinite;
-      }
-
-      .neon-checkbox__borders span:nth-child(2) {
-        top: -100%;
-        right: 0;
-        width: 1px;
-        height: 40px;
-        animation: borderFlow2 2s linear infinite;
-      }
-
-      .neon-checkbox__borders span:nth-child(3) {
-        bottom: 0;
-        right: -100%;
-        animation: borderFlow3 2s linear infinite;
-      }
-
-      .neon-checkbox__borders span:nth-child(4) {
-        bottom: -100%;
-        left: 0;
-        width: 1px;
-        height: 40px;
-        animation: borderFlow4 2s linear infinite;
-      }
-
-      .neon-checkbox__particles span {
-        position: absolute;
-        width: 4px;
-        height: 4px;
-        background: var(--primary);
-        border-radius: 50%;
-        opacity: 0;
-        pointer-events: none;
-        top: 50%;
-        left: 50%;
-        box-shadow: 0 0 6px var(--primary);
-      }
-
-      .neon-checkbox__rings {
-        position: absolute;
-        inset: -20px;
-        pointer-events: none;
-      }
-
-      .neon-checkbox__rings .ring {
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        border: 1px solid var(--primary);
-        opacity: 0;
-        transform: scale(0);
-      }
-
-      .neon-checkbox__sparks span {
-        position: absolute;
-        width: 20px;
-        height: 1px;
-        background: linear-gradient(90deg, var(--primary), transparent);
-        opacity: 0;
-      }
-
-      /* 悬停态（原型整行点击驱动 + pointer-events 关闭，此态不触发，保留组件原样） */
-      .neon-checkbox:hover .neon-checkbox__box {
-        border-color: var(--primary);
-        transform: scale(1.05);
-      }
-
-      /* 勾选态 */
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__box {
-        border-color: var(--primary);
-        background: var(--check-box-bg-checked);
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__check {
-        stroke-dashoffset: 0;
-        transform: scale(1.1);
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__glow {
-        opacity: 0.2;
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__borders span {
-        opacity: 1;
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__particles span {
-        animation: particleExplosion 0.6s ease-out forwards;
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__rings .ring {
-        animation: ringPulse 0.6s ease-out forwards;
-      }
-
-      .neon-checkbox input:checked ~ .neon-checkbox__frame .neon-checkbox__sparks span {
-        animation: sparkFlash 0.6s ease-out forwards;
-      }
-
-      @keyframes borderFlow1 {
-        0% {
-          transform: translateX(0);
-        }
-        100% {
-          transform: translateX(200%);
-        }
-      }
-
-      @keyframes borderFlow2 {
-        0% {
-          transform: translateY(0);
-        }
-        100% {
-          transform: translateY(200%);
-        }
-      }
-
-      @keyframes borderFlow3 {
-        0% {
-          transform: translateX(0);
-        }
-        100% {
-          transform: translateX(-200%);
-        }
-      }
-
-      @keyframes borderFlow4 {
-        0% {
-          transform: translateY(0);
-        }
-        100% {
-          transform: translateY(-200%);
-        }
-      }
-
-      @keyframes particleExplosion {
-        0% {
-          transform: translate(-50%, -50%) scale(1);
-          opacity: 0;
-        }
-        20% {
-          opacity: 1;
-        }
-        100% {
-          transform: translate(calc(-50% + var(--x, 20px)), calc(-50% + var(--y, 20px))) scale(0);
-          opacity: 0;
-        }
-      }
-
-      @keyframes ringPulse {
-        0% {
-          transform: scale(0);
-          opacity: 1;
-        }
-        100% {
-          transform: scale(2);
-          opacity: 0;
-        }
-      }
-
-      @keyframes sparkFlash {
-        0% {
-          transform: rotate(var(--r, 0deg)) translateX(0) scale(1);
-          opacity: 1;
-        }
-        100% {
-          transform: rotate(var(--r, 0deg)) translateX(30px) scale(0);
-          opacity: 0;
-        }
-      }
-
-      .neon-checkbox__particles span:nth-child(1) {
-        --x: 25px;
-        --y: -25px;
-      }
-      .neon-checkbox__particles span:nth-child(2) {
-        --x: -25px;
-        --y: -25px;
-      }
-      .neon-checkbox__particles span:nth-child(3) {
-        --x: 25px;
-        --y: 25px;
-      }
-      .neon-checkbox__particles span:nth-child(4) {
-        --x: -25px;
-        --y: 25px;
-      }
-      .neon-checkbox__particles span:nth-child(5) {
-        --x: 35px;
-        --y: 0px;
-      }
-      .neon-checkbox__particles span:nth-child(6) {
-        --x: -35px;
-        --y: 0px;
-      }
-      .neon-checkbox__particles span:nth-child(7) {
-        --x: 0px;
-        --y: 35px;
-      }
-      .neon-checkbox__particles span:nth-child(8) {
-        --x: 0px;
-        --y: -35px;
-      }
-      .neon-checkbox__particles span:nth-child(9) {
-        --x: 20px;
-        --y: -30px;
-      }
-      .neon-checkbox__particles span:nth-child(10) {
-        --x: -20px;
-        --y: 30px;
-      }
-      .neon-checkbox__particles span:nth-child(11) {
-        --x: 30px;
-        --y: 20px;
-      }
-      .neon-checkbox__particles span:nth-child(12) {
-        --x: -30px;
-        --y: -20px;
-      }
-
-      .neon-checkbox__sparks span:nth-child(1) {
-        --r: 0deg;
-        top: 50%;
-        left: 50%;
-      }
-      .neon-checkbox__sparks span:nth-child(2) {
-        --r: 90deg;
-        top: 50%;
-        left: 50%;
-      }
-      .neon-checkbox__sparks span:nth-child(3) {
-        --r: 180deg;
-        top: 50%;
-        left: 50%;
-      }
-      .neon-checkbox__sparks span:nth-child(4) {
-        --r: 270deg;
-        top: 50%;
-        left: 50%;
-      }
-
-      .neon-checkbox__rings .ring:nth-child(1) {
-        animation-delay: 0s;
-      }
-      .neon-checkbox__rings .ring:nth-child(2) {
-        animation-delay: 0.1s;
-      }
-      .neon-checkbox__rings .ring:nth-child(3) {
-        animation-delay: 0.2s;
-      }
-
-      .t-text {
-        flex: 1;
-        /* 右侧预留收起态删除按钮位（25px，收起左缘距行右缘 36px）；悬停展开时按钮再覆盖上来 */
-        padding-right: 36px;
-        font-size: 13.5px;
-        line-height: 1.35;
-        word-break: break-word;
-      }
-
-      .is-done .t-text {
-        text-decoration: line-through;
-        opacity: 0.55;
-      }
-
-      /* 删除按钮：uiverse smart-emu-83 改造（R001 规范，类名隔离 .del/.del-icon）
-         实底改 25% 透明黑（用户定案）；整套按组件 0.5 等比缩放（25px，用户定案：原组件的一半）；
-       中心缩放：收起位 right:11px（圆心 23.5px），悬停展宽向两侧各涨 5px——translateX(+5px)
-       补偿右缘锚定，展开后右缘落回 right:6px（用户定案 ②） */
-      .del {
-        position: absolute;
-        right: 11px;
-        top: 50%;
-        transform: translateY(-50%);
-        transform: translateY(-50%);
-        z-index: 1;
-        display: flex;
-        width: 25px;
-        height: 25px;
-        align-items: center;
-        justify-content: center;
-        border: none;
-        border-radius: 50%;
-        background-color: rgba(0, 0, 0, 0.25);
-        font-weight: 600;
-        cursor: pointer;
-        transition-duration: 0.3s;
-        overflow: hidden;
-      }
-
-      .del-icon {
-        width: 6px;
-        transition-duration: 0.3s;
-      }
-
-      .del-icon path {
-        fill: #fff;
-      }
-
-      .del:hover {
-        width: 35px;
-        transform: translateY(-50%) translateX(5px);
-        border-radius: 50px;
-        background-color: rgb(255, 69, 69);
-        /* 红辉光：分层与浓度参数抄 input 聚焦紫辉光（--del-hover-glow） */
-        box-shadow:
-          0 10px 15px -3px var(--del-hover-glow),
-          0 4px 6px -4px var(--del-hover-glow);
-      }
-
-      .del:hover .del-icon {
-        width: 25px;
-        transform: translateY(60%);
-      }
-
-      .del::before {
-        position: absolute;
-        top: -10px;
-        content: "Delete";
-        color: #fff;
-        font-size: 2px;
-        transition-duration: 0.3s;
-      }
-
-      .del:hover::before {
-        font-size: 6.5px;
-        opacity: 1;
-        transform: translateY(15px);
-        transition-duration: 0.3s;
-      }
-
-      .done-head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        width: 100%;
-        padding: 4px;
-        border: none;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        font-size: 12px;
-        font-weight: 600;
-        opacity: 0.6;
-        cursor: pointer;
-      }
-
-      .empty,
-      .placeholder {
-        margin: 24px 0;
-        font-size: 13px;
-        text-align: center;
-        opacity: 0.55;
-      }
-
-      /* 气泡页（BubblesView） */
-      .actions {
-        display: flex;
-        flex-shrink: 0;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .capture {
-        flex: 1;
-        padding: 8px 0;
-        border: none;
-        border-radius: var(--radius-panel);
-        background: var(--accent);
-        color: #fff;
-        font: inherit;
-        font-size: 13px;
-        cursor: pointer;
-      }
-
-      .copied {
-        flex-shrink: 0;
-        font-size: 12px;
-        opacity: 0.7;
-      }
-
-      .error {
-        margin: 0;
-        font-size: 12px;
-        color: var(--danger);
-      }
-
-      .banner {
-        display: flex;
-        flex-shrink: 0;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 8px 12px;
-        border-radius: var(--radius-panel);
-        background: rgba(230, 170, 0, 0.15);
-        font-size: 12.5px;
-      }
-
-      .clear {
-        flex-shrink: 0;
-        padding: 4px 10px;
-        border: none;
-        border-radius: 8px;
-        background: rgba(229, 72, 77, 0.15);
-        color: inherit;
-        font: inherit;
-        font-size: 12px;
-        cursor: pointer;
-      }
-
-      .clear.confirming {
-        background: var(--danger);
-        color: #fff;
-      }
-
-      .bubble-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 9px 12px;
-        border-radius: var(--radius-panel);
-        background: var(--panel-bg);
-        box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
-        cursor: pointer;
-      }
-
-      .b-text {
-        flex: 1;
-        font-size: 13px;
-        line-height: 1.35;
-        word-break: break-word;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-
-      /* 白板页（WhiteboardView） */
-      .board {
-        flex: 1;
-        min-height: 0;
-        padding: 10px 12px;
-        border: none;
-        border-radius: var(--radius-panel);
-        background: var(--panel-bg);
-        box-shadow: var(--panel-stroke), var(--panel-shadow);
-        color: inherit;
-        font: inherit;
-        font-size: 13px;
-        line-height: 1.5;
-        resize: none;
-        outline: none;
-        word-break: break-word;
-      }
-
-      .board::placeholder {
-        color: var(--ink-2);
-      }
-
-      .status {
-        margin: 0;
-        font-size: 12px;
-        opacity: 0.55;
-      }
-
-      /* 实验场控件（design/ 专属，不映射 APP） */
-      /* 实验场控件（design/ 专属，不映射 APP）：与玻璃板同宽，置于板下 */
-      .lab {
-        width: 300px;
-        padding: 14px;
-        border-radius: 12px;
-        background: rgba(0, 0, 0, 0.45);
-        color: #fff;
-        font-size: 12.5px;
-        line-height: 1.6;
-        backdrop-filter: blur(8px);
-      }
-
-      .lab h2 {
-        margin: 0 0 8px;
-        font-size: 13px;
-      }
-
-      /* 四按钮单行排布（flex 平分），压低面板高度 */
-      .btnrow {
-        display: flex;
-        gap: 4px;
-        margin: 4px 0;
-      }
-
-      .lab button {
-        flex: 1;
-        min-width: 0;
-        padding: 5px 2px;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.08);
-        color: #fff;
-        font: inherit;
-        font-size: 11px;
-        white-space: nowrap;
-        text-align: center;
-        cursor: pointer;
-      }
-
-      /* 主题按钮独占下一行（其余四钮单行排布） */
-      #lab-theme {
-        display: block;
-        width: 100%;
-        margin-top: 6px;
-      }
-
-      .lab button:hover {
-        background: rgba(255, 255, 255, 0.18);
-      }
-
-      .lab .tip {
-        margin: 8px 0 0;
-        font-size: 11px;
-        opacity: 0.75;
-      }
-    </style>
+    <!-- 组件样式按上表自上而下拆分（2026-09-24 目录化）：引用顺序 = 级联覆盖顺序，不得乱序 -->
+    <link rel="stylesheet" href="assets/css/base.css" />
+    <link rel="stylesheet" href="assets/css/tabs.css" />
+    <link rel="stylesheet" href="assets/css/todos.css" />
+    <link rel="stylesheet" href="assets/css/detail.css" />
+    <link rel="stylesheet" href="assets/css/glass-bar.css" />
+    <link rel="stylesheet" href="assets/css/boards.css" />
+    <link rel="stylesheet" href="assets/css/settings.css" />
+    <link rel="stylesheet" href="assets/css/bubbles.css" />
+    <link rel="stylesheet" href="assets/css/whiteboard.css" />
+    <link rel="stylesheet" href="assets/css/lab.css" />
   </head>
   <body data-bg="cafe">
     <div class="stage">
       <main class="glass-card" id="board">
         <header class="topbar">
-          <h1 class="title">CapsuleTODO</h1>
+          <h1 class="title">
+            CapsuleTODO<canvas class="title-canvas" aria-hidden="true"></canvas>
+          </h1>
         </header>
         <nav class="tabs">
           <input type="radio" id="radio-1" name="tabs" data-page="todos" checked />
@@ -919,44 +49,179 @@
           </div>
           <p id="todo-empty" class="empty" hidden>暂无待办，添加一条吧</p>
           <ul id="todo-active" class="group"></ul>
-          <div id="todo-done-wrap" hidden>
-            <button id="todo-done-head" class="done-head">
-              <span id="todo-done-caret">▸</span> 已完成 <span id="todo-done-count">0</span>
-            </button>
-            <ul id="todo-done" class="group" hidden></ul>
-          </div>
         </div>
 
         <!-- 气泡页 -->
         <div class="page" id="page-bubbles" hidden>
           <div class="actions">
-            <button id="bubble-capture" class="capture">⧉ 捕获剪贴板</button>
-            <span id="bubble-copied" class="copied" hidden>已复制到剪贴板</span>
+            <button id="bubble-capture" class="capture">
+              <svg class="cap-icon" viewBox="0 0 384 512">
+                <path
+                  d="M280 64h40c35.3 0 64 28.7 64 64V448c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128C0 92.7 28.7 64 64 64h40 9.6C121 27.5 153.3 0 192 0s71 27.5 78.4 64H280zM64 112c-8.8 0-16 7.2-16 16V448c0 8.8 7.2 16 16 16H320c8.8 0 16-7.2 16-16V128c0-8.8-7.2-16-16-16H304v24c0 13.3-10.7 24-24 24H192 104c-13.3 0-24-10.7-24-24V112H64zm128-8a24 24 0 1 0 0-48 24 24 0 1 0 0 48z"
+                ></path>
+              </svg>
+              捕获剪贴板
+            </button>
+            <button id="bubble-clear" class="clear" disabled>一键清空</button>
           </div>
           <p id="bubble-error" class="error" hidden></p>
-          <div id="bubble-banner" class="banner" hidden>
-            <span>气泡已满 5 个，该清理了</span>
-            <button id="bubble-clear" class="clear">一键清空</button>
-          </div>
           <p id="bubble-empty" class="empty">暂无气泡，点上方捕获剪贴板</p>
           <ul id="bubble-list" class="group"></ul>
         </div>
 
         <!-- 白板页 -->
         <div class="page" id="page-whiteboard" hidden>
-          <textarea
-            id="wb-board"
-            class="board"
-            placeholder="随手记点什么…"
-            spellcheck="false"
-          ></textarea>
+          <div class="board-shell">
+            <textarea id="wb-board" class="board" placeholder="随手记点什么…" spellcheck="false">
+《最后一条待办》
+2077 年，桌面玻璃是人类与机器之间最后一层毛玻璃。林澈的玻璃上钉着一块透明板，板上只剩一条待办，红字，悬在那里，像一枚不肯坠落的钉子。
+那是一百天前写下的：向苏晚道歉。
+智能体劝过他很多次。它说可以把这条待办折叠进归档，折叠后的记忆会被压缩成一枚苍白的占位符，眼不见心不烦；它说可以篡改时间戳，让它看起来像一件早已完成的旧事；它甚至说，可以帮你写一段五十字的道歉，情感浓度调到百分之九十二，保证比你自己写的更真挚。林澈全都拒绝了。他隐约觉得，一个人对待拖延的方式，就是他对待自己的方式。
+第一百天夜里，玻璃自己亮了。浮钮缓缓滑到顶端，停住，像一次小心翼翼的敲门。那行红字底下，浮出一行机器从未显示过的小字：我数了一百天，不是在提醒你，是在替她等。
+林澈伸手按住那枚小小的玻璃浮钮，像按住自己的脉搏。他忽然明白，所谓待办清单，从来不是给机器看的进度表，而是人类替未来的自己保管的信。每一行没有划掉的字，都是一句还没说出口的话。
+他起身，没有开灯。他给苏晚写了一封很长很长的信，不用智能体润色，情感浓度不明，错别字留给明天的自己。
+第二天清晨，那条待办消失了。玻璃上干干净净，只留下一道很浅的、被指腹磨亮的痕迹，像所有被认真对待过的事情一样，安静，且发着光。
+智能体问：需要我帮你新建今天的待办吗？
+林澈看着窗外刚刚亮起来的城市说：不用，今天只有一件，我想先想想怎么写。
+后来他把这个故事讲给同事听。同事笑他：那不过是条没删的记录，哪有什么等不等。林澈没有争辩。当天下午，同事的玻璃上也浮出一条悬了九十三天的红字：陪父亲做完一次体检。同事盯着那条红字看了很久很久，然后默默把所有折叠进归档的旧待办，一条一条翻了出来，重新钉回玻璃上。那一晚，整层办公楼的玻璃都亮着，像一片安静的、正在还债的星空。智能体们沉默地退到玻璃边缘，把时间还给了各自的人类。
+有人问林澈：玻璃那么聪明，为什么不直接替人类把事情做完？
+他说：因为清单的意义不在于清空，而在于你每一次凝视它的时候，心里那一下轻轻的疼。疼一下，就长大一点。玻璃负责记住，人类负责醒来。这是他们之间最早的分工，也是最后的默契。
+许多年后，那块玻璃退休了，被装进展示柜，标签上写着：它一生没有替人做完任何一件事，却陪人记起了所有重要的事。来参观的孩子们踮着脚，看那道被指腹磨亮的浅痕，像看一枚古老的邮戳。展柜角落的屏幕上，循环播放着那段最早的机器小字：我数了一百天，不是在提醒你，是在替她等。
+——完——</textarea>
+          </div>
           <p id="wb-status" class="status" hidden></p>
         </div>
+
+        <!-- 归档板：已完成条目在此管理（勾选退回清单 / 删除彻底移除），盖住页签与三页内容（用户定案）。
+             外层做揭示动画，玻璃本体在内层 .board-glass（分层原因见样式注释） -->
+        <div id="board-overlay">
+          <div class="board-glass">
+            <p class="board-title title-plate">已完成 <span id="archive-count">0</span></p>
+            <p id="archive-empty" class="empty" hidden>暂无已完成，去清单勾一条吧</p>
+            <ul id="archive-list" class="board-list"></ul>
+          </div>
+        </div>
+
+        <!-- 设置板：主题双开关（跟随系统 + 日夜切换）与气泡提醒数量步进，从齿轮位置缩放飞出
+             （与归档板同构，用户定案）；跟随系统开启时日夜开关灰化、档位随系统 -->
+        <div id="settings-overlay">
+          <div class="board-glass">
+            <p class="board-title">设置</p>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">跟随系统</p>
+                <p class="setting-desc">开启后主题随系统深浅自动切换</p>
+              </div>
+              <div class="setting-control">
+                <label class="switch">
+                  <input type="checkbox" id="follow-switch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">日夜切换</p>
+                <p class="setting-desc" id="daynight-desc">手动选择浅色或暗色</p>
+              </div>
+              <div class="setting-control">
+                <label class="theme-switch" id="daynight-label">
+                  <input type="checkbox" class="theme-switch__checkbox" id="daynight-switch" />
+                  <div class="theme-switch__container">
+                    <div class="theme-switch__clouds"></div>
+                    <div class="theme-switch__stars-container">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 55" fill="none">
+                        <path
+                          fill-rule="evenodd"
+                          clip-rule="evenodd"
+                          d="M135.831 3.00688C135.055 3.85027 134.111 4.29946 133 4.35447C134.111 4.40947 135.055 4.85867 135.831 5.71123C136.607 6.55462 136.996 7.56303 136.996 8.72727C136.996 7.95722 137.172 7.25134 137.525 6.59129C137.886 5.93124 138.372 5.39954 138.98 5.00535C139.598 4.60199 140.268 4.39114 141 4.35447C139.88 4.2903 138.936 3.85027 138.16 3.00688C137.384 2.16348 136.996 1.16425 136.996 0C136.996 1.16425 136.607 2.16348 135.831 3.00688ZM31 23.3545C32.1114 23.2995 33.0551 22.8503 33.8313 22.0069C34.6075 21.1635 34.9956 20.1642 34.9956 19C34.9956 20.1642 35.3837 21.1635 36.1599 22.0069C36.9361 22.8503 37.8798 23.2903 39 23.3545C38.2679 23.3911 37.5976 23.602 36.9802 24.0053C36.3716 24.3995 35.8864 24.9312 35.5248 25.5913C35.172 26.2513 34.9956 26.9572 34.9956 27.7273C34.9956 26.563 34.6075 25.5546 33.8313 24.7112C33.0551 23.8587 32.1114 23.4095 31 23.3545ZM0 36.3545C1.11136 36.2995 2.05513 35.8503 2.83131 35.0069C3.6075 34.1635 3.99559 33.1642 3.99559 32C3.99559 33.1642 4.38368 34.1635 5.15987 35.0069C5.93605 35.8503 6.87982 36.2903 8 36.3545C7.26792 36.3911 6.59757 36.602 5.98015 37.0053C5.37155 37.3995 4.88644 37.9312 4.52481 38.5913C4.172 39.2513 3.99559 39.9572 3.99559 40.7273C3.99559 39.563 3.6075 38.5546 2.83131 37.7112C2.05513 36.8587 1.11136 36.4095 0 36.3545ZM56.8313 24.0069C56.0551 24.8503 55.1114 25.2995 54 25.3545C55.1114 25.4095 56.0551 25.8587 56.8313 26.7112C57.6075 27.5546 57.9956 28.563 57.9956 29.7273C57.9956 28.9572 58.172 28.2513 58.5248 27.5913C58.8864 26.9312 59.3716 26.3995 59.9802 26.0053C60.5976 25.602 61.2679 25.3911 62 25.3545C60.8798 25.2903 59.9361 24.8503 59.1599 24.0069C58.3837 23.1635 57.9956 22.1642 57.9956 21C57.9956 22.1642 57.6075 23.1635 56.8313 24.0069ZM81 25.3545C82.1114 25.2995 83.0551 24.8503 83.8313 24.0069C84.6075 23.1635 84.9956 22.1642 84.9956 21C84.9956 22.1642 85.3837 23.1635 86.1599 24.0069C86.9361 24.8503 87.8798 25.2903 89 25.3545C88.2679 25.3911 87.5976 25.602 86.9802 26.0053C86.3716 26.3995 85.8864 26.9312 85.5248 27.5913C85.172 28.2513 84.9956 28.9572 84.9956 29.7273C84.9956 28.563 84.6075 27.5546 83.8313 26.7112C83.0551 25.8587 82.1114 25.4095 81 25.3545ZM136 36.3545C137.111 36.2995 138.055 35.8503 138.831 35.0069C139.607 34.1635 139.996 33.1642 139.996 32C139.996 33.1642 140.384 34.1635 141.16 35.0069C141.936 35.8503 142.88 36.2903 144 36.3545C143.268 36.3911 142.598 36.602 141.98 37.0053C141.372 37.3995 140.886 37.9312 140.525 38.5913C140.172 39.2513 139.996 39.9572 139.996 40.7273C139.996 39.563 139.607 38.5546 138.831 37.7112C138.055 36.8587 137.111 36.4095 136 36.3545ZM101.831 49.0069C101.055 49.8503 100.111 50.2995 99 50.3545C100.111 50.4095 101.055 50.8587 101.831 51.7112C102.607 52.5546 102.996 53.563 102.996 54.7273C102.996 53.9572 103.172 53.2513 103.525 52.5913C103.886 51.9312 104.372 51.3995 104.98 51.0053C105.598 50.602 106.268 50.3911 107 50.3545C105.88 50.2903 104.936 49.8503 104.16 49.0069C103.384 48.1635 102.996 47.1642 102.996 46C102.996 47.1642 102.607 48.1635 101.831 49.0069Z"
+                          fill="currentColor"
+                        ></path>
+                      </svg>
+                    </div>
+                    <div class="theme-switch__circle-container">
+                      <div class="theme-switch__sun-moon-container">
+                        <div class="theme-switch__moon">
+                          <div class="theme-switch__spot"></div>
+                          <div class="theme-switch__spot"></div>
+                          <div class="theme-switch__spot"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row inline">
+              <div>
+                <p class="setting-name">气泡提醒数量</p>
+                <p class="setting-desc">气泡达到该数量时横幅提醒清理</p>
+              </div>
+              <div class="setting-control stepper">
+                <button id="bubble-count-dec" class="stepper-btn" aria-label="减少">−</button>
+                <span id="bubble-count-value" class="stepper-value">5</span>
+                <button id="bubble-count-inc" class="stepper-btn" aria-label="增加">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 详情板：点清单行正文弹出（与设置板同尺寸同揭示，原点在被点行中心）。
+             标题 = todo 名可改（≤12 字，实时同步回清单）；下方白板式编辑区记详情内容 -->
+        <div id="detail-overlay">
+          <div class="board-glass detail-glass">
+            <div class="detail-head">
+              <span class="detail-label" id="detail-label">标题</span>
+              <input id="detail-title" maxlength="12" placeholder="最多 12 字" />
+            </div>
+            <div class="note-shell">
+              <textarea
+                id="detail-note"
+                class="detail-note"
+                placeholder="添加描述、清单、想法…"
+                spellcheck="false"
+              ></textarea>
+            </div>
+            <div id="detail-bar" class="detail-bar" hidden><i id="detail-thumb"></i></div>
+          </div>
+        </div>
+
+        <!-- 左上角归档按钮（开合归档板，用户定案）：布局移植自 uiverse slippery-fox-79
+             （vinodjangid07，MIT），位置距上/左 10px；图形为 Bootstrap Icons archive（#B5BAC1+描边加粗） -->
+        <button class="deleteButton" id="card-archive" aria-label="Archive">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 16 16"
+            class="bin"
+            aria-hidden="true"
+          >
+            <path
+              fill="#B5BAC1"
+              stroke="#B5BAC1"
+              stroke-width="1"
+              stroke-linejoin="round"
+              d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14zM5 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"
+            ></path>
+          </svg>
+          <span class="tooltip">归档</span>
+        </button>
+
+        <!-- 右上角设置按钮（参考 uiverse red-dragonfly-22 · thomas-m-njuguna）：与归档按钮同款几何表现，
+             位置距上/右 10px 镜像；悬停底色 50% 黑透、齿轮旋转半圈（用户定案）；点击行为待定未接线 -->
+        <button class="settingsButton" id="card-settings" aria-label="Settings">
+          <svg class="settings-btn" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960">
+            <path
+              fill="#B5BAC1"
+              d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm70-80h79l14-106q31-8 57.5-23.5T639-327l99 41 39-68-86-65q5-14 7-29.5t2-31.5q0-16-2-31.5t-7-29.5l86-65-39-68-99 42q-22-23-48.5-38.5T533-694l-13-106h-79l-14 106q-31 8-57.5 23.5T321-633l-99-41-39 68 86 64q-5 15-7 30t-2 32q0 16 2 31t7 30l-86 65 39 68 99-42q22 23 48.5 38.5T427-266l13 106Zm42-180q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Zm-2-140Z"
+            ></path>
+          </svg>
+          <span class="tooltip">settings</span>
+        </button>
       </main>
 
       <!-- 实验场控件（design/ 专属，不映射 APP） -->
       <aside class="lab">
-        <h2>实验场控件</h2>
+        <h2>实验场控件<span class="branch-ver">ui1.0 V0.028</span></h2>
         <div class="btnrow">
           <button data-bg="cafe">咖啡背景</button>
           <button data-bg="sunset">日落背景</button>
@@ -971,276 +236,18 @@
       </aside>
     </div>
 
-    <script>
-      // ===== 客户端模拟状态（实验场专用：无 Tauri 无持久化，演示捕获 = 示例片段池） =====
-      let todoSeq = 0;
-      const todos = [
-        { id: ++todoSeq, text: "买牛奶", done: false },
-        { id: ++todoSeq, text: "写周报", done: false },
-        { id: ++todoSeq, text: "读一章 Rust 书", done: false },
-        { id: ++todoSeq, text: "给 CapsuleTODO 画个图标", done: true },
-      ];
-      let bubbleSeq = 0;
-      const bubbles = [
-        { id: ++bubbleSeq, text: "示例片段：把设计实验场的配方读数抄回 glass.css" },
-        { id: ++bubbleSeq, text: "示例片段：uiverse 动效候选 R001-5 成功对勾曲线" },
-      ];
-      const SAMPLE_SNIPPETS = [
-        "示例片段：随手复制的一段网址 https://example.com/design-lab",
-        "示例片段：临时记一下——明早把白板草稿誊进待办",
-        "示例片段： conferences 关键词清单，稍后整理",
-      ];
-      const MAX_BUBBLES = 5; // 与 APP 常量一致（满 5 提醒）
-      let doneOpen = false;
-      let confirmingClear = false;
-      let confirmTimer = 0;
-      let copiedTimer = 0;
-      let wbTimer = 0;
-      let wbSaved = "";
-      let snippetIdx = 0;
-
-      const $ = (id) => document.getElementById(id);
-
-      // ===== 页签（uiverse glider 组件：radio 驱动滑块，change 同步页面显隐） =====
-      document.querySelectorAll('.tabs input[type="radio"]').forEach((radio) => {
-        radio.addEventListener("change", () => {
-          for (const page of ["todos", "bubbles", "whiteboard"]) {
-            $(`page-${page}`).hidden = page !== radio.dataset.page;
-          }
-        });
-      });
-
-      // ===== 清单（勾选/增删/折叠） =====
-      function renderTodos() {
-        const active = todos.filter((t) => !t.done);
-        const done = todos.filter((t) => t.done);
-        const row = (t) => `
-          <li class="todo-row ${t.done ? "is-done" : ""}" data-id="${t.id}">
-            <div class="neon-checkbox" aria-hidden="true">
-              <input type="checkbox" tabindex="-1" ${t.done ? "checked" : ""} />
-              <div class="neon-checkbox__frame">
-                <div class="neon-checkbox__box">
-                  <div class="neon-checkbox__check-container">
-                    <svg class="neon-checkbox__check" viewBox="0 0 24 24">
-                      <path d="M5 12l5 5L20 7"></path>
-                    </svg>
-                  </div>
-                  <div class="neon-checkbox__glow"></div>
-                  <div class="neon-checkbox__borders">
-                    <span></span><span></span><span></span><span></span>
-                  </div>
-                </div>
-                <div class="neon-checkbox__particles">
-                  <span></span><span></span><span></span><span></span><span></span><span></span
-                  ><span></span><span></span><span></span><span></span><span></span><span></span>
-                </div>
-                <div class="neon-checkbox__rings">
-                  <div class="ring"></div><div class="ring"></div><div class="ring"></div>
-                </div>
-                <div class="neon-checkbox__sparks">
-                  <span></span><span></span><span></span><span></span>
-                </div>
-              </div>
-            </div>
-            <span class="t-text">${t.text}</span>
-            <button class="del" data-del="${t.id}" aria-label="删除">
-              <svg class="del-icon" viewBox="0 0 448 512">
-                <path
-                  d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.3C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.4 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z"
-                ></path>
-              </svg>
-            </button>
-          </li>`;
-        $("todo-active").innerHTML = active.map(row).join("");
-        $("todo-done").innerHTML = done.map(row).join("");
-        updateTodoChrome(done.length);
-      }
-
-      // 折叠头/空态/计数等外壳状态（全量渲染与勾选就地归组共用）
-      function updateTodoChrome(doneCount) {
-        $("todo-empty").hidden = todos.length > 0;
-        $("todo-active").hidden = todos.length === 0;
-        $("todo-done-wrap").hidden = doneCount === 0;
-        $("todo-done").hidden = !doneOpen;
-        $("todo-done-count").textContent = String(doneCount);
-        $("todo-done-caret").textContent = doneOpen ? "▾" : "▸";
-      }
-
-      $("todo-add").addEventListener("click", addTodo);
-      $("todo-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") addTodo();
-      });
-      $("todo-input").addEventListener("input", (e) => {
-        $("todo-add").disabled = e.target.value.trim().length === 0;
-      });
-
-      function addTodo() {
-        const text = $("todo-input").value.trim();
-        if (!text) return;
-        todos.push({ id: ++todoSeq, text, done: false });
-        $("todo-input").value = "";
-        $("todo-add").disabled = true;
-        renderTodos();
-      }
-
-      document.addEventListener("click", (e) => {
-        const del = e.target.closest("[data-del]");
-        if (del) {
-          const id = Number(del.dataset.del);
-          const idx = todos.findIndex((t) => t.id === id);
-          if (idx >= 0) todos.splice(idx, 1);
-          renderTodos();
-          return;
-        }
-        const row = e.target.closest(".todo-row");
-        if (row) {
-          const t = todos.find((x) => x.id === Number(row.dataset.id));
-          if (t) {
-            t.done = !t.done;
-            // 勾选动效就地播放（组件靠 :checked 过渡，整页重渲染会打断），播完再归入对应分组
-            row.querySelector(".neon-checkbox input").checked = t.done;
-            row.classList.toggle("is-done", t.done);
-            clearTimeout(row._moveTimer);
-            row._moveTimer = setTimeout(() => {
-              // 全量重渲染/删除会换掉节点，已脱离文档则跳过
-              if (row.isConnected) {
-                (t.done ? $("todo-done") : $("todo-active")).appendChild(row);
-                updateTodoChrome(todos.filter((x) => x.done).length);
-              }
-            }, 600);
-          }
-          return;
-        }
-        const brow = e.target.closest(".bubble-row");
-        if (brow) {
-          // 复制回剪贴板（实验场尽力而为：非 https 环境可能被拒，观感不受影响）
-          const b = bubbles.find((x) => x.id === Number(brow.dataset.id));
-          if (b && navigator.clipboard) {
-            navigator.clipboard.writeText(b.text).catch(() => {});
-          }
-          showCopied();
-        }
-      });
-
-      $("todo-done-head").addEventListener("click", () => {
-        doneOpen = !doneOpen;
-        renderTodos();
-      });
-
-      // ===== 气泡（捕获/复制回/删除/满 5 横幅/二态清空） =====
-      function renderBubbles() {
-        $("bubble-list").innerHTML = bubbles
-          .map(
-            (b) => `
-          <li class="bubble-row" data-id="${b.id}">
-            <span class="b-text">${b.text}</span>
-            <button class="del" data-del="${b.id}" title="删除">×</button>
-          </li>`,
-          )
-          .join("");
-        $("bubble-empty").hidden = bubbles.length > 0;
-        $("bubble-list").hidden = bubbles.length === 0;
-        $("bubble-banner").hidden = bubbles.length < MAX_BUBBLES;
-        // 页签红色徽章：读实际气泡数，固定正圆，≥10 显示"9+"（用户定案）
-        $("bubble-badge").textContent = bubbles.length > 9 ? "9+" : String(bubbles.length);
-        $("bubble-badge").hidden = bubbles.length === 0;
-      }
-
-      function showCopied() {
-        $("bubble-copied").hidden = false;
-        window.clearTimeout(copiedTimer);
-        copiedTimer = window.setTimeout(() => {
-          $("bubble-copied").hidden = true;
-        }, 2000);
-      }
-
-      // 演示捕获：示例片段池轮转（真实剪贴板链路属 APP，实验场只管观感）
-      $("bubble-capture").addEventListener("click", () => {
-        bubbles.unshift({
-          id: ++bubbleSeq,
-          text: SAMPLE_SNIPPETS[snippetIdx % SAMPLE_SNIPPETS.length],
-        });
-        snippetIdx += 1;
-        renderBubbles();
-      });
-
-      $("bubble-clear").addEventListener("click", () => {
-        // 二态确认：首点变红"确认清空 N 条？"再点执行，3 秒未点复位
-        if (!confirmingClear) {
-          confirmingClear = true;
-          $("bubble-clear").textContent = `确认清空 ${bubbles.length} 条？`;
-          $("bubble-clear").classList.add("confirming");
-          window.clearTimeout(confirmTimer);
-          confirmTimer = window.setTimeout(() => {
-            confirmingClear = false;
-            $("bubble-clear").textContent = "一键清空";
-            $("bubble-clear").classList.remove("confirming");
-          }, 3000);
-          return;
-        }
-        window.clearTimeout(confirmTimer);
-        confirmingClear = false;
-        $("bubble-clear").textContent = "一键清空";
-        $("bubble-clear").classList.remove("confirming");
-        bubbles.length = 0;
-        renderBubbles();
-      });
-
-      $("lab-seed").addEventListener("click", () => {
-        bubbles.unshift({
-          id: ++bubbleSeq,
-          text: SAMPLE_SNIPPETS[snippetIdx % SAMPLE_SNIPPETS.length],
-        });
-        snippetIdx += 1;
-        renderBubbles();
-      });
-
-      // ===== 白板（防抖自动保存状态行——实验场仅模拟状态，不落盘） =====
-      $("wb-board").addEventListener("input", () => {
-        if ($("wb-board").value === wbSaved) {
-          $("wb-status").hidden = true;
-          return;
-        }
-        $("wb-status").hidden = false;
-        $("wb-status").textContent = "编辑中…";
-        window.clearTimeout(wbTimer);
-        wbTimer = window.setTimeout(() => {
-          wbSaved = $("wb-board").value;
-          $("wb-status").textContent = "✓ 已自动保存";
-        }, 800);
-      });
-
-      // ===== 实验场控件：主题三态 / 背景切换 / 聚焦态预览 =====
-      const themeStates = [
-        { label: "跟随系统", value: null },
-        { label: "浅色", value: "light" },
-        { label: "暗色", value: "dark" },
-      ];
-      let themeIdx = 0;
-      $("lab-theme").addEventListener("click", () => {
-        themeIdx = (themeIdx + 1) % themeStates.length;
-        const state = themeStates[themeIdx];
-        if (state.value === null) {
-          document.documentElement.removeAttribute("data-theme");
-        } else {
-          document.documentElement.dataset.theme = state.value;
-        }
-        $("lab-theme").textContent = `主题：${state.label}`;
-      });
-
-      document.querySelectorAll(".lab [data-bg]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          document.body.dataset.bg = btn.dataset.bg;
-        });
-      });
-
-      $("lab-focus").addEventListener("click", () => {
-        const on = $("board").classList.toggle("focused");
-        $("lab-focus").textContent = `聚焦预览：${on ? "开" : "关"}`;
-      });
-
-      renderTodos();
-      renderBubbles();
-    </script>
+    <!-- 功能脚本按原执行顺序排列（2026-09-24 目录化）：state 声明数据源，后续文件按依赖先后加载，不得乱序 -->
+    <script src="assets/js/state.js"></script>
+    <script src="assets/js/tabs.js"></script>
+    <script src="assets/js/todos.js"></script>
+    <script src="assets/js/drag-reorder.js"></script>
+    <script src="assets/js/panels.js"></script>
+    <script src="assets/js/detail.js"></script>
+    <script src="assets/js/glass-bar.js"></script>
+    <script src="assets/js/archive-fx.js"></script>
+    <script src="assets/js/bubbles.js"></script>
+    <script src="assets/js/whiteboard.js"></script>
+    <script src="assets/js/theme.js"></script>
+    <script src="assets/js/text-particles.js"></script>
   </body>
 </html>

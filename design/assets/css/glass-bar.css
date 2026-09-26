@@ -1,0 +1,140 @@
+/* 玻璃滚动浮钮通用（用户定案 2026-09-22）：所有玻璃滚动容器统一——隐藏原生滑杆，
+         换 4×16 透明玻璃浮钮（位置由工厂按容器注入：列表内贴右缘、白板悬浮右缝隙） */
+.glass-scroll {
+  scrollbar-width: none; /* 隐藏原生滑杆（Firefox） */
+}
+
+.glass-scroll::-webkit-scrollbar {
+  display: none; /* 隐藏原生滑杆（Chromium） */
+}
+
+.glass-bar {
+  position: absolute;
+  width: 4px;
+  z-index: 2;
+  pointer-events: none; /* 轨道不拦截内容点击 */
+  transition:
+    opacity 0.22s ease,
+    visibility 0.22s ease; /* 随浮板开合淡出/淡入（用户定案） */
+}
+
+/* 浮板打开：被覆盖内容的滑杆淡出隐去（visibility 过渡在淡出完后收尾，掐掉可拖拽性）；
+   归档板自家的滑杆例外豁免（随归档板出现），由 JS syncVeils 挂类 */
+.glass-bar.veiled {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.glass-thumb {
+  position: absolute;
+  top: 0;
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22); /* 透明玻璃 */
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.glass-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+/* 渐隐点平滑过渡（用户定案 2026-09-24）：mask 渐变本身不可插值，但把 --fade-btm
+   注册为带类型的自定义属性后，变量可参与 transition——浏览器逐帧用插值重算渐变，
+   落定加深/滚动回弹由瞬时跳变变为 0.25s 平滑过渡 */
+@property --fade-btm {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* 隐区位移（用户定案 2026-09-25）：气泡列表盒上探进捕获行背后 5.5px，渐显带随之
+   上提——此属性把带的顶段下推，滚动越过阈值时 0.25s 回到原位（见 .board-read 遮罩） */
+@property --mask-shift {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* ===== 整板阅读（用户定案 2026-09-25，泛化到清单与归档板；滚动吸附已移除——
+         滚动自由、停靠位置由用户掌控）：上下淡出遮罩让行的进出呈玻璃渐隐（顶行自然
+         滑出+渐隐）。底部"不够一整板"的半截行由 JS 把 --fade-btm 推到该行顶、渐隐隐去，
+         残余区亮出闪烁 ▼ ===== */
+.board-read {
+  --fade-btm: calc(100% - 14px); /* 默认软边：底缘上 14px（用户定案回归，试验值 6/12/24 已否） */
+  transition:
+    --fade-btm 1s ease,
+    --mask-shift 0.25s ease; /* 隐区位移 0.25s（用户定案） */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--mask-shift, 0px),
+    #000 calc(var(--mask-shift, 0px) + 6px),
+    #000 var(--fade-btm),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--mask-shift, 0px),
+    #000 calc(var(--mask-shift, 0px) + 6px),
+    #000 var(--fade-btm),
+    transparent
+  );
+}
+
+/* 到底抬带单独时长（用户定案 2026-09-25）：滚动途中底缘贴齐/落定到底时挂此类走
+   100ms——褪遮罩要干脆且发生在滚动途中（落定零变化）；滚离底部回落与半截行溶解
+   仍走默认 1s（类随到底态挂摘） */
+.board-read.at-bottom {
+  transition-duration: 100ms;
+}
+
+/* 边缘三角（用户定案：醒目、要大、占用滑出空间）：锚卡片层悬浮于清单上下缘
+         通栏居中，上下还有内容即闪烁提示；不挡点击 */
+.edge-hint {
+  position: absolute;
+  height: 26px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px; /* 原 20px 的 60%（用户定案） */
+  line-height: 1;
+  color: #ffd54a;
+  text-shadow:
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  transition: opacity 0.15s ease; /* 随浮板开合淡出/淡入 */
+  animation: edge-blink 1s ease-in-out infinite;
+}
+
+/* 浮板打开：被覆盖内容的三角淡出隐去（摘闪烁动画让位给过渡） */
+.edge-hint.veiled {
+  animation: none;
+  opacity: 0;
+}
+
+/* display:flex 会盖过 hidden 属性的 UA display:none（同低优先级但作者样式胜出），
+         必须显式声明 */
+.edge-hint[hidden] {
+  display: none;
+}
+
+@keyframes edge-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-hint {
+    animation: none;
+  }
+}
