@@ -11,6 +11,22 @@ function overdueAlertHtml(t) {
   return "";
 }
 
+// 删除钮统一模板（清单/归档/气泡三处共用）：FA6 trash-can 双 path——盖子 .del-lid
+// 在后=绘制在上（二态确认开盖用）。抽公共函数防多处副本漂移（气泡页旧单 path 图标
+// 即是副本脱节的实例）
+function delButtonHtml(id) {
+  return `<button class="del" data-del="${id}" aria-label="删除">
+              <svg class="del-icon" viewBox="0 0 448 512">
+                <path
+                  d="M32 128H416V448c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128zm96 64c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16z"
+                ></path>
+                <path class="del-lid"
+                  d="M135.2 17.7C140.6 6.8 151.7 0 163.8 0H284.2c12.1 0 23.2 6.8 28.6 17.7L320 32h96c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 96 0 81.7 0 64S14.3 32 32 32h96l7.2-14.3z"
+                ></path>
+              </svg>
+            </button>`;
+}
+
 const todoRowHtml = (t) => `
           <li class="todo-item">
             <div class="todo-row ${t.done ? "is-done" : ""}" data-id="${t.id}">
@@ -41,16 +57,7 @@ const todoRowHtml = (t) => `
               </div>
             </div>
             <span class="t-text">${t.text}</span>
-            <button class="del" data-del="${t.id}" aria-label="删除">
-              <svg class="del-icon" viewBox="0 0 448 512">
-                <path
-                  d="M32 128H416V448c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128zm96 64c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16z"
-                ></path>
-                <path class="del-lid"
-                  d="M135.2 17.7C140.6 6.8 151.7 0 163.8 0H284.2c12.1 0 23.2 6.8 28.6 17.7L320 32h96c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 96 0 81.7 0 64S14.3 32 32 32h96l7.2-14.3z"
-                ></path>
-              </svg>
-            </button>
+            ${delButtonHtml(t.id)}
             </div>
             ${overdueAlertHtml(t)}
           </li>`;
@@ -99,6 +106,63 @@ function collapseRow(li, after) {
   window.setTimeout(() => after?.(), 300);
 }
 
+// 删除钮按压脉冲（用户定案 2026-09-26）：两拍点击共用的微缩放反馈，以按钮自身
+// 中心为基准快缩快弹（样式见 CSS del-press 关键帧，0.18s）。行动态重建直接挂钮；
+// remove + 回流 + add 保证快速连点时动画从头重播，animationend 后摘类复原
+function pressPulse(btn) {
+  btn.classList.remove("del-press");
+  void btn.offsetWidth; // 强制回流：重入时动画能从头重播
+  btn.classList.add("del-press");
+  btn.addEventListener("animationend", () => btn.classList.remove("del-press"), {
+    once: true,
+  });
+}
+
+// 未决确认批量回退（板开合/换页挂点调用）：行被浮板遮盖或整页切走后，开盖态不可见
+// 且 mouseout 不再可能触发——留着会在板收/页切回后以开盖红态复活（鼠标已不在钮上）
+function rollbackDelConfirms() {
+  document.querySelectorAll(".del-open").forEach((li) => li.classList.remove("del-open"));
+}
+
+// 行内删除通用链路：气泡页删气泡，清单/归档删 todo。两类行共用 data-del 通道
+// 但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删 todo
+// id=1 命中气泡 id=1），故以容器为准。三处二态确认的第二拍统一延迟 200ms 调用
+function runRowDelete(del) {
+  const id = Number(del.dataset.del);
+  if (del.closest("#bubble-list")) {
+    // 气泡删除：塌缩一格再增量摘除（与清单同款退场，2026-09-25）——全量重绘会
+    // 拔掉其他行在飞的动画；外围状态壳由 syncBubbleChrome 就地刷新
+    const li = del.closest(".bubble-row");
+    collapseRow(li, () => {
+      const i = bubbles.findIndex((x) => x.id === id);
+      if (i >= 0) bubbles.splice(i, 1);
+      li?.remove();
+      syncBubbleChrome();
+    });
+    return;
+  }
+  const idx = todos.findIndex((t) => t.id === id);
+  if (idx < 0) return;
+  const li = del.closest(".todo-item");
+  const inBoard = !!del.closest("#board-overlay"); // 板内删除：需同步计数与空态
+  // 彻底删除：先塌缩一格再提交数据（清单/归档两处同款退场，用户定案）；
+  // 提交时重查下标，防塌缩期间新增条目导致序号漂移。
+  // 收尾增量摘除（用户定案）：塌缩行已收 0 高直接摘壳、不做全量重绘——
+  // 归档板快速连删时，另一行在飞的塌缩动画不再被重建拔除
+  collapseRow(li, () => {
+    const i = todos.findIndex((t) => t.id === id);
+    if (i >= 0) todos.splice(i, 1);
+    li?.remove();
+    if (inBoard) {
+      const doneCount = todos.filter((t) => t.done).length;
+      $("archive-count").textContent = String(doneCount);
+      $("archive-empty").hidden = doneCount > 0;
+    } else {
+      updateTodoChrome(); // 清单侧删除：空态壳同步
+    }
+  });
+}
+
 // 空态外壳（未完成条目驱动；"已完成"已迁入归档板）
 function updateTodoChrome() {
   const undone = todos.filter((t) => !t.done).length;
@@ -137,59 +201,30 @@ document.addEventListener("click", (e) => {
     // 罩死行删除钮失效（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡死透；
     // 仅约束清单行——归档板/气泡无此罩死语义
     if (del.closest("#todo-active") && rowMaskDead(del.closest(".todo-row"))) return;
-    // 清单行二态确认（用户定案 2026-09-26）：首点盖翻起 + Delete 字渐隐，状态冻结
-    // 保持——鼠标离开删除钮即回退（盖子直接归位），移回显红。归档/气泡一键直删
-    if (del.closest("#todo-active")) {
-      const li = del.closest(".todo-item");
-      if (li.classList.contains("del-open")) {
+    // 行内删除二态确认（清单/归档/气泡统一，用户定案 2026-09-26）：首点盖翻起 +
+    // Delete 字渐隐 + 按压脉冲，状态冻结保持——鼠标离开删除钮即回退（盖子直接
+    // 归位），移回显红。再点执行：脉冲先播完再进删除链路（同拍起跑按压反馈会被
+    // 塌缩吞掉）
+    const li = del.closest(".todo-item, .bubble-row");
+    if (li.dataset.delBusy) return; // 执行窗口锁：200ms 窗口内再点忽略，防双删
+    if (li.classList.contains("del-open")) {
+      // 第二拍（执行删除）：del-open 此拍保持——红底稳定走完脉冲，进链路时才
+      // 解锁（缩灰与塌缩并行退场）
+      li.dataset.delBusy = "1";
+      pressPulse(del);
+      setTimeout(() => {
+        delete li.dataset.delBusy;
         li.classList.remove("del-open");
-        // 再点执行：落到下方通用删除链路（塌缩+数据摘除）
-      } else {
-        const stale = document.querySelector("#todo-active .todo-item.del-open");
-        if (stale) {
-          stale.classList.remove("del-open"); // 单实例：开盖时点别的行，旧的合盖缩回
-        }
-        li.classList.add("del-open");
-        // 离开回退不在点击链路处理：开盖后由文件尾的 mouseout 委托统一立即回退
-        return;
-      }
+        runRowDelete(del);
+      }, 200);
+    } else {
+      // 单实例全局唯一：开盖时点别的行，旧的合盖缩回（执行窗口中的行保持红底等塌缩）
+      const stale = document.querySelector(".del-open:not([data-del-busy])");
+      if (stale) stale.classList.remove("del-open");
+      li.classList.add("del-open");
+      pressPulse(del); // 第一拍：确认态出现瞬间的按压反馈
+      // 离开回退不在点击链路处理：开盖后由文件尾的 mouseout 委托统一立即回退
     }
-    const id = Number(del.dataset.del);
-    // 行内删除按所在容器分流：气泡页删气泡，清单/归档删 todo。两类行共用 data-del
-    // 通道但 id 是两套独立计数器——原"先查气泡再查清单"在 id 撞车时会误删（实测删
-    // todo id=1 命中气泡 id=1），故以容器为准
-    if (del.closest("#bubble-list")) {
-      // 气泡删除：塌缩一格再增量摘除（与清单同款退场，2026-09-25）——全量重绘会
-      // 拔掉其他行在飞的动画；外围状态壳由 syncBubbleChrome 就地刷新
-      const li = del.closest(".bubble-row");
-      collapseRow(li, () => {
-        const i = bubbles.findIndex((x) => x.id === id);
-        if (i >= 0) bubbles.splice(i, 1);
-        li?.remove();
-        syncBubbleChrome();
-      });
-      return;
-    }
-    const idx = todos.findIndex((t) => t.id === id);
-    if (idx < 0) return;
-    const li = del.closest(".todo-item");
-    const inBoard = !!del.closest("#board-overlay"); // 板内删除：需同步计数与空态
-    // 彻底删除：先塌缩一格再提交数据（清单/归档两处同款退场，用户定案）；
-    // 提交时重查下标，防塌缩期间新增条目导致序号漂移。
-    // 收尾增量摘除（用户定案）：塌缩行已收 0 高直接摘壳、不做全量重绘——
-    // 归档板快速连删时，另一行在飞的塌缩动画不再被重建拔除
-    collapseRow(li, () => {
-      const i = todos.findIndex((t) => t.id === id);
-      if (i >= 0) todos.splice(i, 1);
-      li?.remove();
-      if (inBoard) {
-        const doneCount = todos.filter((t) => t.done).length;
-        $("archive-count").textContent = String(doneCount);
-        $("archive-empty").hidden = doneCount > 0;
-      } else {
-        updateTodoChrome(); // 清单侧删除：空态壳同步
-      }
-    });
     return;
   }
   const row = e.target.closest(".todo-row");
@@ -279,15 +314,17 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// 确认态离开即回退（用户定案 2026-09-26 三次修正）：开盖后鼠标离开删除钮，立即
-// 回退非红垃圾桶态（盖子直接归位，无合盖动画）。行动态重建，走委托不走逐钮挂
+// 确认态离开即回退（用户定案 2026-09-26 三次修正；归档/气泡并入同款）：开盖后鼠标
+// 离开删除钮，立即回退非红垃圾桶态（盖子直接归位，无合盖动画）。行动态重建，走委托
+// 不走逐钮挂
 document.addEventListener("mouseout", (e) => {
-  const del = e.target.closest("#todo-active .del");
+  const del = e.target.closest(".del");
   if (!del) return;
   // relatedTarget 仍在按钮内 = 只是按钮内部子元素间移动（svg/path 之间），
   // 不是真离开——开盖后手部 1px 微动跨子元素边界曾致开盖瞬间回退（实测）
   if (del.contains(e.relatedTarget)) return;
-  const li = del.closest(".todo-item");
+  const li = del.closest(".todo-item, .bubble-row");
+  if (li?.dataset.delBusy) return; // 执行窗口锁：红底保持到塌缩起跑，不被离开打断
   if (li?.classList.contains("del-open")) {
     li.classList.remove("del-open"); // 离开即回退：盖子直接归位
   }

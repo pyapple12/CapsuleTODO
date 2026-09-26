@@ -799,6 +799,29 @@ li.todo-item.dragging .del {
   transition: opacity 0.35s ease;
 }
 
+/* 按压脉冲（用户定案 2026-09-26）：两拍点击共用的微缩放反馈——确认态出现与执行
+   删除两瞬间，按钮以自身中心 1→0.9→1 快缩快弹（0.18s）。关键帧必须整链携带定位
+   偏移 translateY(-50%) translateX(5px)：只写 scale 会打掉偏移，按钮在脉冲瞬间
+   跳位中心漂移（上轮盖子弹跳失败的根因）。两拍点击必发生在展开态（鼠标点击即
+   悬停），基准取展开态偏移 */
+@keyframes del-press {
+  0% {
+    transform: translateY(-50%) translateX(5px) scale(1);
+  }
+
+  45% {
+    transform: translateY(-50%) translateX(5px) scale(0.9);
+  }
+
+  100% {
+    transform: translateY(-50%) translateX(5px) scale(1);
+  }
+}
+
+.del-press {
+  animation: del-press 0.18s ease-in-out;
+}
+
 /* 左上角归档按钮（功能 = 收拢/展开"已完成"，用户定案）：布局移植自 uiverse slippery-fox-79
          （vinodjangid07，MIT），位置距上/左 10px。两点适配：① position:absolute 落位卡角；
          ② 气泡翻转到按钮下方弹出——原组件在上方（top:-40px），会被卡片 overflow:hidden 裁掉。

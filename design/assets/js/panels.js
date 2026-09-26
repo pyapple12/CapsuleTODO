@@ -1,6 +1,7 @@
 // ===== 归档板开关（用户定案双出口：再点归档图标 / 点板空白处收回） =====
 const boardOverlay = $("board-overlay");
 const setBoard = (open) => {
+  rollbackDelConfirms(); // 板开合都收口未决确认：开板遮盖清单行、收板后板内行复见
   if (open) {
     if (settingsOverlay.classList.contains("open")) setSettings(false); // 两板互斥（用户定案）
     if (detailOverlay.classList.contains("open")) setDetail(false); // 三板互斥（用户定案）
