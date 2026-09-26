@@ -726,22 +726,33 @@ li.todo-item.dragging .del {
 }
 
 /* 二态确认删除（用户定案 2026-09-26）：del-open = 盖子绕铰链翻起悬于桶体上方
-   + Delete 字样渐隐；再点执行删除，3s 超时或点其他行合盖复位。
-   盖子顶端平切的真凶 = svg 图标框自身裁剪（svg 仅 ~7px 高，翻起即出框）——
-   只放开 svg 这层 overflow；按钮层 hidden 保留兜底，盖子不飞出按钮 */
+   + Delete 字样渐隐；再点执行删除。开盖态锁定展开红底样式——鼠标离开后立即
+   回退：按钮缩回灰底（0.3s 过渡），盖子直接归位无合盖动画。
+   svg overflow visible：盖子翻起完整可见，不被 ~7px 图标框平切 */
+.del-open .del {
+  width: 35px;
+  transform: translateY(-50%) translateX(5px);
+  border-radius: 50px;
+  background-color: rgb(255, 69, 69);
+  box-shadow:
+    0 10px 15px -3px var(--del-hover-glow),
+    0 4px 6px -4px var(--del-hover-glow);
+}
+
 .del-open .del .del-icon {
   overflow: visible;
+  width: 25px;
+  transform: translateY(60%);
 }
 
 .del-open .del .del-lid {
   transform: translate(-14px, -20px) rotate(-38deg);
   transform-origin: 24px 64px;
-  transition: transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition: transform 0.5s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开盖翻起动画 */
 }
 
-.del-lid {
-  transition: transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1); /* 常态声明：合盖复位也有渐变 */
-}
+/* 合盖无动画（用户定案 2026-09-26）：回退时盖子直接回原位，不做合盖渐变
+   （.del-lid 常态不声明 transform/transition——撤回了误留的合盖渐变声明） */
 
 .del:hover {
   width: 35px;

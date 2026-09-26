@@ -137,19 +137,20 @@ document.addEventListener("click", (e) => {
     // 罩死行删除钮失效（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡死透；
     // 仅约束清单行——归档板/气泡无此罩死语义
     if (del.closest("#todo-active") && rowMaskDead(del.closest(".todo-row"))) return;
-    // 清单行二态确认（用户定案 2026-09-26）：首点盖翻起 + Delete 字渐隐，再点执行
-    // 删除；3s 不动自动复位（盖合、字渐显）。归档/气泡保持一键直删
+    // 清单行二态确认（用户定案 2026-09-26）：首点盖翻起 + Delete 字渐隐，状态冻结
+    // 保持——鼠标离开删除钮即回退（盖子直接归位），移回显红。归档/气泡一键直删
     if (del.closest("#todo-active")) {
       const li = del.closest(".todo-item");
       if (li.classList.contains("del-open")) {
-        clearTimeout(li._delTimer);
         li.classList.remove("del-open");
         // 再点执行：落到下方通用删除链路（塌缩+数据摘除）
       } else {
-        document.querySelector("#todo-active .todo-item.del-open")?.classList.remove("del-open"); // 单实例：开盖时点别的行，旧的先合盖
+        const stale = document.querySelector("#todo-active .todo-item.del-open");
+        if (stale) {
+          stale.classList.remove("del-open"); // 单实例：开盖时点别的行，旧的合盖缩回
+        }
         li.classList.add("del-open");
-        clearTimeout(li._delTimer);
-        li._delTimer = setTimeout(() => li.classList.remove("del-open"), 3000);
+        // 离开回退不在点击链路处理：开盖后由文件尾的 mouseout 委托统一立即回退
         return;
       }
     }
@@ -275,5 +276,19 @@ document.addEventListener("click", (e) => {
       flashCaptureCopied();
       cancelClearConfirm(); // 确认清空期间点气泡：一键清空旁路退回（用户定案 2026-09-25）
     }, 180);
+  }
+});
+
+// 确认态离开即回退（用户定案 2026-09-26 三次修正）：开盖后鼠标离开删除钮，立即
+// 回退非红垃圾桶态（盖子直接归位，无合盖动画）。行动态重建，走委托不走逐钮挂
+document.addEventListener("mouseout", (e) => {
+  const del = e.target.closest("#todo-active .del");
+  if (!del) return;
+  // relatedTarget 仍在按钮内 = 只是按钮内部子元素间移动（svg/path 之间），
+  // 不是真离开——开盖后手部 1px 微动跨子元素边界曾致开盖瞬间回退（实测）
+  if (del.contains(e.relatedTarget)) return;
+  const li = del.closest(".todo-item");
+  if (li?.classList.contains("del-open")) {
+    li.classList.remove("del-open"); // 离开即回退：盖子直接归位
   }
 });
