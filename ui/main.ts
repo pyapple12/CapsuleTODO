@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import "./style.css";
+import "./src/styles/board-read.css";
 import { installMockInvoke } from "./src/dev/mock-invoke";
 
 // PL008.1 DEV 冒烟基座：纯浏览器（无 Tauri runtime）时把 invoke 路由到内存模拟——
