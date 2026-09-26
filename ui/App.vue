@@ -4,11 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
-import type { TodoItem } from "./types";
+import type { TodoItem, TodoView } from "./types";
 import AddBar from "./src/components/AddBar.vue";
 import TabsBar from "./src/components/TabsBar.vue";
+import TodoList from "./src/components/TodoList.vue";
+import DetailOverlay from "./src/components/DetailOverlay.vue";
 import BubblesView from "./components/BubblesView.vue";
-import TodoList from "./components/TodoList.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
 
 // PL011 管线：分态纱浓度由 .focused class 驱动——初值经 isFocused 查询兜底，
@@ -47,13 +48,27 @@ function onTabChange(key: string): void {
   activeTab.value = key as TabKey;
 }
 
-// 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
-const items = ref<TodoItem[]>([]);
+// —— 详情板（PL010.5）：行单击 openDetail 上抛 → 置 detailTodo 开板 ——
 
-/** 拉取清单排序视图 */
+const detailTodo = ref<TodoItem | null>(null);
+
+/** 行单击开详情板：以最新视图中的条目为数据源（防陈旧） */
+function onOpenDetail(item: TodoItem): void {
+  detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
+}
+
+/** 清单变更统一出口：重拉视图 + 保留详情板打开时的条目同步 */
+function onListChanged(): void {
+  void refresh();
+}
+
+// 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
+const items = ref<TodoView[]>([]);
+
+/** 拉取清单排序视图（todo_list 返回 TodoView：条目 + 龄期档位，PL010 起） */
 async function refresh(): Promise<void> {
   try {
-    items.value = await invoke<TodoItem[]>("todo_list");
+    items.value = await invoke<TodoView[]>("todo_list");
   } catch (err) {
     console.error("todo_list 拉取失败", err);
   }
@@ -100,7 +115,7 @@ onUnmounted(() => {
     </nav>
     <div v-if="activeTab === 'todos'" class="page" id="page-todos">
       <AddBar @changed="refresh" />
-      <TodoList :items="items" @changed="refresh" />
+      <TodoList :items="items" @changed="onListChanged" @open-detail="onOpenDetail" />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
       <BubblesView />
@@ -109,6 +124,8 @@ onUnmounted(() => {
     <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
       <WhiteboardView />
     </div>
+    <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动 -->
+    <DetailOverlay :todo="detailTodo" @changed="onListChanged" @close="detailTodo = null" />
   </main>
 </template>
 

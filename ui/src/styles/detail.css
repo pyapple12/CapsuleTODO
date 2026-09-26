@@ -1,0 +1,111 @@
+/* ===== 详情板样式（PL010.5 自 design/assets/css/boards.css 浮板段 + detail.css 1:1 落位）：
+   揭示动画（origin 变量注入 scale 0→1 回弹）/ 标签头 + 标题输入 / 笔记壳 + textarea 透明填壳。
+   bubble 模式段（PL012）与滑杆段（useGlassBar 替代自绘 detail-bar）不在本文件 ===== */
+
+/* —— 浮板容器（三浮板共享几何与显隐节奏；本组件挂 detail 语义类） —— */
+.detail-overlay {
+  position: absolute;
+  top: 54px; /* 兜底值：开板时按页签实测再上扩 4px 覆盖（组件内 JS 注入 top） */
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  color: var(--ink);
+  visibility: hidden;
+  transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
+}
+
+.detail-overlay.open {
+  visibility: visible;
+  transition: none;
+}
+
+/* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从触发图标中心缩放飞出（带轻微回弹）。
+   收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
+   变负值、以图标为轴镜像闪动（2026-09-18 目验发现） */
+.board-glass {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow-y: auto;
+  border-radius: var(--radius-board);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
+  transform: scale(0);
+  transition: transform 0.35s ease;
+}
+
+.detail-overlay.open .board-glass {
+  transform: scale(1);
+  transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
+}
+
+/* —— 详情板专属（用户定案 2026-09-22）：标题行 + 白板式编辑区，纵向铺满玻璃板 —— */
+.detail-glass {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink);
+  opacity: 0.65;
+}
+
+.detail-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  padding: 7px 10px;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* 笔记卡壳（2026-09-25）：textarea 身兼滚动容器（要被 mask）与玻璃卡本体（不该被
+   mask）冲突——卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字墨迹 */
+.note-shell {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.detail-note {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+  scrollbar-width: none; /* 隐藏原生滑杆（Firefox），useGlassBar 浮钮替代 */
+}
+
+.detail-note::-webkit-scrollbar {
+  display: none; /* 隐藏原生滑杆（Chromium） */
+}

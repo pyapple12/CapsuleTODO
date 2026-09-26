@@ -6,12 +6,34 @@
 // 内存种子沿 design/assets/js/state.js 实验场定案（8 清单含归档 + 5 气泡 + 长文白板），
 // 使冒烟断言可与实验场形态互相印证。
 
-/** 待办条目（镜像 ui/types.ts TodoItem；PL010 扩三字段时此处同步扩展） */
+/** 待办条目（镜像 ui/types.ts TodoItem：PL010 三字段扩容后契约对齐） */
 interface MockTodo {
   id: number;
   text: string;
   done: boolean;
+  created_at: number | null;
+  done_at: number | null;
+  note: string;
 }
+
+/** 龄期档位（镜像 AgeLevel） */
+type MockAgeLevel = "None" | "Yellow" | "Red";
+
+/** 龄期阈值（与 Rust todo.rs AGE_YELLOW_MS/AGE_RED_MS 同源） */
+const AGE_YELLOW_MS = 24 * 3600 * 1000;
+const AGE_RED_MS = 48 * 3600 * 1000;
+
+/** 龄期裁决（对齐 Rust age_level：严格大于才升级） */
+function ageLevel(created_at: number | null, now: number): MockAgeLevel {
+  if (created_at == null) return "None";
+  const age = now - created_at;
+  if (age > AGE_RED_MS) return "Red";
+  if (age > AGE_YELLOW_MS) return "Yellow";
+  return "None";
+}
+
+/** 清单视图条目（镜像 TodoView） */
+type MockTodoView = MockTodo & { age_level: MockAgeLevel };
 
 /** 气泡条目（镜像 BubbleItem） */
 interface MockBubble {
@@ -54,8 +76,9 @@ function seed(): void {
     id: ++state.todoSeq,
     text,
     done,
-    // created_at/note 属 PL010 迁移字段——mock 侧先以扩展属性承载（age 断言 PL010 接管）
-    ...({ createdAt: now - ageHours * HOUR, note } as object),
+    created_at: now - ageHours * HOUR,
+    done_at: done ? now : null,
+    note,
   });
   state.todos = [
     t("买牛奶", false, 0, "2L 全脂一盒\n鸡蛋一排\n顺路取快递"),
@@ -108,12 +131,20 @@ function sortedTodos(): MockTodo[] {
 /** 命令路由表：键 = Tauri 命令名，值 = args → 结果（reject = CommandError 透传） */
 type CommandHandler = (args: Record<string, unknown>) => unknown;
 const handlers: Record<string, CommandHandler> = {
-  todo_list: () => sortedTodos(),
+  todo_list: (): MockTodoView[] =>
+    sortedTodos().map((item) => ({ ...item, age_level: ageLevel(item.created_at, Date.now()) })),
   todo_add: (args) => {
     const text = String(args.text ?? "");
     const err = validateText(text);
     if (err) throw err;
-    const item: MockTodo = { id: ++state.todoSeq, text: text.trim(), done: false };
+    const item: MockTodo = {
+      id: ++state.todoSeq,
+      text: text.trim(),
+      done: false,
+      created_at: Date.now(),
+      done_at: null,
+      note: "",
+    };
     state.todos.push(item);
     return item;
   },
@@ -122,7 +153,25 @@ const handlers: Record<string, CommandHandler> = {
     const item = state.todos.find((x) => x.id === id);
     if (!item) throw `待办条目不存在：${id}`;
     item.done = !item.done;
+    item.done_at = item.done ? Date.now() : null; // 勾选置值、退回清空（对齐 Rust toggle）
     return item;
+  },
+  todo_rename: (args) => {
+    const id = Number(args.id);
+    const text = String(args.text ?? "");
+    const err = validateText(text);
+    if (err) throw err;
+    const item = state.todos.find((x) => x.id === id);
+    if (!item) throw `待办条目不存在：${id}`;
+    item.text = text.trim();
+    return item;
+  },
+  todo_set_note: (args) => {
+    const id = Number(args.id);
+    const item = state.todos.find((x) => x.id === id);
+    if (!item) throw `待办条目不存在：${id}`;
+    item.note = String(args.note ?? "");
+    return null;
   },
   todo_remove: (args) => {
     const id = Number(args.id);

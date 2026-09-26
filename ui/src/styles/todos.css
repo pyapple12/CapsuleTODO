@@ -1,0 +1,149 @@
+/* ===== 清单页样式（PL010.4 自 design/assets/css/todos.css 1:1 落位）：
+   分组虚拟外框 / 行 / t-text / t-edit / 出入场 / 罩死灰化 / age-alert / 空态。
+   罩死与拖拽期的行级规则在此随行接线生效；数值全部沿实测定案 ===== */
+
+/* 空态（design bubbles.css 共享段同值） */
+.empty,
+.placeholder {
+  margin: 24px 0;
+  font-size: 13px;
+  text-align: center;
+  opacity: 0.55;
+}
+
+/* 分组容器 + 虚拟外框（用户定案公式）：不设宽 + 左右负外边距各拉出 8px → 框距卡边
+   恒 10px、框宽 = 卡宽 − 20 随卡片动态；内边距 左右/下 8、上 4 → 行宽 = 框宽 − 16 */
+.list .group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -4px -8px -10px;
+  padding: 4px 8px 8px; /* 组内边距：上 4 → input→首行 = gap 6 + 4 = 10（用户定案） */
+  list-style: none;
+  overflow-y: auto;
+}
+
+/* 行玻璃条：删除按钮右缘锚定基准（悬停向左展开、覆盖文字） */
+.todo-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 霓虹勾选框装饰层（环/粒子）伸出行外且未勾选态也常驻，会给 overflow-y:auto
+     制造 ~40px 幻影滚动区——裁剪回行界 */
+  overflow: clip;
+  padding: 9px 12px;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
+  cursor: pointer; /* 点击开详情板，长按 0.25s 进拖拽（PL013） */
+}
+
+.t-text {
+  flex: 1;
+  /* 右侧预留收起态删除按钮位（收起左缘距行右缘 36px）；悬停展开时按钮覆盖上来 */
+  padding-right: 36px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  word-break: break-word;
+  /* 罩死灰化/恢复双向过渡：transition 必须落常态——只在 .mask-dead 态则恢复无渐变 */
+  transition: color 0.5s ease;
+}
+
+/* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规；
+   padding 一次写全清掉 UA 默认上下 1px（行盒非整数时 0.1~0.3px 下扩，实测） */
+.t-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 0 36px 0 2px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+
+.is-done-text {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* —— 单条目出入场（用户定案 2026-09-21）：出场 = 60% 弹到 100% 过冲曲线；
+   退场 = 塌缩一格（缩小淡出 + 高度收 0）。Vue TransitionGroup 类名映射：
+   todo-enter-active→entering、todo-leave-active→leaving、todo-enter-from→in-from —— */
+.todo-enter-active {
+  animation: todo-in 0.3s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+@keyframes todo-in {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 退场塌缩：flex-shrink:0 防 overflow:hidden 令 flex 最小尺寸归零绕过 height 过渡
+   （清单溢出时收缩缺口倾泻到本行——塌缩动画消失的根因，2026-09-25 实测） */
+.todo-leave-active {
+  flex-shrink: 0;
+  overflow: hidden; /* 高度塌缩时内容不许溢出 */
+  pointer-events: none; /* 塌缩中不可再点 */
+  height: 0;
+  transform: scale(0.6);
+  opacity: 0;
+  transition:
+    height 0.3s ease-in,
+    transform 0.3s ease-in,
+    opacity 0.3s ease-in;
+}
+
+/* —— 罩死行（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡禁交互——三件套灰变、
+   光标回箭头、删除钮失效；摘类同拍恢复（恢复渐变落各常态规则） —— */
+.todo-item.mask-dead .todo-row {
+  cursor: default;
+}
+
+.todo-item.mask-dead .t-text {
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.todo-item.mask-dead .del {
+  pointer-events: none; /* 悬停展开与点击一并失效 */
+  cursor: default;
+  opacity: 0.35;
+  transition: opacity 0.5s ease;
+}
+
+/* 垃圾桶白填充对 grayscale 免疫（白色无色彩可去）——罩死态直改 fill 成灰 */
+.todo-item.mask-dead .del-icon path {
+  fill: rgba(255, 255, 255, 0.35);
+}
+
+.todo-item.mask-dead .neon-checkbox {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+/* —— 超时提醒（用户定案）：10px 加粗、真黄/红、实体黑阴影；渲染在玻璃条外下方 —— */
+.age-alert {
+  margin: 2px 0 0 12px; /* 与玻璃条左缘内容对齐 */
+  font-size: 10px;
+  font-weight: 700;
+  text-shadow: 0.5px 0.5px 2px #000; /* 偏移 0.5 + 模糊 2px（用户定案） */
+}
+
+.age-alert--yellow {
+  color: #ffd700; /* 真黄（用户定案，原琥珀 #d97706 过深） */
+}
+
+.age-alert--red {
+  color: var(--danger);
+  font-weight: 700;
+}

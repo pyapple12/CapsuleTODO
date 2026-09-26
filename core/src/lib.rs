@@ -60,7 +60,7 @@ fn default_position(
     let size = monitor.size();
     let scale = window.scale_factor()?;
     let win_w = (300.0 * scale).round() as i32;
-    let win_h = (400.0 * scale).round() as i32;
+    let win_h = (580.0 * scale).round() as i32; // PL008.3 窗口增高同步（tauri.conf.json 同源）
     Ok(PhysicalPosition::new(
         pos.x + size.width as i32 - win_w - MARGIN_PX,
         pos.y + size.height as i32 - win_h - MARGIN_PX,
@@ -129,6 +129,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![
             commands::todo::todo_add,
             commands::todo::todo_toggle,
+            commands::todo::todo_rename,
+            commands::todo::todo_set_note,
             commands::todo::todo_remove,
             commands::todo::todo_list,
             commands::bubble::bubble_capture,
