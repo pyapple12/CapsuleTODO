@@ -9,6 +9,7 @@ import AddBar from "./src/components/AddBar.vue";
 import TabsBar from "./src/components/TabsBar.vue";
 import TodoList from "./src/components/TodoList.vue";
 import DetailOverlay from "./src/components/DetailOverlay.vue";
+import ArchiveOverlay from "./src/components/ArchiveOverlay.vue";
 import BubblesView from "./components/BubblesView.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
 
@@ -57,9 +58,25 @@ function onOpenDetail(item: TodoItem): void {
   detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
 }
 
-/** 清单变更统一出口：重拉视图 + 保留详情板打开时的条目同步 */
+// —— 归档板（PL011）：数据源 + 变更重拉 —— 非清单页隐藏归档按钮（V0.015 定案：
+// 归档仅清单页生效），组件经 ref expose 的 toggle 由按钮内部自管 ——
+
+const archiveItems = ref<TodoItem[]>([]);
+
+/** 拉取归档视图（板开着时才可见，惰性拉取零浪费） */
+async function refreshArchive(): Promise<void> {
+  try {
+    archiveItems.value = await invoke<TodoItem[]>("todo_archive_list");
+  } catch (err) {
+    console.error("todo_archive_list 拉取失败", err);
+  }
+}
+
+/** 清单变更统一出口：重拉清单/归档/徽章三源 + 三板互斥（开详情板时归档收） */
 function onListChanged(): void {
   void refresh();
+  void refreshArchive();
+  void refreshBadge();
 }
 
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
@@ -95,6 +112,7 @@ onMounted(async () => {
   // 不挂 JS onCloseRequested——实测该 API 会把关闭权移交 webview destroy 路径导致关闭挂起
   await refresh();
   await refreshBadge();
+  await refreshArchive();
 });
 
 onUnmounted(() => {
@@ -114,7 +132,7 @@ onUnmounted(() => {
       <TabsBar :model-value="activeTab" :tabs="tabDefs" @update:model-value="onTabChange" />
     </nav>
     <div v-if="activeTab === 'todos'" class="page" id="page-todos">
-      <AddBar @changed="refresh" />
+      <AddBar @changed="onListChanged" />
       <TodoList :items="items" @changed="onListChanged" @open-detail="onOpenDetail" />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
@@ -124,6 +142,8 @@ onUnmounted(() => {
     <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
       <WhiteboardView />
     </div>
+    <!-- 归档板（PL011）：仅清单页可见（V0.015 定案），数据经 changed/挂载时拉取 -->
+    <ArchiveOverlay v-if="activeTab === 'todos'" :items="archiveItems" @changed="onListChanged" />
     <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动 -->
     <DetailOverlay :todo="detailTodo" @changed="onListChanged" @close="detailTodo = null" />
   </main>

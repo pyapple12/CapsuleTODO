@@ -173,6 +173,10 @@ const handlers: Record<string, CommandHandler> = {
     item.note = String(args.note ?? "");
     return null;
   },
+  todo_archive_list: () =>
+    state.todos
+      .filter((t) => t.done)
+      .sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0) || b.id - a.id),
   todo_remove: (args) => {
     const id = Number(args.id);
     const idx = state.todos.findIndex((x) => x.id === id);

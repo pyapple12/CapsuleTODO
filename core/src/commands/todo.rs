@@ -108,6 +108,18 @@ pub fn todo_list_core(ctx: &AppContext) -> Result<Vec<TodoView>, CommandError> {
         .collect())
 }
 
+/// 归档视图（已完成条目，done_at 倒序——最新完成的在最上）
+#[tauri::command]
+pub fn todo_archive_list(ctx: State<'_, AppContext>) -> Result<Vec<TodoItem>, CommandError> {
+    todo_archive_list_core(&ctx)
+}
+
+/// todo_archive_list 核心实现：出归档视图
+pub fn todo_archive_list_core(ctx: &AppContext) -> Result<Vec<TodoItem>, CommandError> {
+    let storage = ctx.lock_storage()?;
+    Ok(storage.list_done()?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

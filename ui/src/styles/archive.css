@@ -1,0 +1,212 @@
+/* ===== 归档板样式（PL011.2 自 design/assets/css/boards.css + todos.css 归档段 1:1 落位）：
+   浮板几何与揭示动画 / 标题玻璃板 title-plate / board-list 真滚动容器 /
+   归档按钮（slippery-fox-79 改造）出入场动画与粒子。数值全部沿实测定案 ===== */
+
+/* —— 浮板容器（与 DetailOverlay 共享几何语义；归档覆盖页签与三页内容） —— */
+.archive-overlay {
+  position: absolute;
+  top: 54px;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  color: var(--ink);
+  visibility: hidden;
+  transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
+}
+
+.archive-overlay.open {
+  visibility: visible;
+  transition: none;
+}
+
+/* 玻璃本体层：scale 揭示动画挂在玻璃自身（clip-path 两路皆废的定案，见 design 注释） */
+.archive-overlay .board-glass {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  overflow-y: auto;
+  border-radius: var(--radius-board);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
+  transform: scale(0);
+  transition: transform 0.35s ease;
+}
+
+.archive-overlay.open .board-glass {
+  transform: scale(1);
+  transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开板保留轻微回弹 */
+}
+
+.board-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+/* 存档板标题玻璃板（用户定案 2026-09-25）：input 同款配方——胶囊圆角 + panel 底/描边/
+   落影，高度同 input 22px；完全消失线（列表顶缘）= 板下 2px */
+.title-plate {
+  box-sizing: border-box;
+  margin-bottom: 2px; /* 覆盖 .board-title 的 8px */
+  height: 22px;
+  line-height: 22px;
+  padding: 0 12px; /* 令文字左缘与下方行缘对齐 */
+  border-radius: 9999px;
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+  font-size: 12px; /* 板内收窄（用户定案） */
+}
+
+/* board-list：占满余高并内部滚动——列表成为真滚动容器（滑杆与整板阅读的挂载前提） */
+.board-list {
+  margin: 0 -8px -8px; /* 左右拉出 8px 落影缓冲带（伸进玻璃内距），行宽不变；下 -8 对齐 */
+  padding: 10px 8px 8px; /* 顶 10 与渐显带同源：首行静止位 = 板下 12px */
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px; /* 行间距对齐 .group（用户定案） */
+  flex: 1; /* 占满余高并内部滚动 */
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* —— 归档按钮（slippery-fox-79 改造）：左上角 10px，30×30、圆角 9（CP sideButton 几何）；
+   悬停/开板 DodgerBlue 翻白（用户定案）；出入场 = 吸气塌缩 / 回弹弹出 —— */
+.deleteButton {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  padding: 0; /* UA 默认 6px 内距不清零会压缩图标（实测） */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background-color: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  /* transform 弹簧回位沿 CapsulePulse sideButton */
+  transition:
+    all 0.2s,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
+}
+
+.deleteButton svg {
+  width: 15px;
+  height: 15px;
+}
+
+.deleteButton:hover,
+.deleteButton.open {
+  background-color: #1e90ff; /* DodgerBlue（用户定案） */
+  overflow: visible; /* tooltip 溢出按钮框 */
+}
+
+.bin path {
+  transition: all 0.2s;
+}
+
+.deleteButton:hover .bin path,
+.deleteButton.open .bin path {
+  fill: #fff;
+  stroke: #fff;
+}
+
+.deleteButton[hidden] {
+  display: none; /* 类内 display:flex 压过 UA [hidden]，需显式 */
+}
+
+/* 出入场编排（用户定案）：离场 = 吸气放大 → 加速塌缩成点；入场 = 从点带回弹弹出。
+   粒子迸裂/汇聚见 .archive-particle；时序编排见 ArchiveOverlay 的 setArchiveVisible */
+.deleteButton.leaving {
+  animation: archive-btn-out 0.32s forwards;
+}
+
+@keyframes archive-btn-out {
+  0% {
+    transform: scale(1);
+    animation-timing-function: ease-out;
+  }
+
+  28% {
+    transform: scale(1.15); /* 吸气：先放大一点点 */
+    animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.4); /* 随后加速塌缩 */
+  }
+
+  100% {
+    transform: scale(0);
+  }
+}
+
+.deleteButton.entering {
+  animation: archive-btn-in 0.27s cubic-bezier(0.34, 1.4, 0.64, 1) both; /* 提速 50% */
+}
+
+@keyframes archive-btn-in {
+  from {
+    transform: scale(0);
+  }
+
+  to {
+    transform: scale(1);
+  }
+}
+
+/* 出入场粒子：accent 小圆点，中心与 (--dx,--dy) 偏移间定向飞行，播完即删零残留 */
+.archive-particle {
+  position: absolute;
+  left: 25px; /* 按钮中心恒定：落位 10px + 半宽 15px */
+  top: 25px;
+  width: 2px;
+  height: 2px;
+  margin: -1px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 4; /* 盖过归档板（z3）与按钮（z2） */
+  animation: archive-particle-out 0.42s ease-out forwards;
+}
+
+.archive-particle.in {
+  animation-name: archive-particle-in;
+  animation-duration: 0.28s; /* 入场提速 50%（用户定案） */
+  animation-timing-function: ease-in;
+}
+
+@keyframes archive-particle-out {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.4);
+    opacity: 0;
+  }
+}
+
+@keyframes archive-particle-in {
+  0% {
+    transform: translate(var(--dx), var(--dy)) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(0, 0) scale(0.4);
+    opacity: 0;
+  }
+}

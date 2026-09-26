@@ -235,6 +235,18 @@ impl Storage {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// 归档视图：已完成条目按 done_at 倒序（最新完成的在最上，V0.015 用户定案）；
+    /// done_at 相同（同秒完成/迁移 NULL 行）按 id 倒序保持稳定序
+    pub fn list_done(&self) -> Result<Vec<TodoItem>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, text, done, created_at, done_at, note FROM todos
+             WHERE done = 1
+             ORDER BY done_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], Self::row_to_item)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目
     pub fn add_bubble(&self, text: &str) -> Result<BubbleItem, StorageError> {
         self.conn
@@ -530,6 +542,69 @@ mod tests {
         step.store(1_700_000_200_000, Ordering::SeqCst);
         let back = st.toggle(item.id).expect("退回必须成功");
         assert_eq!(back.done_at, None, "退回清 done_at");
+    }
+
+    // ===== PL011.1 归档视图（TDD） =====
+
+    /// 注入可步进时钟的存储（归档排序断言：逐条勾选落不同 done_at）
+    fn stepped_storage() -> (Storage, Arc<std::sync::atomic::AtomicI64>) {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let clock = Arc::new(AtomicI64::new(1_700_000_000_000));
+        let clock2 = Arc::clone(&clock);
+        let st = Storage::open_in_memory_with_now(Arc::new(move || clock2.load(Ordering::SeqCst)))
+            .expect("库必须可开");
+        (st, clock)
+    }
+
+    #[test]
+    fn list_done_orders_by_done_at_desc() {
+        use std::sync::atomic::Ordering;
+        let (st, clock) = stepped_storage();
+        // 依次勾选 a、b、c（done_at 递增）→ 归档视图应 c、b、a（最新完成在最上）
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        let c = st.add("丙").expect("写入必须成功");
+        for (id, ms) in [(a.id, 100i64), (b.id, 200), (c.id, 300)] {
+            clock.store(1_700_000_000_000 + ms, Ordering::SeqCst);
+            st.toggle(id).expect("勾选必须成功");
+        }
+        let ids: Vec<i64> = st
+            .list_done()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![c.id, b.id, a.id], "done_at 倒序 = 最新完成在最上");
+    }
+
+    #[test]
+    fn list_done_same_done_at_ties_break_by_id_desc() {
+        let (st, clock) = stepped_storage();
+        // 三条同一时刻勾选（done_at 相同）→ 按 id 倒序稳定
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        let c = st.add("丙").expect("写入必须成功");
+        st.toggle(a.id).expect("勾选必须成功");
+        st.toggle(b.id).expect("勾选必须成功");
+        st.toggle(c.id).expect("勾选必须成功");
+        let _ = clock;
+        let ids: Vec<i64> = st
+            .list_done()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![c.id, b.id, a.id], "同 done_at 按 id 倒序");
+    }
+
+    #[test]
+    fn list_done_excludes_undone_and_empty_ok() {
+        let (st, _clock) = stepped_storage();
+        // 空归档 = 空 vec（正常态）；未完成条目不进归档视图
+        assert!(st.list_done().expect("读取必须成功").is_empty());
+        let a = st.add("未完成").expect("写入必须成功");
+        let _ = a;
+        assert!(st.list_done().expect("读取必须成功").is_empty());
     }
 
     #[test]
