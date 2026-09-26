@@ -67,6 +67,7 @@ const state = {
   todos: [] as MockTodo[],
   bubbles: [] as MockBubble[],
   whiteboard: "",
+  lastCopied: "",
 };
 
 /** 种子装载（装载时快照 Date.now，断言可复现） */
@@ -189,6 +190,23 @@ const handlers: Record<string, CommandHandler> = {
     items: [...state.bubbles].sort((a, b) => b.id - a.id),
     remind: state.bubbles.length >= MAX_BUBBLES,
   }),
+  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验入库链路）
+  bubble_capture: () => {
+    const text = `[mock 捕获] ${new Date().toLocaleTimeString()} 的剪贴板内容`;
+    const err = text.trim() ? null : "气泡文本不能为空";
+    if (err) throw err;
+    const item: MockBubble = { id: ++state.bubbleSeq, text };
+    state.bubbles.push(item);
+    return item;
+  },
+  // 复制回（Rust = 写真剪贴板；mock 环境写不进去，记录最近复制内容供断言）
+  bubble_copy: (args) => {
+    const id = Number(args.id);
+    const item = state.bubbles.find((x) => x.id === id);
+    if (!item) throw `气泡条目不存在：${id}`;
+    state.lastCopied = item.text;
+    return null;
+  },
   bubble_add: (args) => {
     const text = String(args.text ?? "").trim();
     if (!text) throw "气泡文本不能为空";

@@ -109,3 +109,20 @@
 .detail-note::-webkit-scrollbar {
   display: none; /* 隐藏原生滑杆（Chromium） */
 }
+
+/* —— 气泡全文只读态（V0.020 ⑩ 定案）：单层玻璃——标签头摘除、文字直接落板面
+   （去内嵌卡底与描边落影），只留文字与滑杆；readonly 去输入质感 —— */
+
+.detail-overlay.bubble-mode .detail-head {
+  display: none;
+}
+
+.detail-overlay.bubble-mode .note-shell.bubble-shell {
+  background: transparent; /* 单层玻璃：壳也摘掉，文字直接落板面 */
+  box-shadow: none;
+}
+
+.detail-note.bubble-note {
+  cursor: default;
+  padding: 0;
+}

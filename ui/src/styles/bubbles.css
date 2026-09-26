@@ -1,0 +1,159 @@
+/* ===== 气泡页样式（PL012.2 自 design/assets/css/bubbles.css 1:1 落位）：
+   捕获钮紫染玻璃卡（clipboard 双图标 + 占字 50% 紫反馈）/ 一键清空红染玻璃卡
+   （宽度动画 + confirming 50% 红 + 0 气泡灰染 disabled）/ 满仓警告红字（age-alert 同款）/
+   容器两档偏移 / 气泡行（b-text 两行截断 + 罩死过渡落常态）。数值全部沿实测定案 ===== */
+
+/* 空态（与清单共享 design 共享段同值） */
+.empty,
+.placeholder {
+  margin: 24px 0;
+  font-size: 13px;
+  text-align: center;
+  opacity: 0.55;
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 捕获按钮：紫染玻璃卡（用户定案 2026-09-25）——玻璃板配方 + accent 淡染（深度对齐页签滑块 21%） */
+.capture {
+  display: inline-flex; /* 图标与文案 flex 居中对齐（免 baseline 猜测），gap 管间距 */
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--accent) 21%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px; /* 显式行高：换字/换图标前后按钮高度不变（根治 fallback 字体度量 1px 上缩） */
+  cursor: pointer;
+  white-space: nowrap; /* 让位/占字期间文字不许换行 */
+  transition: background 0.3s ease; /* 占字 50% 紫随换字一体渐变 */
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
+}
+
+.cap-icon {
+  flex-shrink: 0; /* 让位挤压时图标不许缩 */
+  width: 13px;
+  height: 13px;
+  fill: currentColor; /* 随文字色走（含禁用占字态） */
+}
+
+.capture:disabled {
+  background: color-mix(in srgb, var(--accent) 50%, transparent); /* 占字反馈 50% 紫（用户定案） */
+  cursor: default; /* disabled 已挡点击，只去手型 */
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 一键清空：红染玻璃卡（用户定案 2026-09-25）——深度与捕获对称；无气泡转灰染且不可点 */
+.clear {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--danger) 21%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px; /* 与捕获钮同拍钉高：确认文案换字前后高度不变 */
+  cursor: pointer;
+  white-space: nowrap; /* 确认文字较长，展开/缩回过渡帧不许换行 */
+  overflow: hidden; /* 宽度回弹过冲帧文字不出界 */
+  transition:
+    width 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
+    background 0.3s ease; /* width 由 JS 锁值驱动；background 覆盖确认加深/灰染切换 */
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.clear:disabled {
+  background: rgba(128, 128, 128, 0.18);
+  cursor: default;
+}
+
+.clear.confirming {
+  background: color-mix(in srgb, var(--danger) 50%, transparent); /* 50% 透明红（用户定案） */
+  color: #fff;
+}
+
+/* 满仓警告（用户定案 2026-09-25）：一行红色小字，阴影与大小复制清单超时提醒。
+   位于滚动容器内部首项——随内容一起滚动，由组件按超过上限动态增删 */
+.full-warning {
+  margin: 0 0 0 12px; /* 与玻璃卡内文字左缘对齐（age-alert 同款） */
+  line-height: 1; /* 显式行高：防回退字体度量撑高行盒 */
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--danger);
+  text-shadow: 0.5px 0.5px 2px #000; /* age-alert 同阴影 */
+}
+
+/* 满仓警告的顶距偏移随警告显隐分两档（用户定案 2026-09-25）：警告行自身的负 margin 会把
+   它顶出滚动起点（裁切 + 渐显带叠加），上移到容器则内容整体平移、零元素越界——
+   无警告 -4（首行距捕获行 10px 节奏）；有警告 -9.5（警告墨迹距捕获行 4.5px） */
+.bubbles .group {
+  margin-top: -4px;
+}
+
+.bubbles .group.has-warning {
+  margin-top: -9.5px;
+}
+
+.bubble-row {
+  position: relative; /* 删除按钮右缘锚定基准（.del 绝对定位宿主，与 .todo-row 同款） */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 玻璃板落影（REC 配方推广） */
+  cursor: pointer;
+}
+
+.b-text {
+  flex: 1;
+  /* 右侧预留收起态删除按钮位（收起左缘距行右缘 36px）；悬停展开时按钮覆盖上来 */
+  padding-right: 36px;
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* 罩死灰化/恢复双向过渡：transition 必须落常态——只在 .mask-dead 态则恢复无渐变 */
+  transition: color 0.5s ease;
+}
+
+/* 罩死行（V0.027 推广气泡，语义与清单同款）：文字灰化、删除钮失效且灰化、光标回箭头 */
+.bubble-row.mask-dead {
+  cursor: default;
+}
+
+.bubble-row.mask-dead .b-text {
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.bubble-row.mask-dead .del {
+  pointer-events: none;
+  cursor: default;
+  opacity: 0.35;
+  transition: opacity 0.5s ease;
+}
+
+/* 垃圾桶白填充对 grayscale 免疫——罩死态直改 fill 成灰（清单同款） */
+.bubble-row.mask-dead .del-icon path {
+  fill: rgba(255, 255, 255, 0.35);
+}

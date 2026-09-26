@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { TodoItem } from "../../types";
+import type { BubbleItem, TodoItem } from "../../types";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { syncVeils } from "../composables/useVeils";
@@ -14,9 +14,14 @@ import { syncVeils } from "../composables/useVeils";
 const props = defineProps<{
   /** 开板数据源：当前详情条目（null = 关板） */
   todo: TodoItem | null;
+  /** 气泡全文板数据源（PL012.3 bubble 模式；todo 优先级低——两源互斥由父级保证） */
+  bubble: BubbleItem | null;
 }>();
 
 const emit = defineEmits<{ changed: []; close: [] }>();
+
+/** 双模式（V0.020 ⑩ 定案）：bubble = 单层玻璃（标签头摘除 + note 透明直落板面 + readonly） */
+const isBubbleMode = computed(() => props.bubble !== null);
 
 const overlay = ref<HTMLElement | null>(null);
 const titleDraft = ref("");
@@ -65,7 +70,7 @@ function close(): void {
   emit("close");
 }
 
-// todo prop 变化驱动开合与草稿装载
+// 数据源变化驱动开合与草稿装载（todo / bubble 双模式互斥）
 watch(
   () => props.todo,
   (t) => {
@@ -73,13 +78,26 @@ watch(
       titleDraft.value = t.text;
       noteDraft.value = t.note;
       open();
-    } else {
+    } else if (!props.bubble) {
       close();
     }
   },
 );
 
-// —— 标题改名（maxlength 12，input 实时同步回清单——debounce 300ms 合并 IPC） ——
+watch(
+  () => props.bubble,
+  (b) => {
+    if (b) {
+      noteDraft.value = b.text; // 气泡全文只读展示
+      open();
+    } else if (!props.todo) {
+      close();
+    }
+  },
+);
+
+// —— 标题改名（maxlength 12，input 实时同步回清单——debounce 300ms 合并 IPC）。
+// bubble 模式只读：head 整个隐藏无 input，此 watch 天然不触发 ——
 
 let renameTimer: number | undefined;
 watch(titleDraft, (text) => {
@@ -92,7 +110,7 @@ watch(titleDraft, (text) => {
   }, 300);
 });
 
-// —— 笔记防抖 300ms 保存（与实验场白板同拍） ——
+// —— 笔记防抖 300ms 保存（与实验场白板同拍）；bubble 模式 readonly 不触发 ——
 
 let noteTimer: number | undefined;
 watch(noteDraft, (note) => {
@@ -121,7 +139,6 @@ function onGlobalDown(e: MouseEvent): void {
 }
 window.addEventListener("mousedown", onGlobalDown, true);
 
-import { onBeforeUnmount } from "vue";
 onBeforeUnmount(() => {
   flushPending();
   window.removeEventListener("mousedown", onGlobalDown, true);
@@ -129,18 +146,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="overlay" class="detail-overlay" :class="{ open: isOpen }">
+  <div ref="overlay" class="detail-overlay" :class="{ open: isOpen, 'bubble-mode': isBubbleMode }">
     <div class="board-glass detail-glass">
-      <div class="detail-head">
+      <div v-if="!isBubbleMode" class="detail-head">
         <span class="detail-label">标题</span>
         <input v-model="titleDraft" class="detail-title" maxlength="12" placeholder="最多 12 字" />
       </div>
-      <div class="note-shell">
+      <div class="note-shell" :class="{ 'bubble-shell': isBubbleMode }">
         <textarea
           ref="noteEl"
           v-model="noteDraft"
           class="detail-note board-read"
-          placeholder="添加描述、清单、想法…"
+          :class="{ 'bubble-note': isBubbleMode }"
+          :readonly="isBubbleMode"
+          :placeholder="isBubbleMode ? '' : '添加描述、清单、想法…'"
           spellcheck="false"
         ></textarea>
       </div>

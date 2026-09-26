@@ -4,13 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
-import type { TodoItem, TodoView } from "./types";
+import type { BubbleItem, TodoItem, TodoView } from "./types";
 import AddBar from "./src/components/AddBar.vue";
 import TabsBar from "./src/components/TabsBar.vue";
 import TodoList from "./src/components/TodoList.vue";
 import DetailOverlay from "./src/components/DetailOverlay.vue";
 import ArchiveOverlay from "./src/components/ArchiveOverlay.vue";
-import BubblesView from "./components/BubblesView.vue";
+import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
 
 // PL011 管线：分态纱浓度由 .focused class 驱动——初值经 isFocused 查询兜底，
@@ -52,10 +52,17 @@ function onTabChange(key: string): void {
 // —— 详情板（PL010.5）：行单击 openDetail 上抛 → 置 detailTodo 开板 ——
 
 const detailTodo = ref<TodoItem | null>(null);
+const detailBubble = ref<BubbleItem | null>(null);
+// 气泡全文板数据源（PL012.3）：与 detailTodo 互斥（一开一关）
 
 /** 行单击开详情板：以最新视图中的条目为数据源（防陈旧） */
 function onOpenDetail(item: TodoItem): void {
   detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
+}
+
+/** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读） */
+function onOpenBubble(item: BubbleItem): void {
+  detailBubble.value = item;
 }
 
 // —— 归档板（PL011）：数据源 + 变更重拉 —— 非清单页隐藏归档按钮（V0.015 定案：
@@ -136,7 +143,7 @@ onUnmounted(() => {
       <TodoList :items="items" @changed="onListChanged" @open-detail="onOpenDetail" />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
-      <BubblesView />
+      <BubblesView @open-bubble="onOpenBubble" />
     </div>
     <!-- 白板页常驻挂载（v-show）：组件内草稿状态不因切页丢失 -->
     <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
@@ -145,7 +152,12 @@ onUnmounted(() => {
     <!-- 归档板（PL011）：仅清单页可见（V0.015 定案），数据经 changed/挂载时拉取 -->
     <ArchiveOverlay v-if="activeTab === 'todos'" :items="archiveItems" @changed="onListChanged" />
     <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动 -->
-    <DetailOverlay :todo="detailTodo" @changed="onListChanged" @close="detailTodo = null" />
+    <DetailOverlay
+      :todo="detailTodo"
+      :bubble="detailBubble"
+      @changed="onListChanged"
+      @close="detailBubble = null"
+    />
   </main>
 </template>
 
