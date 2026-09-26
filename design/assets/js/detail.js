@@ -142,6 +142,8 @@ $("detail-thumb").addEventListener("pointerdown", (e) => {
 document.addEventListener("dblclick", (e) => {
   const brow = e.target.closest("#bubble-list .bubble-row");
   if (brow) {
+    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点双击不当作开板（用户定案）
+    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可双击开板（用户定案 2026-09-26）
     window.clearTimeout(bubbleCopyTimer);
     cancelClearConfirm(); // 点气泡旁路取消一键清空确认（与单击语义一致）
     const b = bubbles.find((x) => x.id === Number(brow.dataset.id));

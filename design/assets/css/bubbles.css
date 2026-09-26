@@ -128,6 +128,9 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* 罩死灰化/恢复双向过渡（用户定案 2026-09-26，推广气泡）：transition 必须落常态——
+     只写在 .mask-dead 态则摘类恢复时无过渡瞬间跳回 */
+  transition: color 0.5s ease;
 }
 
 /* 行出入场（用户定案 2026-09-25）：复用清单同款动效（keyframes todo-in 复用，
@@ -147,4 +150,58 @@ li.bubble-row.leaving {
     height 0.3s ease-in,
     transform 0.3s ease-in,
     opacity 0.3s ease-in;
+}
+
+/* ===== 拖拽排序（2026-09-26 推广气泡，机制与清单共用 drag-reorder.js）===== */
+
+/* 拖拽浮起视觉（与清单 dragging 同款配方）：被拖行重挂卡片层——translateY 跟手 +
+   1.03 放大由 JS 内联合成（不得挂 transition，须 1:1 跟手），这里只管压层/落影加深/
+   抓手。border-box 钉宽语义：宽度按实测 border-box 钉定，行自带 12px 内距在
+   content-box 下会被撑宽 24px */
+li.bubble-row.dragging {
+  box-sizing: border-box;
+  z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
+  cursor: grabbing;
+  box-shadow:
+    var(--panel-stroke),
+    var(--panel-shadow),
+    0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
+}
+
+/* 等高占位符（与清单 todo-ghost 同款语义）：行本体重挂期间留在列表里的落点指示。
+   禁止 flex 收缩：限高纵向 flex 溢出时空占位符被压成 0 高、让位快照全盘失真（清单
+   同族根因）；border-box 同上——JS 按实测 offsetHeight 钉高，content-box 会撑高 18px */
+li.bubble-ghost {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  opacity: 0.4; /* 玻璃底/圆角/描边由 .bubble-row 基类承担，此处只降透明度作弱化指示 */
+}
+
+/* 让位平移的顺滑过渡（与清单 .todo-item.shifting 同款）：只动 transform，不重排 DOM */
+li.bubble-row.shifting {
+  transition: transform 0.2s ease;
+}
+
+/* ===== 罩死行（2026-09-26 用户定案推广气泡，语义与清单同款）===== */
+
+/* 侵入溶解带 ≥38% 整卡禁交互——文字灰化、删除钮失效且灰化、光标回普通箭头；
+   出死区摘类同拍恢复（恢复渐变落各常态规则）。类由 syncMaskDead 按滚动/重建切换 */
+li.bubble-row.mask-dead {
+  cursor: default;
+}
+
+li.bubble-row.mask-dead .b-text {
+  color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+li.bubble-row.mask-dead .del {
+  pointer-events: none; /* 悬停展开与点击一并失效 */
+  cursor: default;
+  opacity: 0.35;
+  transition: opacity 0.5s ease;
+}
+
+/* 垃圾桶白填充对 grayscale 免疫（白色无色彩可去）——罩死态直改 fill 成灰（清单同款） */
+li.bubble-row.mask-dead .del-icon path {
+  fill: rgba(255, 255, 255, 0.35);
 }

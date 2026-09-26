@@ -220,6 +220,7 @@ makeBoardRead($("archive-list")); // 归档板（P1 泛化，2026-09-25）
 // 0.25s 过渡；滚回阈值上方复位
 makeBoardRead($("bubble-list"), {
   rowSel: ".bubble-row",
+  skipDuringDrag: true, // 拖拽收尾互斥（与清单同款，2026-09-26 气泡拖拽）：让位 transform 中重算会取错几何
   maskShift: { threshold: 8.5, depth: 6 },
 });
 // 详情板 textarea（用户定案 2026-09-25 接入双模式）：同套整板阅读——gate 门控限详情

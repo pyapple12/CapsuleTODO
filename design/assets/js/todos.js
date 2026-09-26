@@ -198,9 +198,11 @@ function addTodo() {
 document.addEventListener("click", (e) => {
   const del = e.target.closest("[data-del]");
   if (del) {
-    // 罩死行删除钮失效（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡死透；
-    // 仅约束清单行——归档板/气泡无此罩死语义
-    if (del.closest("#todo-active") && rowMaskDead(del.closest(".todo-row"))) return;
+    // 罩死行删除钮失效（用户定案 2026-09-26，气泡并入）：侵入溶解带 ≥38% 整卡死透；
+    // 归档板无罩死语义
+    const deadRow =
+      del.closest("#todo-active .todo-row") ?? del.closest("#bubble-list .bubble-row");
+    if (deadRow && rowMaskDead(deadRow)) return;
     // 行内删除二态确认（清单/归档/气泡统一，用户定案 2026-09-26）：首点盖翻起 +
     // Delete 字渐隐 + 按压脉冲，状态冻结保持——鼠标离开删除钮即回退（盖子直接
     // 归位），移回显红。再点执行：脉冲先播完再进删除链路（同拍起跑按压反馈会被
@@ -300,6 +302,8 @@ document.addEventListener("click", (e) => {
   }
   const brow = e.target.closest(".bubble-row");
   if (brow) {
+    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点点击不当作复制（用户定案）
+    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可复制（用户定案 2026-09-26）
     // 单击复制延迟 180ms（与清单开详情同拍）：留双击窗口给"双击开全文板"，
     // 双击的第一次点击不闪占字；detail.js 的 dblclick 分支清此定时器
     const b = bubbles.find((x) => x.id === Number(brow.dataset.id));
