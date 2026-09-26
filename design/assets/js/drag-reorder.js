@@ -62,7 +62,7 @@ const DRAG_TARGETS = [
     itemSel: ".bubble-row", // 气泡行身兼外壳（无内层行容器）
     ghostClass: "bubble-row bubble-ghost", // 气泡行自带玻璃底——ghost 剥视觉见 bubbles.css
     onDown(row, e) {
-      window.clearTimeout(bubbleCopyTimer); // 新按下取代上次点击的待复制（与清单待开详情同款竞态）
+      window.clearTimeout(bubbleCopyTimer); // 新按下取代上次点击的待开板（与清单待开详情同款竞态）
       if (e.target.closest(".del")) return false;
       return true;
     },
@@ -78,7 +78,7 @@ const DRAG_TARGETS = [
 ];
 
 let dragCtx = null;
-let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作行点击（清单开详情/气泡复制与开板）
+let suppressDetailUntil = 0; // 拖拽结束后 350ms 内的点击不当作行点击（清单开详情/气泡开板与复制）
 
 // 行侵入溶解带比例（0 起）：行矩形与容器上下溶解带的侵入深度 ÷ 行高。
 // 列表取行所在 .board-read（清单/气泡滚动容器都挂此类，泛化即通）。

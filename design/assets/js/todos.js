@@ -302,19 +302,16 @@ document.addEventListener("click", (e) => {
   }
   const brow = e.target.closest(".bubble-row");
   if (brow) {
-    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点点击不当作复制（用户定案）
-    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可复制（用户定案 2026-09-26）
-    // 单击复制延迟 180ms（与清单开详情同拍）：留双击窗口给"双击开全文板"，
-    // 双击的第一次点击不闪占字；detail.js 的 dblclick 分支清此定时器
+    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点点击不当作行点击（用户定案）
+    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可点开（用户定案 2026-09-26）
+    cancelClearConfirm(); // 确认清空期间点气泡：一键清空旁路退回（开板/复制两动作共通，首点即退）
+    // 单击开全文板延迟 180ms（与清单开详情同拍）：留双击窗口给"双击复制"（用户定案
+    // 2026-09-26 对调：单击开板、双击复制）；双击的第一次点击不开板，detail.js 的
+    // dblclick 分支清此定时器
     const b = bubbles.find((x) => x.id === Number(brow.dataset.id));
     if (!b) return;
     window.clearTimeout(bubbleCopyTimer);
-    bubbleCopyTimer = window.setTimeout(() => {
-      // 复制回剪贴板（实验场尽力而为：非 https 环境可能被拒，观感不受影响）
-      if (navigator.clipboard) navigator.clipboard.writeText(b.text).catch(() => {});
-      flashCaptureCopied();
-      cancelClearConfirm(); // 确认清空期间点气泡：一键清空旁路退回（用户定案 2026-09-25）
-    }, 180);
+    bubbleCopyTimer = window.setTimeout(() => openBubbleDetail(b, brow), 180);
   }
 });
 

@@ -136,18 +136,20 @@ $("detail-thumb").addEventListener("pointerdown", (e) => {
   e.preventDefault();
 });
 
-// 双击行正文：气泡行 = 开只读全文板（并取消未决的单击复制，双击不闪占字）；
+// 双击行正文：气泡行 = 复制到剪贴板（并取消未决的单击开板，双击不开板）；
 // 清单行 = 行内改标题（Enter/失焦保存、Esc 取消、≤12 字与详情板同规），
 // 同时取消未决的详情板弹出（双击窗口内第二次点击到此）
 document.addEventListener("dblclick", (e) => {
   const brow = e.target.closest("#bubble-list .bubble-row");
   if (brow) {
-    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点双击不当作开板（用户定案）
-    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可双击开板（用户定案 2026-09-26）
-    window.clearTimeout(bubbleCopyTimer);
-    cancelClearConfirm(); // 点气泡旁路取消一键清空确认（与单击语义一致）
+    if (Date.now() < suppressDetailUntil) return; // 拖拽收场落点双击不当作复制（用户定案）
+    if (rowMaskDead(brow)) return; // 侵入溶解带 ≥38%：整卡罩死不可复制（用户定案 2026-09-26）
+    window.clearTimeout(bubbleCopyTimer); // 掐掉未决的单击开板：双击只复制不开板
     const b = bubbles.find((x) => x.id === Number(brow.dataset.id));
-    if (b) openBubbleDetail(b, brow);
+    if (!b) return;
+    // 复制回剪贴板（实验场尽力而为：非 https 环境可能被拒，观感不受影响）；占字反馈
+    if (navigator.clipboard) navigator.clipboard.writeText(b.text).catch(() => {});
+    flashCaptureCopied();
     return;
   }
   const row = e.target.closest("#todo-active .todo-row");

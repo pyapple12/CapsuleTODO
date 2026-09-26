@@ -89,13 +89,16 @@ const boardReads = [];
 
 function makeBoardRead(el, opts = {}) {
   el.classList.add("board-read"); // 吸附/遮罩/对齐样式（glass-bar.css 按类挂载）
+  // 三角宿主（用户定案 2026-09-26 方案B）：默认卡片层 #board；归档实例传玻璃板——
+  // 板身 scale 挂在 .board-glass 上，三角须为其子节点才随揭示动画缩放生长
+  const hintHost = opts.hintHost ?? $("board");
   const up = document.createElement("div");
   up.className = "edge-hint up";
   up.textContent = "▲";
   const down = document.createElement("div");
   down.className = "edge-hint down";
   down.textContent = "▼";
-  $("board").append(up, down);
+  hintHost.append(up, down);
   const inst = {
     el,
     hints: [up, down],
@@ -105,19 +108,20 @@ function makeBoardRead(el, opts = {}) {
 
   // 边缘三角几何与显隐：上下缘各占 26px 通栏；容器可滚动且未到对应尽头才显示
   inst.sync = () => {
-    // 详情板场景（opts.layout）：祖先链上有揭示缩放动画，gBCR 会把 transform 中间态
-    // 算进几何（渲染节流冻结时尤其如此）——改走 offsetTop/offsetWidth 布局盒，
-    // 沿 offsetParent 链累加到 #board，得到的就是 board 相对坐标（不再减 hr），
-    // 动画任何时刻都拿到最终几何
+    // 详情板/归档板场景（opts.layout 或 opts.hintHost）：祖先链上有揭示缩放动画，
+    // gBCR 会把 transform 中间态算进几何（渲染节流冻结时尤其如此）——改走
+    // offsetTop/offsetWidth 布局盒，沿 offsetParent 链累加到宿主（hintHost，默认
+    // #board），得到的就是宿主局部坐标（不再减 hr），动画任何时刻都拿到最终几何。
+    // 设了 hintHost 必须走本分支：板内宿主坐标用 gBCR 会被缩放污染
     let left;
     let top;
     let width;
     let bottom;
-    if (opts.layout) {
+    if (opts.layout || opts.hintHost) {
       let node = el;
       let x = 0;
       let y = 0;
-      const boardEl = $("board");
+      const boardEl = hintHost; // 走链终点 = 宿主：累加值即宿主局部坐标
       while (node && node !== boardEl) {
         x += node.offsetLeft;
         y += node.offsetTop;
@@ -129,7 +133,7 @@ function makeBoardRead(el, opts = {}) {
       bottom = y + el.offsetHeight;
     } else {
       const sr = el.getBoundingClientRect();
-      const hr = $("board").getBoundingClientRect();
+      const hr = hintHost.getBoundingClientRect();
       left = sr.left - hr.left;
       top = sr.top - hr.top;
       width = sr.width;
@@ -213,7 +217,14 @@ function makeBoardRead(el, opts = {}) {
 }
 
 makeBoardRead($("todo-active"), { skipDuringDrag: true }); // 清单（拖拽收尾互斥）
-makeBoardRead($("archive-list")); // 归档板（P1 泛化，2026-09-25）
+// 归档板（P1 泛化，2026-09-25）；hintHost = 玻璃板（方案B，2026-09-26 用户定案）：
+// 三角随板身缩放生长——开板不再领先板身硬切出现（gBCR/observer 抢跑双失效，observer
+// 摘 hidden 时 scale≈0 不可见），坐标走布局盒免疫揭示缩放；隐显结构化（板关 = 玻璃
+// visibility 连带隐藏），不再吃 syncVeils 的帘
+makeBoardRead($("archive-list"), {
+  hintHost: document.querySelector("#board-overlay .board-glass"),
+  layout: true,
+});
 // 气泡列表（同套整板阅读规则，2026-09-25）；maskShift = 隐区位移：警告行入列使列表盒
 // 上探进捕获行背后 5.5px，渐显带随之没入——阈值 8.5（内距 4 + 警告高 10 − 侵入 5.5，
 // 警告完全没入捕获行背后的瞬间）过线即把带下推 6px（用户定案，11.5→8→6 一路收紧），
@@ -254,12 +265,14 @@ function syncVeils() {
     g.bar.classList.toggle("veiled", veil);
   }
   for (const r of boardReads) {
-    // 归档实例只在归档板打开时可见（关板即隐——否则收板后三角以最后已知位置
-    // 浮在清单页上，2026-09-25 实测）；详情板实例随详情板开合隐现（板开时自家
-    // 三角必须可见，不能吃 anyOpen 的帘）；清单实例随任意浮板开合隐现
+    // 归档实例跳过（方案B 2026-09-26）：三角已住进玻璃板随板隐显，不能吃帘——否则
+    // 板开时 anyOpen=true 会把自家三角罩死；关板泄漏已由"玻璃 visibility 连带隐藏"
+    // 结构性根治（旧特例 !boardOpen 连同其防泄漏使命一并退役）
+    if (r.el.id === "archive-list") continue;
+    // 详情板实例随详情板开合隐现（板开时自家三角必须可见，不能吃 anyOpen 的帘）；
+    // 清单实例随任意浮板开合隐现
     const detailOpen = detailOverlay.classList.contains("open");
-    const veil =
-      r.el.id === "archive-list" ? !boardOpen : r.el.id === "detail-note" ? !detailOpen : anyOpen;
+    const veil = r.el.id === "detail-note" ? !detailOpen : anyOpen;
     for (const hint of r.hints) hint.classList.toggle("veiled", veil);
   }
 }
