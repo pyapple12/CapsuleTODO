@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
 import type { TodoItem } from "./types";
-import AddBar from "./components/AddBar.vue";
+import AddBar from "./src/components/AddBar.vue";
+import TabsBar from "./src/components/TabsBar.vue";
 import BubblesView from "./components/BubblesView.vue";
 import TodoList from "./components/TodoList.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
@@ -17,12 +18,34 @@ let unlistenFocus: UnlistenFn | undefined;
 
 // 二期三页签（PL004）：清单（一期功能）/ 气泡（临时剪贴板）/ 白板（临时草稿）
 type TabKey = "todos" | "bubbles" | "whiteboard";
-const tabs: ReadonlyArray<{ key: TabKey; label: string }> = [
-  { key: "todos", label: "清单" },
-  { key: "bubbles", label: "气泡" },
-  { key: "whiteboard", label: "白板" },
-];
 const activeTab = ref<TabKey>("todos");
+
+// 页签徽章：气泡未读计数（PL008.4 接 mock/真实 bubble_list 长度；≥10 显示 9+）
+const bubbleCount = ref(0);
+
+/** 拉取气泡徽章计数（snapshot.items 长度即条目数，与页内显示同源） */
+async function refreshBadge(): Promise<void> {
+  try {
+    const snap = await invoke<{ items: unknown[] }>("bubble_list");
+    bubbleCount.value = snap.items.length;
+  } catch (err) {
+    console.error("bubble_list 徽章计数拉取失败", err);
+  }
+}
+
+/** 页签定义（TabsBar props）：徽章挂气泡页；whiteboard 键也要在列（glider 定位序号）。
+ * computed 保持徽章计数响应式——静态数组写 badgeCount: bubbleCount.value 是一次性
+ * 快照，ref 更新后不回写（实测徽章不显示的根因） */
+const tabDefs = computed(() => [
+  { key: "todos", label: "清单" },
+  { key: "bubbles", label: "气泡", badgeCount: bubbleCount.value },
+  { key: "whiteboard", label: "白板" },
+]);
+
+/** TabKey 兼容 TabsBar 字符串 key（v-model 回写收敛回三键类型） */
+function onTabChange(key: string): void {
+  activeTab.value = key as TabKey;
+}
 
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
 const items = ref<TodoItem[]>([]);
@@ -56,96 +79,43 @@ onMounted(async () => {
   // 白板数据安全 = 800ms 防抖自动保存（组件常驻挂载，计时器切页不中断）；
   // 不挂 JS onCloseRequested——实测该 API 会把关闭权移交 webview destroy 路径导致关闭挂起
   await refresh();
+  await refreshBadge();
 });
 
 onUnmounted(() => {
   unlistenFocus?.();
 });
-
-// 拖动方案（沿 Pulse PL010 定案）：交互元素白名单命中不抢，其余一律启动窗口拖拽
-// （.todo-row 整行点击 = 勾选；.bubble-row 整行点击 = 复制回，均须入白名单——A002-P2-1；
-// 页签为 button 已被覆盖；白名单随组件演进维护）
-const DRAG_INTERACTIVE = "button, input, textarea, label, .todo-row, .bubble-row";
-
-/** 非交互区按下即启动窗口拖拽 */
-function onWindowDown(e: MouseEvent): void {
-  if (e.button !== 0) {
-    return;
-  }
-  const target = e.target as HTMLElement | null;
-  if (target?.closest(DRAG_INTERACTIVE)) {
-    return;
-  }
-  void getCurrentWindow().startDragging();
-}
 </script>
 
 <template>
-  <main class="glass-card" :class="{ focused: windowFocused }" @mousedown="onWindowDown">
-    <header class="topbar">
-      <h1 class="title">CapsuleTODO</h1>
+  <!-- PL008.3 骨架 Vue 化（design/index.html 对应）：id=board 保留为卡片层锚点——
+       浮板/滑杆/三角/拖拽重挂全部以它为宿主（useVeils/useGlassBar/useBoardRead 依赖）；
+       拖动收敛 topbar：交互区（页签/行/输入）不再依赖白名单排除，误触面归零 -->
+  <main id="board" class="glass-card" :class="{ focused: windowFocused }">
+    <header class="topbar" data-tauri-drag-region>
+      <h1 class="title" data-tauri-drag-region>CapsuleTODO</h1>
     </header>
-    <nav class="tabbar">
-      <button
-        v-for="tab in tabs"
-        :key="tab.key"
-        class="tab-btn"
-        :class="{ active: activeTab === tab.key }"
-        @click="activeTab = tab.key"
-      >
-        {{ tab.label }}
-      </button>
+    <nav class="tabs-slot">
+      <TabsBar :model-value="activeTab" :tabs="tabDefs" @update:model-value="onTabChange" />
     </nav>
-    <div v-if="activeTab === 'todos'" class="page">
+    <div v-if="activeTab === 'todos'" class="page" id="page-todos">
       <AddBar @changed="refresh" />
       <TodoList :items="items" @changed="refresh" />
     </div>
-    <div v-if="activeTab === 'bubbles'" class="page">
+    <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
       <BubblesView />
     </div>
     <!-- 白板页常驻挂载（v-show）：组件内草稿状态不因切页丢失 -->
-    <div v-show="activeTab === 'whiteboard'" class="page">
+    <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
       <WhiteboardView />
     </div>
   </main>
 </template>
 
 <style>
-/* —— 设计令牌（全局唯一来源）：沿系列玻璃配方（对照 CapsulePulse PL010 令牌表移植）。
-   真实玻璃材质：高透薄纱体色 + 亮边 + 顶缘 rim + 落影；磨砂由 DWM Acrylic 背板承担（焦点联动）—— */
-:root {
-  --accent: #7c3aed;
-  --ink: #1d1d1f;
-  --ink-2: color-mix(in srgb, #1d1d1f 55%, transparent);
-  --font-stack: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
-  --glass-bg: rgba(255, 255, 255, 0.3);
-  --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.78);
-  --panel-bg: rgba(255, 255, 255, 0.38);
-  --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
-  --text-shadow: none;
-  --glass-highlight:
-    inset 0 1px rgba(255, 255, 255, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
-  --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.9);
-  --shadow-candy: 0 16px 40px rgba(80, 60, 120, 0.25);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* 暗夜衍生：同一配方的低透深纱版（浅字 + 暗投影保对比），磨砂仍由 DWM Acrylic 背板承担 */
-    --accent: #c0b0fd;
-    --ink: #f5f5f7;
-    --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
-    --glass-bg: rgba(0, 0, 0, 0.3);
-    --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
-    --panel-bg: rgba(255, 255, 255, 0.07);
-    --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-    --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-    --glass-highlight:
-      inset 0 1px rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
-    --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.32);
-    --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
-  }
-}
+/* —— 设计令牌：PL008.2 起收敛到 ui/src/styles/glass.css（design/glass.css 1:1 落位，
+   单一来源设计文档化），本文件不再内联令牌—— */
+@import "./src/styles/glass.css";
 </style>
 
 <style scoped>
@@ -194,6 +164,7 @@ function onWindowDown(e: MouseEvent): void {
 
 .topbar {
   flex-shrink: 0;
+  cursor: default; /* 拖动区光标语义（data-tauri-drag-region 按下即窗口拖拽） */
 }
 
 .title {
@@ -205,35 +176,9 @@ function onWindowDown(e: MouseEvent): void {
   cursor: default;
 }
 
-/* 分段页签容器：面板级玻璃小件 */
-.tabbar {
-  display: flex;
+/* 页签槽位（TabsBar 组件自带 .tabs 样式，此处只占位） */
+.tabs-slot {
   flex-shrink: 0;
-  gap: 4px;
-  width: 100%;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--panel-bg);
-  box-shadow: var(--panel-stroke);
-}
-
-.tab-btn {
-  flex: 1;
-  padding: 6px 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-  opacity: 0.65;
-}
-
-.tab-btn.active {
-  background: var(--accent);
-  color: #fff;
-  opacity: 1;
 }
 
 /* 页容器：占满页签以下空间，滚动交给页内列表 */

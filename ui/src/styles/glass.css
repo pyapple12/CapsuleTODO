@@ -1,0 +1,63 @@
+/* ============================================================
+   CapsuleTODO APP 玻璃令牌层（PL008.2 自 design/glass.css 1:1 落位）
+   单一来源 = design/glass.css（基准配方读数见其头部注释）；本文件为
+   APP 侧落位副本——两边同步改（APP 回归期暂以人工对照保证，字段级
+   diff 见 design/README.md 映射表）。
+   相对实验场的差异（仅两处，均为 APP 运行环境必需）：
+   ① 无 body[data-bg] 演示背景段（APP 无背景图，真窗口 = DWM 背板）
+   ② .glass-card 引擎段保留在 APP（App.vue scoped 继续用令牌引用）
+   ============================================================ */
+
+:root {
+  --accent: #7c3aed;
+  --ink: #1d1d1f;
+  --ink-2: color-mix(in srgb, #1d1d1f 55%, transparent);
+  --font-stack: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --glass-bg: rgba(255, 255, 255, 0.3); /* 纱浓度 30%（基准） */
+  --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.78);
+  --panel-bg: rgba(255, 255, 255, 0.76); /* 玻璃板深度 ×2（REC 配方推广，前值 0.38） */
+  --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+  --panel-shadow: rgba(0, 0, 0, 0.35) 1.7px 1.7px 8px; /* 玻璃板落影（REC 配方推广；模糊须盖过偏移防贴边暗环，实测 2026-09-18） */
+  --text-shadow: none;
+  --glass-highlight:
+    inset 0 1px rgba(255, 255, 255, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
+  --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.9);
+  --shadow-candy: 0 16px 40px rgba(80, 60, 120, 0.25);
+  /* —— 组件令牌（uiverse 五处引入 R001 定值） —— */
+  --focus-blur: 14px; /* 聚焦磨砂近似（真窗口 = DWM Acrylic，本令牌 APP 侧仅 detail 揭示等 CSS 近似处引用） */
+  --radius-board: 8px;
+  --radius-panel: 10px;
+  --danger: #e5484d;
+  --glider-bg: rgba(124, 58, 237, 0.21); /* 页签滑块（accent 淡染，深度 +50%） */
+  --glider-glow: color-mix(in srgb, var(--accent) 35%, transparent); /* 滑块同色辉光 */
+  --input-focus-ring: var(--accent); /* 输入框聚焦环随主题 accent */
+  --input-focus-glow: color-mix(in srgb, var(--accent) 35%, transparent);
+  /* 勾选框霓虹绿（组件原生暗底，深浅同值不随主题换色） */
+  --check-primary: #00ffaa;
+  --check-primary-dark: #00cc88;
+  --check-box-bg: transparent; /* 常态底（用户定案：去黑底） */
+  --del-hover-glow: color-mix(in srgb, rgb(255, 69, 69) 35%, transparent); /* 删除钮红辉光 */
+  --check-box-bg-checked: rgba(0, 255, 170, 0.1); /* 勾选底 */
+  --rec-frame: var(--panel-bg); /* REC 外框底：已与玻璃板统一 */
+}
+
+/* —— 暗色令牌（跟随系统；APP 深浅跟随系统无手动切换，单块即可——与 design 双块等价） —— */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #c0b0fd;
+    --ink: #f5f5f7;
+    --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
+    --glass-bg: rgba(0, 0, 0, 0.3);
+    --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+    --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
+    --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    --panel-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+    --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --glass-highlight:
+      inset 0 1px rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.32);
+    --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
+    --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50% */
+    --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
+  }
+}

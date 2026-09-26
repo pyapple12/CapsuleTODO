@@ -145,3 +145,96 @@
 - [x] PL007.1 骨架与素材 —— 新建 `design/`（index.html / glass.css / README.md / RESEARCH.md / assets/）；用户两张照片（F:\Download Pool\project_avatar\avatar002/005.jpeg，2304×1728）经 PowerShell System.Drawing 转宽 1600 q80 小 jpg 入 assets/（转换脚本落 .temp/）；RESEARCH.md 自 CapsulePulse 同名文件同步（R001 uiverse galaxy 全量内容 + 出身注记）；验证：文件齐备 + jpg 体积对比源图显著缩小（2026-09-17 已验证：bg-cafe.jpg 348KB / bg-sunset.jpg 230KB（源 5.7MB/4.2MB，缩放 1600×1200 q80）+ 五文件齐备 + RESEARCH 出身注记与关联行按本项目改写）
 - [x] PL007.2 基准配方与三页复刻 —— glass.css 令牌 1:1 移植现行 App.vue（30% 分态纱/亮边/rim/落影/accent，深浅双主题）+ 背景图接管 + 聚焦态预览（backdrop-filter 近似磨砂）；index.html 三页签完整交互复刻（清单添加/勾选/折叠/删除、气泡演示捕获/复制回/满 5 横幅/二态清空、白板防抖状态行——纯客户端模拟状态，演示捕获 = 示例片段池）；验证：浏览器打开可交互 + 深浅双主题（2026-09-17 已验证：glass.css 令牌 1:1 移植 + index.html 三页复刻完成（演示捕获 = 示例片段池、聚焦态 backdrop 近似含实验场控件）；内联 JS 语法自检过（node Function 编译）+ prettier 全过；**浏览器目验移交用户**——交互观感以用户浏览器为准）
 - [x] PL007.3 映射表与收口 —— README 职责表/基准配方读数/查看方式/映射表（原型七区块 → Vue 组件 → 落点）/真实窗口可行性标注（✅⚠️❌ 三档）；勾结；不做审计（用户定案）；uiverse 组件五处引入（R001 规范：类名隔离/颜色令牌化/reduced-motion 守卫，定值经用户逐处目验收敛）：页签 heavy-dragonfly-92（glider 滑块 + 同色辉光 + 气泡徽章固定正圆）、输入框 plastic-parrot-88（聚焦环随主题 accent）、勾选框 hot-dragonfly-56（常态透明底，行 overflow:clip 裁装饰防幻影滚动）、删除按钮 smart-emu-83（25% 透明黑底、中心缩放向两侧展开覆盖文字 + 红辉光、悬停文字保留组件原文 "Delete"）、添加按钮 REC average-swan-99（Teenage Engineering EP-133 源码 100% 直引：黑方/红方/居中 REC/落影 rgba(0,0,0,0.566) 1.7px 1.7px 4px 外框标定，均用户定值）；REC 玻璃配方推广全玻璃板（--panel-bg 深度 ×2 + 新令牌 --panel-shadow，最终 rgba(0,0,0,0.35) 1.7px 1.7px 8px——模糊须盖过偏移防贴边暗环）；清单分组容器 8px 内边距 + 虚拟外框外扩（自动宽 + 左右负外边距 8px：框距卡边恒 10px、框宽 = 卡宽 − 20 随卡片动态，行宽 = 卡宽 − 36 与其他面板等宽；顶边上移 8px、底随内容）；配色基准 design/color_spark.md（暮色截图实测取色指南：色板/令牌映射建议/渐变配方，accent 分装饰与交互两层）；验证：映射表覆盖全部原型区块 + 用户浏览器目验持续进行（2026-09-17 起——实验场本身就是目验载体，目验反馈十余处均已修复收敛）
+
+### PL008: APP 回归·玻璃基座与通用组件族 [plan#APP回归]
+
+> 范围：实验场形态落回 ui/ 的基座层——DEV 冒烟基座、玻璃令牌、App.vue 骨架、四个通用组件；方案见 z.plan.md 附录 PL008。
+> 红线：uiverse 组件忠实移植（R001 规范）；design 定案参数不改；mock 通道禁进生产；每 PL 自验三道闸后提交推送 V0.1.1.5（用户定案 2026-09-26：主分支直干、中间零人工验收、PL014 总验收）。
+
+#### 阶段 A：冒烟与令牌基座
+
+- [x] PL008.1 DEV 冒烟基座（mock invoke 通道）—— 新建 `ui/src/dev/mock-invoke.ts`：导出 `installMockInvoke()`，内存态维护三源（todos/bubbles/whiteboard，种子沿 design/assets/js/state.js 的 8 清单 + 5 气泡 + 长文白板同款），`mockInvoke(cmd, args)` 覆盖既有十命令（todo_list/todo_add/todo_toggle/todo_remove/bubble_snapshot/bubble_add/bubble_remove/bubble_clear/whiteboard_load/whiteboard_save），PL010–PL013 将增命令留扩展位；`ui/main.ts` 顶部 DEV 分支（`import.meta.env.DEV` 且 `window.__TAURI_INTERNALS__` 缺失时）注入假 internals 路由 invoke 到 mock；验证：`npm run build` 绿（vue-tsc 含，DEV 死分支被 vite 消除——dist 产物 grep 无 mockInvoke 字符串）+ vite dev 起后 IAB evaluate 断言：todo_list 返回 8 条种子 / todo_add 后 9 条 / todo_remove 回 8 条（2026-09-26 已验证：build 295ms 绿 + dist 零 mock 痕迹（生产消除实证）+ vite dev（localhost:5173——**vite 默认只绑 localhost 不通 127.0.0.1**）IAB 全断言过：种子 sorted 视图 10 条（8 活跃+2 归档含）/ add→11 / remove→10 / toggle 往返 / 空白拒 / 气泡快照 5 条 remind 翻转 / 白板读回；注意清单页可见 8 条 = 种子 4 未经 sorted；校验阈值对齐 Rust 实测：气泡 2000（MAX_BUBBLE_TEXT_LEN）/ 待办 100）
+- [x] PL008.2 玻璃令牌层落位 —— 新建 `ui/src/styles/glass.css`：design/glass.css 全量令牌 1:1 移植（分态纱/亮边/rim/落影/accent 双主题/panel-bg/panel-shadow/radius 族，值零改动）；main.ts import 链首位挂载；App.vue 内联玻璃值改令牌引用（等值替换不改观感）；style.css 清理重复；验证：vue-tsc/build 绿 + IAB 双主题截图与 design 同页并排取色断言（卡片底/描边 rgba 逐项一致，prefers-color-scheme 翻转复测）（2026-09-26 已验证：build 257ms 绿 + IAB 令牌读数断言过——暗色组 accent #c0b0fd / panel-bg 0.14 / panel-shadow 0.566·1.7px·4px / glider-bg 0.3 全对，卡片圆角 8px 生效 = scoped→令牌链路通；文件头注明单一来源 = design/glass.css 及两处环境差异（无 body[data-bg] 演示背景段/APP 跟随系统单 dark 块——design 的手动 data-theme 双块属实验场控件，APP 无主题切换按定案不迁））
+
+#### 阶段 B：骨架与组件
+
+- [x] PL008.3 App.vue 骨架重构与窗口尺寸 —— App.vue template 重写为 design/index.html 骨架 Vue 版：topbar（标题 + data-tauri-drag-region 拖动区）、TabsBar 挂点、`#board` 卡片容器（position:relative 锚点保留——浮板/浮钮/三角宿主）、三 page 容器 v-show；全局 mousedown startDragging 收敛为 topbar 拖动区（交互件天然不误触）；`core/tauri.conf.json` 窗口宽改实验场卡宽实测定值（实施时 IAB 量 design `#board` offsetWidth + 外距）、高 580，resizable 沿 false；置顶/让位/位置记忆零改动；验证：build 绿 + cargo check 绿 + IAB 三 page hidden 切换断言 + topbar 拖动属性在位 + tauri dev exe 探针（标题/5s 存活/GetWindowRect 尺寸，脚本落 .temp/）（2026-09-26 已验证：build 255ms 绿 + cargo check 4.9s 绿 + IAB 断言过（#board 玻璃卡锚点/topbar 拖动属性/三页 v-if·v-show 切换互斥/清单 10 行与气泡 5 行 mock 渲染）+ exe 探针 PASS（标题 CapsuleTODO、客户区 300×580 精确一致、二次采样存活稳定）；**两项实测教训入档**：① mock 基座补全 internals 面——listen 缺 transformCallback 抛错致 onMounted 中断（await listen 后的 refresh 永不执行 = 页面恒空态）、plugin:* 命令（event|listen / window|is_focused）需假响应路由，均已在 mock-invoke.ts 修复；② 探针判定改 bash 侧——GetWindowRect 含透明无边框窗口 14×8 hit-test 外扩（客户区 GetClientRect 才等于配置值），且文件内 if 分支在 -File 上下文不可靠（同数据内联 PASS 文件 FAIL，原因未明不再追），探针只输出数据、判定交调用方）
+- [x] PL008.4 TabsBar 页签组件 —— 新建 `ui/src/components/TabsBar.vue` + `ui/src/styles/tabs.css`（design/assets/css/tabs.css 1:1）：uiverse heavy-dragonfly-92 glider——radio 组改 modelValue props + update:modelValue emit（滑块 left 过渡 CSS 保留）；气泡徽章（正圆、count prop、0 隐藏）挂气泡页签；App.vue 接线（v-model + 徽章接气泡计数）；验证：build 绿 + IAB：切页断言 page hidden 翻转 + 滑块位移读数 + 徽章数与 mock 一致 + 0 时隐藏（2026-09-26 已验证：build 绿 + IAB 全断言——徽章 "5" 显示且正圆/滑块三档 matrix 0/80px/160px（=0%/100%/200%）/切页往返/回清单 10 行；**Vue 教训入档**：tabDefs 写 `badgeCount: bubbleCount.value` 是一次性快照（ref 更新不回写静态数组）致徽章恒隐——改 computed 坐标系响应式；vite 根 = 仓库根，组件 style 内 @import 相对路径自组件文件起算 `../styles/tabs.css`，写 `./styles/` 会落错目录 ENOENT）
+- [x] PL008.5 NeonCheckbox 勾选框组件 —— 新建 `ui/src/components/NeonCheckbox.vue`（hot-dragonfly-56 全装饰层 1:1：frame/box/check-container/glow/borders 四条/particles 十二颗/rings 三环/sparks 四点）+ 样式段并入 `ui/src/styles/todos.css`：checked prop + toggle emit；勾选流光 borderFlow1-4 随 checked 启停（V0.016 ④ 定案：四条 nth-child 域 + keyframes 透明度节点 0/15/55/80%）；行 overflow:clip 裁装饰防幻影滚动；验证：build 绿 + IAB：checked 翻转四条 border 域 animation-name 断言（getComputedStyle）+ 未勾选空跑不亮 + reduced-motion 下 animation none（2026-09-26 已验证：build 274ms 绿 + 样式文件经 vite 直读核对完整（borderFlow1-4/粒子 12 颗 nth-child(12)/sparkFlash/ring 三档延迟 0/0.1/0.2s 全在，8830 字节）+ 页面零编译错误；**行为断言顺延 PL010.4**——组件尚未接清单行，tree-shake 使 scoped 样式不入 bundle，裸 DOM 注入命不中 hash 选择器，届时随行接线一并验证流光启停与 reduced-motion；**教训**：sed 行区间抽取截断 ring 延迟段，python 按行切片 + 尾部人工核对才完整）
+- [x] PL008.6 DelButton 二态确认删除钮 —— 新建 `ui/src/components/DelButton.vue`：template = FA6 trash-can 双 path（桶体在前、盖 `.del-lid` 在后=绘制在上，d 值逐字抄 design 模板）；样式抽 `ui/src/styles/del-button.css`（.del 族 1:1：hover 展开 35px 红底辉光/中心缩放 translateX(5px) 右缘补偿/Delete 字 ::before/del-open 锁红底/盖翻 0.5s cubic-bezier(0.34,1.4,0.64,1) origin 24px 64px/开盖态 svg overflow visible/del-press 脉冲关键帧整链携带 translateY(-50%) translateX(5px)/合盖无动画）；交互：confirming prop（父级管单实例）+ press/confirm emit（**confirm 在 200ms 执行窗后触发恰一次**——组件内 pendingConfirm 锁 + timer，onBeforeUnmount 清理）+ `rollBack()` expose + 脉冲 remove+回流重播 + reduced-motion 跳过；验证：build 绿（vue-tsc 含）+ 组件编译与样式落位断言过；**行为断言（开盖/盖翻/脉冲/窗口锁/离开回退）顺延 PL010.4**——组件未接清单行前无宿主（同 PL008.5 顺延逻辑），接线后随行一并全链路验证（2026-09-26）
+- [x] PL008.7 AddBar 重构（REC + 输入框）—— `ui/components/AddBar.vue` 重写：REC 添加钮（average-swan-99 直引配方：黑方/红方/居中 REC/落影 rgba(0,0,0,0.566) 1.7px 1.7px 4px）+ 输入框（plastic-parrot-88：聚焦环随主题 accent、label 上浮）+ 空输入禁用；新建 `ui/src/styles/addbar.css` 1:1；验证：build 绿 + IAB：空输入 disabled / Enter 与 REC 点击均走 todo_add（mock +1）/ 聚焦环类断言 / 双主题取色（2026-09-26 已验证：build 281ms 绿 + IAB 断言——REC 结构（btn-add/btn-add-face/btn-add-text）与空输入 disabled ✓/输入后启用 ✓/点击入列 11 行 ✓/成功清空 ✓/输入框几何（22px 高/9999px 胶囊/panel 阴影）✓；**聚焦环与双主题留 PL014**：遮挡 IAB 渲染器无系统焦点，:focus 伪类不触发（matches(":focus")=false 实测），样式规则直读核对在位（.input:focus → var(--input-focus-ring)）；**事故教训**：仓库同时存在 ui/components/（旧）与 ui/src/components/（新）双目录，App.vue import 指向旧 AddBar 致新组件"不生效"假象——PL010 换装 TodoList 时必须同步删旧组件防再次误引）
+
+#### 阶段 C：收口
+
+- [ ] PL008.8 PL008 收口提交 —— 全门禁（cargo fmt --check + clippy -D warnings + cargo test + npm run build）+ 三道闸复核 + AGENTS.md 状态头推进 + z.plan 附录 PL008 状态 ✅ + 本组勾结回写；提交 `feat: V0.1.1.5，玻璃基座与通用组件族回归` 推送；验证：门禁全绿 + push 成功 + git status 干净
+
+### PL009: APP 回归·横切工厂组合式化 [plan#APP回归]
+
+> 范围：design 四大命令式工厂转 Vue composables + board-read 样式；方案见 z.plan.md 附录 PL009。
+> 红线：算法与参数 1:1 移植实测定案值（数值不改——六轮拖拽失败教训）；不依赖 transitionend（遮挡 webview 不派发），一律显式 duration。
+
+- [ ] PL009.1 useGlassBar 玻璃滑杆 —— 新建 `ui/src/composables/useGlassBar.ts`：`useGlassBar(scrollerRef, opts)`（anchor/inset/right 同 design makeGlassBar）；浮钮 DOM 组合式创建挂 anchor（默认 #board）；sync 闭包（height 0 隐藏/轨道内缩/scrollable 判定/比例位移）+ scroll/input 监听 + MutationObserver(childList) + pointerdown 拖拽（公式 1:1 + textarea 合成 scroll 补发）；导出注册表 `glassBars`（useVeils 用）；onUnmounted 清监听清 DOM；验证：build 绿 + IAB（mock 灌 >5 条）：浮钮出现 + thumb top 随 scrollTop 三点线性断言 + pointermove 拖拽序列 scrollTop 断言 + 卸载后 observer disconnected 无泄漏
+- [ ] PL009.2 useBoardRead 整板阅读 —— 新建 `ui/src/composables/useBoardRead.ts`（design makeBoardRead 1:1）：opts（padB/rowSel/gate/layout/hintHost/skipDuringDrag/maskShift）同名；▲▼ 三角挂 hintHost（默认 #board）；sync 双分支（layout||hintHost 走 offsetParent 链累加至宿主 / gBCR 基准 = hintHost rect）；settle（到底 at-bottom + --fade-btm 100%/半截行 fadeStart/空容器早退补 sync）；scroll 监听（实时抬带 + maskShift + sync）+ scrollend + MutationObserver；返回 { sync, settle, hints } + 注册表 boardReads；新建 `ui/src/styles/board-read.css`（.board-read/.edge-hint/edge-blink/@property --fade-btm 与 --mask-shift 族 1:1 含 [hidden] display:none 显式）；验证：build 绿 + IAB 直呼断言：半截行内联 --fade-btm = 行顶 − 容器顶 − 2 / 到底 at-bottom + 100% / 滚回摘类 / 三角 hidden 随 scrollTop 翻转 / hintHost 实例坐标手算 offset 链对表
+- [ ] PL009.3 useMaskDead 罩死判定 —— 新建 `ui/src/composables/useMaskDead.ts`：常量 RATIO 0.38/HYST 0.36/BAND_TOP 6/BAND_BTM 14 + rowInvadeRatio（**at-bottom 例外不计底带——V0.027 修复版逐行移植**）+ rowMaskDead + syncMaskDead（双列表核算、[hidden] 祖先跳过）；挂 boardRead scroll 链（注册表对接）；灰化样式（.mask-dead 三件套 + path fill 直改灰 + 恢复渐变落常态——双向 0.5s）；验证：build 绿 + IAB（灌列表 + 直呼 syncMaskDead + 手动 settle）：首行侵入 44% 挂类 / 滚回 36% 下迟滞摘 / at-bottom 末行不罩死（回归）/ .del pointer-events none + cursor default 断言
+- [ ] PL009.4 useVeils 浮板帘联动 —— 新建 `ui/src/composables/useVeils.ts`：`syncVeils()`（glassBars：archive-list 实例 veil = !boardOpen 其余 anyOpen；boardReads：archive 实例显式 continue——V0.028 结构性豁免 / detail-note 实例 !detailOpen / 其余 anyOpen）；浮板组件开合处调用约定注释落码；验证：build 绿 + IAB：开详情板清单滑杆三角挂 veiled、归档三角不挂 / 关板摘 / 三板互斥组合断言
+- [ ] PL009.5 PL009 收口提交 —— 同 PL008.8 体例：全门禁 + 回写 + `feat: V0.1.1.6，横切工厂组合式化` 提交推送；验证：门禁全绿 + push 成功
+
+### PL010: APP 回归·清单页与数据迁移 [plan#APP回归]
+
+> 范围：todos 表三列迁移 + age/note 纯逻辑 + 命令扩容 + TodoList/详情板回归；方案见 z.plan.md 附录 PL010。
+> 红线：迁移保存量行幂等；业务零进 Vue；TDD 红灯先行。
+
+#### 阶段 A：Rust 数据层（TDD）
+
+- [ ] PL010.1 todos 表迁移 —— `core/src/storage.rs`：init() 后加 `fn migrate(&self)`——`PRAGMA table_info(todos)` 读现列集合，缺列 ALTER TABLE ADD：created_at INTEGER（存量回填 NULL 不模拟时间）、done_at INTEGER、note TEXT NOT NULL DEFAULT ''（回填空串）；`core/src/todo.rs` TodoItem 扩 `created_at: Option<i64>`/`done_at: Option<i64>`/`note: String`（serde 同步）；Storage 构造注入时间源（`now: Box<dyn Fn() -> i64 + Send>` 默认 SystemTime——add 落 created_at）；list/get 行映射补三列；先写测试：内存库手工建旧 schema → open → 新列就位 / 存量行 note='' 与 created_at NULL / 二次 open 幂等 / 新 add 行 created_at 非 NULL；验证：红灯（旧库缺列断言失败）→ 转绿全过
+- [ ] PL010.2 age 阈值与 note 校验 —— `core/src/todo.rs`：`enum AgeLevel { None, Yellow, Red }`（Serialize+Copy）+ `pub fn age_level(created_at: Option<i64>, now: i64) -> AgeLevel`（None→None；> 48h 红；> 24h 黄；常量注释注明与实验场 24/48h 定案同源）+ `MAX_NOTE_LEN: usize = 10_000` + `pub fn validate_note(s: &str) -> Result<(), TodoError>`（超限 Err，允许空白——笔记语义）；测试：None / 恰 24h 不黄 / 24h+1 黄 / 48h+1 红 / note 恰限过 / 超限 Err；验证：红灯→绿（now 全注入零真实等待）
+- [ ] PL010.3 命令层扩容 —— `core/src/commands/todo.rs`：todo_rename(id, text)（复用 add 文本校验）/ todo_set_note(id, note)（validate_note）/ todo_toggle 改造（置 done 同时 done_at：true→now、false→NULL，storage.toggle 扩参）/ todo_list 条目平铺 `age_level: AgeLevel`（命令层裁决注入——DTO 单一来源不破坏）；storage 补 rename/set_note（参数化 SQL）；`ui/types.ts` 镜像同步（TodoItem +三字段 +age_level）；测试：rename 校验复用 / set_note 往返 / toggle 往返 done_at 有无 / list age_level 组包（注入老 created_at 断言黄红）；验证：cargo test 全绿 + cargo doc --no-deps 零 broken link + mock-invoke 同步四命令
+
+#### 阶段 B：Vue 回归
+
+- [ ] PL010.4 TodoList.vue 回归 —— `ui/components/TodoList.vue` 重写：行模板（NeonCheckbox + t-text + DelButton + age-alert 黄红文案 1:1——age_level 驱动）+ `<TransitionGroup name="todo" :duration="320">`（key=id；enter/leave 类沿 design：scale 0.6 回弹入场 / 钉高收 0 + flex-shrink:0 塌缩，CSS 1:1）+ 罩死守卫 + DelButton 单实例管理（stale 收口 + 换页/浮板开合 rollBack）+ 勾选 300ms 主拍后离场（显式 timer）+ 清单分组虚拟外框（框宽 = 卡宽 − 20 动态公式）+ 空态壳；样式扩 `ui/src/styles/todos.css`；验证：build 绿 + IAB mock：增删勾全链路 + entering/leaving 320ms 自摘 + 罩死行点击无响应 + 黄红文案按 mock created_at 渲染 + 外框宽量测
+- [ ] PL010.5 DetailOverlay 详情板（todo 模式）—— 新建 `ui/src/components/DetailOverlay.vue`（双模式骨架，本条落 todo 模式、bubble 分支 PL012 填）：板揭示（origin 变量 + 0.4s 回弹）、标签头 + 标题 input（maxlength 12 实时 todo_rename + 清单行同步）、note textarea（防抖 300ms todo_set_note）、三板互斥（开前收归档/设置）、单击行 180ms 延迟开板（mousedown/双击可取消——消歧沿定案）、双击行内改标题（span→input 原位）、飞出原点、板内整板阅读（gate + layout）+ 滑杆；syncVeils 挂点；验证：build 绿 + IAB：单击 180ms 开板 / 双击行内编辑且板不开 / 标题改清单同步 / note 防抖读回 / 板外收板 / veil 挂清单滑杆三角
+
+#### 阶段 C：收口
+
+- [ ] PL010.6 PL010 收口提交 —— 全门禁 + 回写 + `feat: V0.1.1.7，清单页回归与数据迁移` 提交推送；**旧库迁移专项**：.temp/ 造旧 schema db 文件真实 open→断言→关（文件级冒烟非仅内存）；验证：门禁全绿 + push 成功 + 迁移专项过
+
+### PL011: APP 回归·归档板 [plan#APP回归]
+
+> 范围：归档视图命令 + ArchiveOverlay 全形态；方案见 z.plan.md 附录 PL011。
+> 红线：归档行点正文 no-op、归档态 note 不可见（V0.015 用户定案）。
+
+- [ ] PL011.1 归档视图命令 —— `core/src/storage.rs`：`pub fn list_done(&self)`（`WHERE done=1 ORDER BY done_at DESC, id DESC`——同秒按 id 稳定序）；`commands/todo.rs`：todo_archive_list 命令；测试：不同 doneAt 倒序 / 同 doneAt 按 id 倒序 / 空集空 vec；验证：红灯→绿 + mock 同步
+- [ ] PL011.2 ArchiveOverlay 组件 —— 新建 `ui/src/components/ArchiveOverlay.vue` + `ui/src/styles/archive.css`（boards.css + archive-fx 形态 1:1）：归档按钮（archive 图标出入场：吸气 1.15→塌缩 0 + 粒子迸裂）、板揭示（--origin-x/y 注入 + 0.4s 回弹）、title-plate 标题玻璃板（「已完成 N」计数）、行（NeonCheckbox 退回 + t-text 删除线 + DelButton 二态）、空态、增量摘除退场（TransitionGroup duration）、板开合 450ms 后逐实例 settle + 滑杆 sync（揭示中几何中间态防御）、滑杆锚板内玻璃 + 三角 hintHost 板内（V0.028 方案 B 局部坐标）、行距 6px/落影缓冲 -8px/底缘软边 12px（V0.016 定值全保留）；点板空白与再点按钮双出口收板；验证：build 绿 + IAB：开板 + 450ms settle spy / 行数一致 / 退回一条板内离场 + 清单 +1（done_at NULL）/ 删除二态 / 计数 / 空态翻转 / 三角局部坐标手算对表 / 点正文零响应
+- [ ] PL011.3 勾选入档两拍编排 —— TodoList.vue：勾选 → 流光 300ms 主拍（显式 timer）→ 塌缩离场 → 归档侧重拉或计数就地 +1（板开时清单被遮不可见、板内浮现不做——V0.015 定案注释落码）；退回 = 板内塌缩 + 清单 popIn（entering 重放）；验证：IAB：勾选 320ms 内行仍在 / 之后离场 + done 集 +1 / 退回逆流程 / 快速连勾两行在飞动画互不拔除（V0.014 增量摘除回归）
+- [ ] PL011.4 PL011 收口提交 —— 同体例：全门禁 + 回写 + `feat: V0.1.1.8，归档板回归` 提交推送；验证：门禁全绿 + push 成功
+
+### PL012: APP 回归·气泡页与剪贴板真链路 [plan#APP回归]
+
+> 范围：clipboard 插件 + BubblesView 回归 + 全文板 bubble 模式；方案见 z.plan.md 附录 PL012。
+> 红线：满 5 阈值 Rust 裁决不漂移；剪贴板真链路 IAB 测不了——UI 走 mock、真链路 PL014 用户验收。
+
+- [ ] PL012.1 剪贴板插件与捕获命令 —— `core/Cargo.toml` 加 tauri-plugin-clipboard-manager（官方 2.x 锚定）；lib.rs run() 注册 plugin；`commands/bubble.rs`：bubble_capture()（读剪贴板文本 → validate_bubble_text → add_bubble → 快照返回）/ bubble_copy(id)（get_bubble → 写剪贴板）；命令层抽 ClipboardReader trait（生产 plugin 实现 / 测试固定实现——可测性）；`capabilities/default.json` permissions 增 clipboard-manager:allow-read-text / allow-write-text；构建后核 `core/gen/schemas/acl-manifests.json` 权限事实源在位（ACL 静默拒教训）；测试：空文本拒 / 入列快照 remind 翻转 / copy 读回一致；验证：cargo test 绿 + acl-manifests grep 权限名 + mock 同步两命令
+- [ ] PL012.2 BubblesView 回归 —— `ui/components/BubblesView.vue` 重写 + `ui/src/styles/bubbles.css`（1:1）：捕获钮（双图标 clipboard/clipboard-check + 占字态 1s 禁点 + 紫染 50%）+ 一键清空二态（宽度动画量宽法 Vue 版：量旧宽→锁宽→回流→设新宽 + 330ms 定时器解锁；confirming 50% 透明红；悬停感知 2s 超时 mouseenter 暂停；旁路取消挂捕获入口与行点击）+ 行（b-text line-clamp 2 + DelButton + **单击开板/双击复制 180ms 消歧——V0.028 对调语义**）+ 满仓警告红字（> 上限出现、文案 1:1、has-warning 两档偏移 -9.5/-4 + maskShift threshold 8.5 depth 6）+ 徽章计数接线 + 整板阅读（rowSel .bubble-row + 罩死）+ 0 气泡清空灰染 disabled；验证：build 绿 + IAB mock：捕获入列 remind / 灌 6 条警告 + 偏移量测 / 清空确认→集体塌缩→0 条灰钮 / 单击 180ms 开板 + 双击占字不开板 / 旁路三入口 / 罩死翻转
+- [ ] PL012.3 DetailOverlay bubble 模式 —— DetailOverlay.vue 补 applyDetailMode("bubble")：bubble-mode 类（标签头 display:none + textarea 底透明 padding 0——单层玻璃文字直落板面）/ readonly + 去输入质感 / 落位原点双模式共用 / 板内滑杆 + 恒定软边带（textarea 退化顶 6 底 14）；验证：build 绿 + IAB：单击开板 readonly + head hidden / 长文（mock ~600 字）滑杆出现 + 拖拽比例 / 短文无滑杆
+- [ ] PL012.4 PL012 收口提交 —— 同体例：全门禁 + 回写 + `feat: V0.1.1.9，气泡页回归与剪贴板链路` 提交推送；验证：门禁全绿 + push 成功 + ACL 事实源复核注记
+
+### PL013: APP 回归·拖拽排序与持久化 [plan#APP回归]
+
+> 范围：sort_order 列 + reorder 事务 + useDragReorder；方案见 z.plan.md 附录 PL013。
+> 红线：算法参数一字不改（六轮失败教训）；拖拽期冻结列表响应式重渲染。
+
+- [ ] PL013.1 排序持久化 —— `core/src/storage.rs`：migrate 扩段（todos/bubbles 各加 sort_order INTEGER，存量回填 = 现序号——读出重写幂等）；`pub fn reorder_todos(&self, ids: &[i64])`（事务：ids 与未完成集合一致性校验（长度 + 差集空——不符 Err 防丢行/幽灵 id）→ 逐条 UPDATE sort_order）；reorder_bubbles 同款（与全量气泡集）；list/list_done/list_bubbles 改 `ORDER BY sort_order`（done 项沿创建序不随归档变）；测试：旧库回填序 / reorder 后序断言 / 部分 id 集 Err / 重复 id Err / 事务失败回滚；验证：红灯→绿 + .temp/ 真实文件库迁移冒烟
+- [ ] PL013.2 reorder 命令与 mock —— `commands/todo.rs` todo_reorder(ids) / `commands/bubble.rs` bubble_reorder(ids)（薄壳）；mock-invoke 同步（内存数组重排）；测试：命令直测 happy path；验证：cargo test 绿 + IAB mock reorder 前后序断言
+- [ ] PL013.3 useDragReorder 组合式 —— 新建 `ui/src/composables/useDragReorder.ts`：DRAG_TARGETS 注册表 1:1 移植（清单+气泡：scopeId/rowSel/itemSel/ghostClass/onDown（清单掐 detailOpenTimer + 排除 del/t-edit/勾选区；气泡掐 bubbleCopyTimer + 排除 del）/commit（invoke reorder）/rerender（重拉））+ 机制本体（HOLD_MS 250 / DRAG_THRESHOLD 6 / 重挂 #board + ghost + shifting / applyDragShifts 让位公式 / 自动滚动 ZONE 32 SPEED 10 moved 3px 门槛 / 卡内钳制 12px / suppressDetailUntil 350ms / blur 收尾 dispatch mouseup）**数值公式逐行对照不改**；drag-live 锁滚动 + skipDuringDrag 对接；**Vue 冻结防线**：engaged 期间列表 watch 早退（外部变更到达不重渲染，落点收场统一重拉——守卫 defer）；罩死行不起拖；验证：build 绿 + IAB 合成序列（沿本窗口验证法）：长按 450ms engaged + ghost 在位 / 移动一槽 +15px 余量让位 transform 咬合 / mouseup 后 order 变换 + mock 落库一致 / 清理无残留 / 拖拽中注入变更不重渲染（守卫生效）/ blur 收场
+- [ ] PL013.4 PL013 收口提交 —— 同体例：全门禁 + 回写 + `feat: V0.1.1.10，拖拽排序回归与持久化` 提交推送；验证：门禁全绿 + push 成功
+
+### PL014: APP 回归·白板设置收口与总验收 [plan#APP回归]
+
+> 范围：白板/设置板回归 + 全量回归 + 用户总验收移交；方案见 z.plan.md 附录 PL014。
+> 红线：验收不达标不宣布完成；观察项沿 y.problems 登记。
+
+- [ ] PL014.1 WhiteboardView 回归 —— `ui/components/WhiteboardView.vue` 重写 + `ui/src/styles/whiteboard.css`：board-shell 壳（panel 底/描边/落影/圆角静止）+ textarea 透明填壳（墨迹溶解与卡底分离——V0.021 定案）+ 整板阅读（textarea 退化恒定软边带 + 到底抬带）+ 板内滑杆 + 防抖 300ms 保存（既有保留）+ 状态行；验证：build 绿 + IAB：写入 300ms 后 mock 读回一致 / 长文溶解带内联值 / 到底抬带
+- [ ] PL014.2 SettingsOverlay 与气泡上限配置 —— 新建 `ui/src/components/SettingsOverlay.vue` + `ui/src/styles/settings.css`（design 形态 1:1，实验场 lab 控件段剔除）：齿轮按钮出入场 + 板揭示 + 气泡上限步进（1~20 钳制）+ 主题跟随说明行；`core/src/settings.rs`：设置结构扩 `max_bubbles: u32`（serde default 5——旧 config.json 兼容）；`core/src/bubble.rs` should_remind(count, max) 参数化（AppContext 注入配置）；命令 settings_get/settings_set（沿 settings.rs 持久化管线扩）；测试：默认值 / 步进边界钳制 / 旧 config 缺字段不崩 / 阈值随配置翻转；验证：cargo test 绿 + IAB：步进断言 + mock remind 随上限变化 + veil
+- [ ] PL014.3 全量回归与真窗口探针 —— `.temp/` 全交互走查脚本（IAB 顺序：清单增删勾/归档开合退删/气泡捕获清空双击/白板读写/拖拽两列表/罩死翻转/详情双模式/换页回退——逐项断言汇总）；tauri dev 真窗口 exe 探针自动（标题/存活/尺寸/无 panic 日志）；全门禁四件套；AGENTS 状态头收口（"PL008–PL014 完成，待用户总验收"）+ z.plan 七附录状态 + 本文件全勾结；提交 `feat: V0.1.1.11，白板设置收口与全量回归` 推送；验证：走查全绿输出留档 .temp/ + 探针过 + 门禁全绿 + push 成功
+- [ ] PL014.4 用户总目视验收移交 —— 向用户提交验收清单（真窗口 DWM 玻璃可读性双主题 / 常驻功耗体感 / 剪贴板真链路（捕获+复制回）/ 全交互走查 / 迁移后旧数据完好）；验收问题走 FIX003；通过后 AGENTS 状态头终稿 + 记忆同步；验证：用户明确验收结论回执（不达标不勾结本条）

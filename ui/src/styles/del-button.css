@@ -1,0 +1,120 @@
+/* 删除按钮样式（PL008.6 自 design/assets/css/todos.css 1:1 落位，uiverse smart-emu-83）。
+   design 的 `.del-open .del` 宿主选择器在组件内改 `.del-open`（confirming 类挂钮本体）；
+   其余值零改动。组件内请勿使用 hover 驱动状态逻辑（触屏无 hover）——悬停展宽仅视觉 */
+
+.del {
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: flex;
+  width: 25px;
+  height: 25px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.25);
+  font-weight: 600;
+  cursor: pointer;
+  transition-duration: 0.3s;
+  overflow: hidden;
+}
+
+.del-icon {
+  width: 6px;
+  transition-duration: 0.3s;
+}
+
+.del-icon path {
+  fill: #fff;
+  /* 罩死灰化/恢复双向：fill 过渡落常态，摘类时灰→白同样 0.5s 渐变 */
+  transition: fill 0.5s ease;
+}
+
+/* 确认态（del-open）：盖子绕铰链翻起悬于桶体上方 + Delete 字样渐隐；再点执行删除。
+   开盖态锁定展开红底样式——鼠标离开后立即回退：按钮缩回灰底（0.3s 过渡），
+   盖子直接归位无合盖动画。svg overflow visible：盖子翻起完整可见 */
+.del-open {
+  width: 35px;
+  transform: translateY(-50%) translateX(5px);
+  border-radius: 50px;
+  background-color: rgb(255, 69, 69);
+  box-shadow:
+    0 10px 15px -3px var(--del-hover-glow),
+    0 4px 6px -4px var(--del-hover-glow);
+}
+
+.del-open .del-icon {
+  overflow: visible;
+  width: 25px;
+  transform: translateY(60%);
+}
+
+.del-open .del-lid {
+  transform: translate(-14px, -20px) rotate(-38deg);
+  transform-origin: 24px 64px;
+  transition: transform 0.5s cubic-bezier(0.34, 1.4, 0.64, 1); /* 开盖翻起动画 */
+}
+
+/* 合盖无动画（用户定案）：回退时盖子直接回原位——.del-lid 常态不声明 transform/transition */
+
+.del:hover {
+  width: 35px;
+  transform: translateY(-50%) translateX(5px);
+  border-radius: 50px;
+  background-color: rgb(255, 69, 69);
+  /* 红辉光：分层与浓度参数抄 input 聚焦紫辉光（--del-hover-glow） */
+  box-shadow:
+    0 10px 15px -3px var(--del-hover-glow),
+    0 4px 6px -4px var(--del-hover-glow);
+}
+
+.del:hover .del-icon {
+  width: 25px;
+  transform: translateY(60%);
+}
+
+.del::before {
+  position: absolute;
+  top: -10px;
+  content: "Delete";
+  color: #fff;
+  font-size: 2px;
+  transition-duration: 0.3s;
+}
+
+.del:hover::before {
+  font-size: 6.5px;
+  opacity: 1;
+  transform: translateY(15px);
+  transition-duration: 0.3s;
+}
+
+/* Delete 字渐隐（用户定案）：开盖时鼠标必在 hover 态，须压过 hover 的 opacity:1 */
+.del-open::before {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+/* 按压脉冲（用户定案）：两拍点击共用的微缩放反馈——以自身中心 1→0.9→1（0.18s）。
+   关键帧必须整链携带定位偏移 translateY(-50%) translateX(5px)：只写 scale 会打掉
+   偏移致按钮跳位中心漂移（盖子弹跳失败的根因） */
+@keyframes del-press {
+  0% {
+    transform: translateY(-50%) translateX(5px) scale(1);
+  }
+
+  45% {
+    transform: translateY(-50%) translateX(5px) scale(0.9);
+  }
+
+  100% {
+    transform: translateY(-50%) translateX(5px) scale(1);
+  }
+}
+
+.del-press {
+  animation: del-press 0.18s ease-in-out;
+}

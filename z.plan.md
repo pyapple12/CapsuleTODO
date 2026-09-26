@@ -16,9 +16,9 @@
 
 ## 二、待完成
 
-**二期收口中（2026-09-17）**：PL004 / PL005 代码落地勾结（见上）；PL006.1–.2 完成（验收门禁 + 版本推进 0.1.1）；**A002 已归档（2026-09-17），P2 两项 + P3 两项修复走 FIX002（任务组见 x.progress.md）**；随后统一 live 目验 → PL006.4 收口回写 → 一次性提交 V0.1.1.1（用户定案）。
-**提交策略（用户定案 2026-09-17）**：一期三 PL 全部完成后一次性提交推送——V0.1.0.3 归一期收口提交。
-一期定案要点：窗口 300×400 固定尺寸、置顶、全屏应用盖住板子（让位）、位置记忆、任务栏/Alt+Tab 暂不隐藏；一期支持最小增删（编辑缓）；勾选后折叠进"已完成"区 + 删除线；开机自启一期不做（y.problems#4）。
+**APP 回归执行中（2026-09-26 立项）**：PL008–PL014 七组直干 main（不开分支——用户定案 2026-09-26）；每 PL 自验三道闸（Rust TDD / IAB 冒烟断言 / 截图比对 design 忠实）+ 一条 feat 提交推送（V0.1.1.5 起 R+1）；**中间不请用户目验，PL014 后一次总目视验收**，问题走 FIX003；方案见附录 PL008–PL014，任务组见 x.progress.md 未完成区。
+历史收口备忘：二期 PL004–PL006 + FIX002 已收口（2026-09-17，V0.1.1.1）；设计实验场 UI 初版已并入（2026-09-26，V0.1.1.4，分支 ui-1.0-feature 保留归档、标签 ui1.0-final）。
+一期定案要点：置顶、全屏应用盖住板子（让位）、位置记忆、任务栏/Alt+Tab 暂不隐藏；开机自启一期不做（y.problems#4）。
 
 ## 三、主题规划
 
@@ -208,3 +208,92 @@
 - clipboard 读写仅 Rust 侧薄壳，ACL 面零扩大；气泡/白板核心逻辑全部脱离 tauri 直测内存库
 - 关窗挂起快速定位（no-op handler 对照实验排除 flush 本体）与"防抖兜底"定案回退，实现修订全程留痕
 - 四轮 TDD 红绿（bubble 纯逻辑/存储/命令/whiteboard 链路），44 项测试全绿；白板单行表 CHECK 约束 + UPSERT 幂等
+
+## 附录 PL008：APP 回归·玻璃基座与通用组件族（2026-09-26 立项）
+
+> 背景：ui-1.0-feature 分支 UI 初版（ui1.0 V0.001–V0.028）已 squash 并入 main（V0.1.1.4）；本组起实验场产物正式落回 ui/。**工作模式（用户定案 2026-09-26）**：不开分支、七组 PL 全部直干 main；**每 PL 不请用户目验**——自验三道闸（Rust TDD 全绿 / IAB 冒烟行为断言 / 截图比对 design 形态忠实）；PL014 后用户做一次总目视验收，问题走 FIX003。每 PL 一条 feat 提交（R+1：V0.1.1.5 起）提交即推送。
+> 方案要点：
+>
+> - **DEV 冒烟基座**：ui/src/dev/mock-invoke.ts——浏览器（vite dev + IAB）环境拦截 invoke，内存态模拟全量命令（种子沿 design/assets/js/state.js）；import.meta.env.DEV 死分支，生产构建消除。这是后续所有 PL 的 IAB 自动验证通道（真 invoke 在纯浏览器不可用）
+> - **令牌层落位**：design/glass.css 全量令牌 1:1 → ui/src/styles/glass.css；App.vue 内联玻璃样式改令牌引用
+> - **App.vue 骨架重构**：design/index.html 骨架 Vue 化（topbar + 页签挂点 + #board 卡片容器锚点 + 三 page 容器 v-show）；窗口尺寸按实验场卡宽实测调整（tauri.conf.json，置顶/让位/位置记忆不动）；拖动区从全局 mousedown 收敛到 topbar
+> - **通用组件族**：TabsBar（uiverse heavy-dragonfly-92 glider + 气泡徽章）、NeonCheckbox（hot-dragonfly-56 全装饰层 + 勾选流光启停）、DelButton（smart-emu-83 + trash-can 双 path 二态盖翻确认全套 V0.025–V0.028 定案形态）、AddBar 重构（REC average-swan-99 + plastic-parrot-88 输入框）
+>
+> 红线：uiverse 组件忠实移植（类名隔离/颜色令牌化/reduced-motion 守卫）；design 定案参数不自作主张改；mock 通道禁进生产（DEV 死分支）。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL008）
+
+## 附录 PL009：APP 回归·横切工厂组合式化（2026-09-26 立项）
+
+> 背景：design/ 四大命令式工厂（glass-bar / board-read / mask-dead / veils）是五滚动容器的统一玻璃语言，转 Vue composables。
+> 方案要点：
+>
+> - **useGlassBar**：玻璃滑杆浮钮组合式（anchor/inset/right opts、scroll+MutationObserver 双挂点、pointerdown 拖拽、textarea 合成 scroll 补发）
+> - **useBoardRead**：整板阅读组合式（渐隐带 @property --fade-btm 1s 过渡、▲▼ 三角 hintHost opt（归档板三角住板内随板缩放——V0.028 方案 B）、到底抬带 at-bottom 100ms、半截行 settle、scrollend；skipDuringDrag 互斥）
+> - **useMaskDead**：罩死判定（侵入比 38%/迟滞 36%/at-bottom 例外不计底带——V0.027 修复版）+ 灰化 0.5s 双向
+> - **useVeils**：浮板开合帘联动（滑杆 veiled 0.22s / 三角 0.15s；归档实例结构性豁免）
+> - 样式：ui/src/styles/board-read.css（glass-bar.css 的 board-read/edge-hint 族 1:1）
+>
+> 红线：算法与参数 1:1 移植 design 实测定案值（六轮拖拽失败教训：机制不经纸上设计不改参数）；遮挡 webview 下 transitionend 不派发——一律显式 duration 定时器。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL009）
+
+## 附录 PL010：APP 回归·清单页与数据迁移（2026-09-26 立项）
+
+> 背景：清单页换装实验场形态 + todos 表扩展（实验场新增的 created_at/done_at/note 语义落库）。
+> 方案要点：
+>
+> - **迁移（保用户数据）**：storage.init() 探测列缺失 → ALTER TABLE ADD COLUMN（created_at INTEGER NULL——存量行回填 NULL 不模拟时间；done_at INTEGER NULL；note TEXT NOT NULL DEFAULT ''）；幂等
+> - **纯逻辑 TDD**：todo.rs age_level(created_at, now)（None→无提醒 / >48h 红 / >24h 黄，时间源注入）+ validate_note（MAX_NOTE_LEN）
+> - **命令扩容**：todo_rename / todo_set_note / todo_list 返回含新字段与 age_level（业务裁决在 Rust）；toggle 置 done_at（true→now / false→NULL）
+> - **TodoList.vue 回归**：行模板（NeonCheckbox + t-text + DelButton 二态 + age-alert）、罩死、删除单实例收口与换页回退、TransitionGroup 出入场（显式 duration）
+> - **DetailOverlay（todo 模式）**：三板互斥、标题行内编辑（≤12 字）、note 防抖 300ms 保存、单击 180ms 开板/双击行内改标题消歧、飞出原点动画
+>
+> 红线：迁移必须保存量行（旧库 open 后全字段可读写）；业务零写进 Vue。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL010）
+
+## 附录 PL011：APP 回归·归档板（2026-09-26 立项）
+
+> 背景：归档板成品化（V0.015–V0.016 定案形态）+ 三角随板生长（V0.028 方案 B）。
+> 方案要点：
+>
+> - **Rust**：todo_archive_list（done=1 ORDER BY done_at DESC）+ storage.list_done()
+> - **ArchiveOverlay.vue**：归档按钮出入场（吸气放大→塌缩 / 粒子）、板揭示（origin 变量注入 + 0.4s 回弹）、title-plate 标题玻璃板、计数与空态、行（勾选退回 / 删除二态）、增量摘除退场、滑杆锚板内 + 三角 hintHost（板内局部坐标 layout 数学）、板开合 450ms settle 重算
+> - **勾选入档两拍**：清单勾选 → 300ms 流光主拍 → 塌缩 → 归档计数 +1（板开着清单被遮不可见，板内浮现动画不做——V0.015 定案）；退回 = 塌缩 + 清单 popIn
+>
+> 红线：归档板点正文 no-op、归档态 note 不可见（V0.015 用户定案）。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL011）
+
+## 附录 PL012：APP 回归·气泡页与剪贴板真链路（2026-09-26 立项）
+
+> 背景：气泡页换装（V0.017–V0.020 定案形态）+ 捕获从"示例片段池"升真剪贴板。
+> 方案要点：
+>
+> - **Rust + ACL**：tauri-plugin-clipboard-manager 接入；commands/bubble.rs bubble_capture()（读剪贴板 → validate → 入库 → 快照）/ bubble_copy(id)（写剪贴板）；capabilities 增 clipboard-read/write，构建后核 gen/schemas/acl-manifests.json 权限事实源（ACL 静默拒教训）
+> - **BubblesView.vue 回归**：捕获钮双图标 + 占字 1s 反馈、清空二态（宽度动画 / confirming 50% 红 / 悬停感知 2s 超时 / 旁路取消）、行（两行截断 / DelButton / 单击开板双击复制 180ms 消歧——V0.028 对调后语义）、满仓警告红字（>5 出现 + has-warning 容器两档偏移 + 隐区位移 maskShift 6px）、页签徽章计数
+> - **全文板（bubble 模式）**：DetailOverlay bubble-mode（单层玻璃 / 标签头摘除 / 只读 textarea / 板内滑杆 + 恒定软边带）
+>
+> 红线：满 5 阈值 Rust 侧裁决不漂移；剪贴板真链路 IAB 测不了（mock 无真板），UI 行为走 mock、真链路留 PL014 用户总验收。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL012）
+
+## 附录 PL013：APP 回归·拖拽排序与持久化（2026-09-26 立项）
+
+> 背景：长按重挂拖拽模型（清单 + 气泡，DRAG_TARGETS 工厂）1:1 移植 + 落库。
+> 方案要点：
+>
+> - **迁移（Rust TDD）**：todos/bubbles 各加 sort_order INTEGER 列（存量回填 = 现序号）；storage reorder_todos/reorder_bubbles(ids) 事务（逐行 UPDATE，id 集合与全量一致性校验防丢行）；list 排序改 ORDER BY sort_order
+> - **useDragReorder composable**：DRAG_TARGETS 注册表 1:1 移植 drag-reorder.js（长按 250ms / 抖动 6px / 重挂 #board / ghost / shifting / 边缘自动滚动 32px 带 10px 每帧 / moved 3px 门槛 / 卡内钳制 12px / 落点点击抑制 350ms）；落点 commit 调 invoke reorder；**拖拽期冻结列表响应式重渲染**（engaged 守卫 watch——重挂 DOM 与虚拟 DOM 打架防线）
+>
+> 红线：算法参数六轮失败教训——不改一个数；拖拽中不触发全量重绘（增量摘除同族语义）。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL013）
+
+## 附录 PL014：APP 回归·白板设置收口与总验收（2026-09-26 立项）
+
+> 背景：尾组收口 + 全量回归 + 交用户总目视验收。
+> 方案要点：
+>
+> - **WhiteboardView 回归**：board-shell 壳 + textarea 透明填壳（墨迹溶解与卡底分离——V0.021 定案）+ 整板阅读第 5 实例 + 防抖保存沿用
+> - **SettingsOverlay.vue**：实验场设置板形态；气泡上限步进（1~20）落 configs/config.json 扩展字段 max_bubbles（settings.rs 读写），bubble 阈值改读配置（默认 5）
+> - **全量回归**：门禁四件套 + IAB 全交互走查脚本（清单/归档/气泡/白板/拖拽/罩死/详情全链路断言）+ tauri dev 真窗口 exe 探针（标题/存活/尺寸自动）+ AGENTS 状态头与本文档状态收口回写
+> - **用户总目视验收**：真窗口 DWM 玻璃可读性 / 常驻功耗 / 剪贴板真链路 / 全交互走查——问题走 FIX003
+>
+> 红线：验收不达标不宣布完成；观察项沿 y.problems 登记。
+> 状态：⏳ 待执行（任务组见 x.progress.md PL014）

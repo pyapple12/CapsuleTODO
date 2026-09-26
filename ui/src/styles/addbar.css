@@ -1,0 +1,109 @@
+/* 添加行样式（PL008.7 自 design/assets/css/todos.css 1:1 落位）：
+   输入框 = uiverse plastic-parrot-88 改造；添加按钮 = uiverse average-swan-99
+   （Teenage Engineering EP-133）源码直引——颜色/阴影/圆角/过渡均为源码值；
+   disabled 态为 APP 语义扩展（空输入禁用，沿一期定案） */
+
+.addbar .row {
+  display: flex;
+  gap: 6px;
+}
+
+/* 输入框：uiverse plastic-parrot-88 改造（聚焦环改主题 accent 色 + 底色与面板统一 + 正常字体——用户定案） */
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 22px; /* 用户定案 */
+  padding: 0 16px; /* px-4；高度改定值后垂直居中靠 height */
+  border: none;
+  outline: none;
+  border-radius: 9999px; /* rounded-full 胶囊端头 */
+  background-color: var(--panel-bg); /* 与其他面板统一 */
+  color: var(--ink);
+  font: inherit; /* 正常字体（弃 mono，用户定案） */
+  font-size: 13px;
+  box-shadow: var(--panel-stroke), var(--panel-shadow); /* 与其他面板统一（含落影） */
+  transition:
+    box-shadow 300ms ease,
+    background-color 300ms ease; /* duration-300 */
+}
+
+.input:focus {
+  box-shadow:
+    var(--panel-stroke),
+    0 0 0 2px var(--input-focus-ring),
+    0 10px 15px -3px var(--input-focus-glow),
+    0 4px 6px -4px var(--input-focus-glow); /* 聚焦：主题色环 + 柔光 */
+}
+
+.input::placeholder {
+  color: var(--ink-2);
+  opacity: 0.75;
+}
+
+/* 添加按钮：uiverse average-swan-99（Praashoo7，Teenage Engineering EP-133 按钮组）源码直引
+   ——只取 record 红钮（.button3）+ 外黑方（.btn）；仅三处用户定制：外黑圆角与内红一致（10px→现 6px）、
+   REC 居中（源码 flex-start）、组件落影距离减半（10px→5px） */
+.btn-add {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  /* 黑方随输入框 22px 同高；圆角随高度 5→6px */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background-color: var(--rec-frame); /* 外框底：panel-bg 加深一倍（用户定案） */
+  /* 组件落影以外框为标定（用户定案）；大小减半：3.3px/8px → 1.7px/4px，深度不变 */
+  box-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+  font-size: 6px; /* 缩放旋钮（红钮已改 px 定值，仅 em 文字间距仍在用） */
+  cursor: pointer;
+}
+
+.btn-add:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.btn-add:active {
+  /* 按压塌影（塌小塌淡，用户定案）：落影减半但轮廓始终在 */
+  box-shadow: rgba(0, 0, 0, 0.28) 0.9px 0.9px 2px;
+}
+
+.btn-add-face {
+  display: flex;
+  align-items: center; /* REC 居中（源码 flex-start） */
+  justify-content: center;
+  width: 18px; /* 黑方 22px − 2px 黑边×2 */
+  height: 18px;
+  border: none;
+  outline: none;
+  border-radius: 4px; /* 随高度 18/14 ≈ 4→5px 档 */
+  background-color: #d42a02;
+  /* 常态零阴影（用户定案：单纯红色），落影已移至外框 */
+  cursor: pointer;
+  transition: 0.1s ease-in-out;
+}
+
+.btn-add-text {
+  color: white;
+  font-family: Montserrat, sans-serif;
+  font-size: 6px; /* 用户定案 */
+  letter-spacing: 0.075em;
+}
+
+.btn-add:active .btn-add-face {
+  /* 按下仅保留黑色内阴影（用户定案），深度 50% 透明（压红底呈深一档红，非死黑） */
+  box-shadow: inset 0.5px 0.5px 4px rgba(0, 0, 0, 0.5);
+}
+
+.btn-add:active .btn-add-text {
+  transform: translateY(0.5px);
+}
+
+.error {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--danger);
+}
