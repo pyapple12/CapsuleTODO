@@ -19,6 +19,17 @@
   gap: 8px;
 }
 
+/* 页容器（design：actions/error/empty/列表是 .page 直接子件靠 .page gap 10 分隔；
+   Vue 组件多包一层 section，此处补齐同款纵向布局，否则列表 UA 边距塌陷顶乱警告行） */
+.bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
 /* 捕获按钮：紫染玻璃卡（用户定案 2026-09-25）——玻璃板配方 + accent 淡染（深度对齐页签滑块 21%） */
 .capture {
   display: inline-flex; /* 图标与文案 flex 居中对齐（免 baseline 猜测），gap 管间距 */

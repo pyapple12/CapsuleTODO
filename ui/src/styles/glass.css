@@ -41,9 +41,10 @@
   --rec-frame: var(--panel-bg); /* REC 外框底：已与玻璃板统一 */
 }
 
-/* —— 暗色令牌（跟随系统；APP 深浅跟随系统无手动切换，单块即可——与 design 双块等价） —— */
+/* —— 暗色令牌（跟随系统 + 手动暗色双块，与 design glass.css 同构：设置板主题三态
+   切换时经 :root[data-theme] 接管；未手动指定时随系统深浅） —— */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --accent: #c0b0fd;
     --ink: #f5f5f7;
     --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
@@ -60,4 +61,23 @@
     --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50% */
     --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
   }
+}
+
+/* 手动指定暗色（设置板日夜开关落位；⚠️ 与上方 @media 块保持一致） */
+:root[data-theme="dark"] {
+  --accent: #c0b0fd;
+  --ink: #f5f5f7;
+  --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
+  --glass-bg: rgba(0, 0, 0, 0.3);
+  --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
+  --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
+  --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  --panel-shadow: rgba(0, 0, 0, 0.566) 1.7px 1.7px 4px;
+  --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --glass-highlight:
+    inset 0 1px rgba(255, 255, 255, 0.12), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --rim-light: inset 0 1.5px 0 rgba(255, 255, 255, 0.32);
+  --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
+  --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50% */
+  --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
 }

@@ -164,6 +164,4 @@ onUnmounted(() => {
   </section>
 </template>
 
-<style scoped>
-@import "../styles/todos.css";
-</style>
+<!-- 行样式已全局挂载（styles/todos.css 经 main.ts）——归档行复用同款需全局作用域 -->

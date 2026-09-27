@@ -11,10 +11,14 @@ import { syncVeils } from "../composables/useVeils";
 // 超时 + 旁路取消）/ 满仓警告红字（has-warning 两档偏移 + 隐区位移在 useBoardRead）/
 // 行（两行截断 + DelButton 二态 + 单击开板双击复制 180ms 消歧）。数值全沿实测定案 =====
 
-const emit = defineEmits<{ openBubble: [item: BubbleItem] }>();
+const emit = defineEmits<{ openBubble: [item: BubbleItem]; changed: [] }>();
+
+const props = defineProps<{
+  /** 满仓警告阈值（设置板步进同源，父级持有；超过才警告——design 定案语义） */
+  maxBubbles: number;
+}>();
 
 const items = ref<BubbleItem[]>([]);
-const remind = ref(false);
 const error = ref("");
 const copied = ref(false); // 占字态：捕获钮禁点 + 换 clipboard-check 图标文案
 const confirmingClear = ref(false);
@@ -26,15 +30,17 @@ let suppressUntil = 0; // 拖拽落点点击抑制（PL013 写入）
 
 const clearBtn = ref<HTMLElement | null>(null);
 
-/** 满 MAX_BUBBLES 警告显隐（remind 由 Rust 裁决——前端零阈值业务） */
-const hasWarning = computed(() => remind.value);
+/** 满仓警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
+ * 阈值由设置板步进（会话内有效）。snapshot.remind（Rust 满 5 裁决）不再消费，
+ * 持久化配置落位时（PL014）再议 */
+const hasWarning = computed(() => items.value.length > props.maxBubbles);
 
-/** 拉取气泡快照 */
+/** 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里） */
 async function refresh(): Promise<void> {
   try {
     const snapshot = await invoke<BubbleSnapshot>("bubble_list");
     items.value = snapshot.items;
-    remind.value = snapshot.remind;
+    emit("changed");
   } catch (err) {
     console.error("bubble_list 拉取失败", err);
   }
@@ -228,7 +234,7 @@ onUnmounted(() => {
     >
       <!-- 满仓警告：滚动容器内部首项，随内容滚动（V0.017 ⑧ 定案） -->
       <li v-if="hasWarning" key="__warn" class="full-warning">
-        气泡已经超过{{ 5 }}个啦！都溢出来啦！(*ﾉωﾉ) EEK
+        气泡已经超过{{ maxBubbles }}个啦！都溢出来啦！(*ﾉωﾉ) EEK
       </li>
       <li
         v-for="item in items"
@@ -245,6 +251,4 @@ onUnmounted(() => {
   </section>
 </template>
 
-<style scoped>
-@import "../styles/bubbles.css";
-</style>
+<!-- 气泡样式已全局挂载（styles/bubbles.css 经 main.ts） -->

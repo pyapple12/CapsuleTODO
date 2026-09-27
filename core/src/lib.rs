@@ -60,7 +60,7 @@ fn default_position(
     let size = monitor.size();
     let scale = window.scale_factor()?;
     let win_w = (300.0 * scale).round() as i32;
-    let win_h = (580.0 * scale).round() as i32; // PL008.3 窗口增高同步（tauri.conf.json 同源）
+    let win_h = (400.0 * scale).round() as i32; // 与实验场卡片 300×400 一致（用户定案复刻）
     Ok(PhysicalPosition::new(
         pos.x + size.width as i32 - win_w - MARGIN_PX,
         pos.y + size.height as i32 - win_h - MARGIN_PX,

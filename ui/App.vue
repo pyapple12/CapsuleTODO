@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -10,8 +10,15 @@ import TabsBar from "./src/components/TabsBar.vue";
 import TodoList from "./src/components/TodoList.vue";
 import DetailOverlay from "./src/components/DetailOverlay.vue";
 import ArchiveOverlay from "./src/components/ArchiveOverlay.vue";
+import SettingsOverlay from "./src/components/SettingsOverlay.vue";
 import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
+import { initTitleParticles } from "./src/composables/titleParticles";
+
+const titleEl = ref<HTMLHeadingElement | null>(null);
+// 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
+// （shallowRef：volar 对裸 let 的模板收窄会把回调内赋值判成 never，实测 TS2339）
+const titleFX = shallowRef<{ refresh: () => void } | null>(null);
 
 // PL011 管线：分态纱浓度由 .focused class 驱动——初值经 isFocused 查询兜底，
 // 此后随 Rust 的 window-focus 事件翻转（Rust 侧 Focused 分支同步切 DWM 背板）
@@ -55,13 +62,26 @@ const detailTodo = ref<TodoItem | null>(null);
 const detailBubble = ref<BubbleItem | null>(null);
 // 气泡全文板数据源（PL012.3）：与 detailTodo 互斥（一开一关）
 
+// 三板互斥（design panels.js 定案）：任一板开启即收其余两板；开详情（行/气泡点击）同理
+const archiveRef = ref<InstanceType<typeof ArchiveOverlay> | null>(null);
+const settingsRef = ref<InstanceType<typeof SettingsOverlay> | null>(null);
+
+function closeDetail(): void {
+  detailTodo.value = null;
+  detailBubble.value = null;
+}
+
 /** 行单击开详情板：以最新视图中的条目为数据源（防陈旧） */
 function onOpenDetail(item: TodoItem): void {
+  archiveRef.value?.close();
+  settingsRef.value?.close();
   detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
 }
 
 /** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读） */
 function onOpenBubble(item: BubbleItem): void {
+  archiveRef.value?.close();
+  settingsRef.value?.close();
   detailBubble.value = item;
 }
 
@@ -86,6 +106,23 @@ function onListChanged(): void {
   void refreshBadge();
 }
 
+// —— 三板互斥出口（design panels.js：两板互斥 + 详情板三方互斥） ——
+
+/** 归档板开启：收设置板 + 详情板 */
+function onArchiveOpened(): void {
+  settingsRef.value?.close();
+  closeDetail();
+}
+
+/** 设置板开启：收归档板 + 详情板 */
+function onSettingsOpened(): void {
+  archiveRef.value?.close();
+  closeDetail();
+}
+
+// 气泡提醒数量（设置板步进 1~20，会话内有效沿 design 定案）：BubblesView 警告阈值同源
+const maxBubbles = ref(5);
+
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
 const items = ref<TodoView[]>([]);
 
@@ -98,11 +135,13 @@ async function refresh(): Promise<void> {
   }
 }
 
-// 切回清单页时重拉（动作都伴随刷新，此处兜底其他来源的变更）
+// 切页编排（design tabs.js 同款）：回清单页重拉兜底 + 归档按钮出入场动画
+// （离清单页塌缩+粒子迸裂、回清单页粒子汇聚+回弹弹出——仅此处编排，与板开合解耦）
 watch(activeTab, (tab) => {
   if (tab === "todos") {
     void refresh();
   }
+  archiveRef.value?.setArchiveVisible(tab === "todos");
 });
 
 onMounted(async () => {
@@ -120,6 +159,8 @@ onMounted(async () => {
   await refresh();
   await refreshBadge();
   await refreshArchive();
+  // 标题粒子化（design text-particles.js 移植）：reduced-motion 下不初始化回退静态文字
+  if (titleEl.value) titleFX.value = initTitleParticles(titleEl.value);
 });
 
 onUnmounted(() => {
@@ -133,7 +174,9 @@ onUnmounted(() => {
        拖动收敛 topbar：交互区（页签/行/输入）不再依赖白名单排除，误触面归零 -->
   <main id="board" class="glass-card" :class="{ focused: windowFocused }">
     <header class="topbar" data-tauri-drag-region>
-      <h1 class="title" data-tauri-drag-region>CapsuleTODO</h1>
+      <h1 ref="titleEl" class="title" data-tauri-drag-region>
+        CapsuleTODO<canvas class="title-canvas" aria-hidden="true"></canvas>
+      </h1>
     </header>
     <nav class="tabs-slot">
       <TabsBar :model-value="activeTab" :tabs="tabDefs" @update:model-value="onTabChange" />
@@ -143,14 +186,27 @@ onUnmounted(() => {
       <TodoList :items="items" @changed="onListChanged" @open-detail="onOpenDetail" />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
-      <BubblesView @open-bubble="onOpenBubble" />
+      <BubblesView :max-bubbles="maxBubbles" @open-bubble="onOpenBubble" @changed="refreshBadge" />
     </div>
     <!-- 白板页常驻挂载（v-show）：组件内草稿状态不因切页丢失 -->
     <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
       <WhiteboardView />
     </div>
-    <!-- 归档板（PL011）：仅清单页可见（V0.015 定案），数据经 changed/挂载时拉取 -->
-    <ArchiveOverlay v-if="activeTab === 'todos'" :items="archiveItems" @changed="onListChanged" />
+    <!-- 归档板（PL011）：按钮常驻清单页左上角（切页由 archive-fx 出入场动画编排，
+         非清单页塌缩隐藏）；v-if 会销毁按钮出入场状态，故常驻挂载 -->
+    <ArchiveOverlay
+      ref="archiveRef"
+      :items="archiveItems"
+      @changed="onListChanged"
+      @opened="onArchiveOpened"
+    />
+    <!-- 设置板（PL014 前置）：齿轮开合 + 主题双开关 + 气泡提醒步进；互斥经 opened 上抛 -->
+    <SettingsOverlay
+      ref="settingsRef"
+      v-model:max-bubbles="maxBubbles"
+      @opened="onSettingsOpened"
+      @theme-changed="titleFX?.refresh()"
+    />
     <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动 -->
     <DetailOverlay
       :todo="detailTodo"
@@ -175,12 +231,11 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
   width: 100%;
   height: 100vh;
-  padding: 20px 18px;
+  padding: 18px 18px 20px; /* design 定案：顶 18 = 标题距卡顶；左右 18、底 20 */
   box-sizing: border-box;
-  border-radius: 8px;
+  border-radius: var(--radius-board);
   box-shadow: var(--glass-stroke), var(--rim-light), var(--shadow-candy);
   overflow: hidden;
   text-shadow: var(--text-shadow);
@@ -205,24 +260,47 @@ onUnmounted(() => {
   background: transparent;
 }
 
-/* 直接子件一律浮于体色层之上 */
-.glass-card > * {
+/* 流内直接子件浮于纱层之上（显式列举——通配 `.glass-card > *` 会以 scoped 高特异性
+   压掉浮层组件（归档/详情/按钮/滑杆）的 position:absolute + z-index，实测图标被
+   顶进 flex 流后"完全看不见"——2026-09-27 用户截图定案修复） */
+.topbar,
+.tabs-slot,
+.page {
   position: relative;
   z-index: 1;
 }
 
 .topbar {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* 标题居中（design 定案） */
+  margin-bottom: 15.5px; /* 墨迹底 → 页签 18px 节奏（design base.css 同值） */
   cursor: default; /* 拖动区光标语义（data-tauri-drag-region 按下即窗口拖拽） */
 }
 
 .title {
+  position: relative; /* 粒子画布定位基准 */
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 30px; /* 放大一倍（原 15px，design 用户定案） */
+  line-height: 1; /* 盒高=字高：排版内衬清零 */
+  font-weight: 700; /* 加粗（design 用户定案） */
   letter-spacing: 0.3px;
   opacity: 0.8;
   cursor: default;
+}
+
+/* 标题粒子化：画布接管视觉，原文字透明让位（reduced-motion 不挂此类回退静态文字） */
+.title--particles {
+  color: transparent;
+  text-shadow: none; /* 杀掉继承的字形影：透明文字仍投静态残影（design 定案） */
+}
+
+.title-canvas {
+  position: absolute;
+  left: -30px; /* 画布外扩余量：粒子散开/辉光侧摆不被裁 */
+  top: -20px; /* 与粒子引擎 MARGIN_TOP 联动 */
+  pointer-events: none; /* 事件穿透，交互监听在 window 上 */
 }
 
 /* 页签槽位（TabsBar 组件自带 .tabs 样式，此处只占位） */
