@@ -1,13 +1,21 @@
-//! 窗口设置持久化（PL003）：JSON 原子写（同目录 .tmp 写入 + rename 替换，失败清理临时文件）。
-//! 尺寸固定 300×400 不入配置，仅记位置；文件不存在 = 首启正常态（白名单③回默认位）。
+//! 运行时设置持久化（PL003 窗口位置 + PL014.2 气泡提醒上限）：JSON 原子写（同目录
+//! .tmp 写入 + rename 替换，失败清理临时文件）。尺寸固定 300×400 不入配置，仅记位置；
+//! 文件不存在 = 首启正常态（白名单③回默认位）。
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// 窗口设置（serde default 容忍手改缺字段，配合启动越界兜底）
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+/// 气泡提醒上限缺省值（serde default：旧 config.json 缺字段兼容）
+pub const DEFAULT_MAX_BUBBLES: u32 = 5;
+
+fn default_max_bubbles() -> u32 {
+    DEFAULT_MAX_BUBBLES
+}
+
+/// 运行时设置（窗口位置 + 气泡提醒上限；serde default 容忍手改缺字段，配合启动越界兜底）
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct WindowSettings {
     /// 窗口左上角 x（屏幕物理坐标）
     #[serde(default)]
@@ -15,6 +23,19 @@ pub struct WindowSettings {
     /// 窗口左上角 y（屏幕物理坐标）
     #[serde(default)]
     pub y: i32,
+    /// 气泡提醒上限（PL014.2；旧 config.json 缺字段回填 5）
+    #[serde(default = "default_max_bubbles")]
+    pub max_bubbles: u32,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            max_bubbles: DEFAULT_MAX_BUBBLES,
+        }
+    }
 }
 
 /// 设置持久化错误
@@ -75,10 +96,19 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let path = temp_path("roundtrip.json");
-        save(&path, &WindowSettings { x: 120, y: -40 }).expect("保存必须成功");
+        save(
+            &path,
+            &WindowSettings {
+                x: 120,
+                y: -40,
+                max_bubbles: 5,
+            },
+        )
+        .expect("保存必须成功");
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
         assert_eq!(loaded.x, 120);
         assert_eq!(loaded.y, -40);
+        assert_eq!(loaded.max_bubbles, 5);
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 
@@ -95,8 +125,32 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("capsule-todo-settings-dir-{}", std::process::id()));
         let path = root.join("configs").join("config.json");
-        save(&path, &WindowSettings { x: 1, y: 2 }).expect("保存必须成功（父目录自建）");
+        save(
+            &path,
+            &WindowSettings {
+                x: 1,
+                y: 2,
+                max_bubbles: 5,
+            },
+        )
+        .expect("保存必须成功（父目录自建）");
         assert!(path.exists());
         std::fs::remove_dir_all(&root).expect("清理必须成功");
+    }
+
+    #[test]
+    fn missing_max_bubbles_field_backfills_default() {
+        // PL014.2：旧 config.json 缺 max_bubbles 字段 → serde default 回填 5，不崩
+        let path = temp_path("legacy-no-max.json");
+        std::fs::write(&path, r#"{"x": 10, "y": 20}"#).expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert_eq!(loaded.max_bubbles, DEFAULT_MAX_BUBBLES);
+        assert_eq!(loaded.x, 10);
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn default_impl_uses_five() {
+        assert_eq!(WindowSettings::default().max_bubbles, DEFAULT_MAX_BUBBLES);
     }
 }

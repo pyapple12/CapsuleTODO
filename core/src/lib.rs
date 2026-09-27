@@ -56,8 +56,9 @@ fn position_on_monitor(window: &WebviewWindow, x: i32, y: i32) -> bool {
         .unwrap_or(false)
 }
 
-/// 保存窗口位置到 configs/config.json；失败落日志不阻断关闭（容错白名单④，退出意图优先）
-fn save_window_position(window: &tauri::Window) {
+/// 保存窗口位置到 configs/config.json；失败落日志不阻断关闭（容错白名单④，退出意图优先）。
+/// max_bubbles 从运行时设置透传保留（设置与位置共存一份 config.json）
+fn save_window_position(window: &tauri::Window, max_bubbles: u32) {
     let path = match paths::settings_path() {
         Ok(path) => path,
         Err(err) => {
@@ -67,7 +68,14 @@ fn save_window_position(window: &tauri::Window) {
     };
     match window.outer_position() {
         Ok(pos) => {
-            if let Err(err) = settings::save(&path, &WindowSettings { x: pos.x, y: pos.y }) {
+            if let Err(err) = settings::save(
+                &path,
+                &WindowSettings {
+                    x: pos.x,
+                    y: pos.y,
+                    max_bubbles,
+                },
+            ) {
                 eprintln!("窗口位置保存失败：{err}");
             }
         }
@@ -80,6 +88,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 运行时数据双落址（PL002）：dev = 仓库根 / release = exe 同级；库打开失败启动即报错
     let db = paths::db_path()?;
     let storage = Storage::open(&db).map_err(|err| format!("清单库打开失败（{db:?}）：{err}"))?;
+    // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错
+    let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
 
     tauri::Builder::default()
         // 单实例（PL003）：builder 首位注册；二次启动唤起已运行实例的主窗口
@@ -97,6 +107,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppContext {
             storage: Mutex::new(storage),
+            settings: Mutex::new(app_settings),
         })
         .invoke_handler(tauri::generate_handler![
             commands::todo::todo_add,
@@ -113,19 +124,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::bubble::bubble_remove,
             commands::bubble::bubble_clear,
             commands::bubble::bubble_reorder,
+            commands::settings::settings_get_max_bubbles,
+            commands::settings::settings_set_max_bubbles,
         ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
                 .expect("主窗口必须在 tauri.conf.json 中存在");
             // 位置记忆（PL003）：有存档且未越界 → 恢复；否则默认主屏右下距边 40px
-            //（文件不存在回默认 = 白名单③；损坏 JSON 严格报错不在此列）
-            let saved = settings::load(&paths::settings_path()?)?;
-            let position = match saved {
-                Some(saved) if position_on_monitor(&window, saved.x, saved.y) => {
-                    PhysicalPosition::new(saved.x, saved.y)
-                }
-                _ => default_position(&window)?,
+            //（文件不存在回默认 = 白名单③；损坏 JSON 严格报错不在此列）。
+            // 设置自 builder 前加载进 AppContext（PL014.2），此处直接读运行时副本
+            let saved: settings::WindowSettings = match app.state::<AppContext>().lock_settings() {
+                Ok(guard) => *guard, // WindowSettings: Copy
+                Err(_) => return Err("运行时设置锁中毒".into()),
+            };
+            let position = match position_on_monitor(&window, saved.x, saved.y) {
+                true => PhysicalPosition::new(saved.x, saved.y),
+                false => default_position(&window)?,
             };
             window.set_position(position)?;
             // 全屏让位监视（PL003，Windows 实机验证平台）
@@ -134,9 +149,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 位置记忆：关闭时保存（拖动中不写盘）
+            // 位置记忆：关闭时保存（拖动中不写盘）。max_bubbles 从运行时设置透传，
+            // 与位置共存一份 config.json（PL014.2）
             if let WindowEvent::CloseRequested { .. } = event {
-                save_window_position(window);
+                let max_bubbles = window
+                    .app_handle()
+                    .state::<AppContext>()
+                    .lock_settings()
+                    .map(|s| s.max_bubbles)
+                    .unwrap_or(settings::DEFAULT_MAX_BUBBLES);
+                save_window_position(window, max_bubbles);
             }
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]

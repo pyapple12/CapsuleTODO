@@ -4,7 +4,8 @@
 use serde::Serialize;
 use thiserror::Error;
 
-/// 气泡提醒阈值：满 5 个提醒清理（2026-09-17 用户定案，固定值可调）
+/// 气泡提醒阈值缺省值：满 5 个提醒清理（2026-09-17 用户定案）；PL014.2 起可经
+/// 设置持久化调整（config.json max_bubbles），此常量仅作缺省语义保留
 pub const MAX_BUBBLES: usize = 5;
 
 /// 气泡文本长度上限（按字符数；A002-P2-2 定案——气泡 = 短片段语义，防超长剪贴板无界入库，可调）
@@ -30,18 +31,19 @@ pub struct BubbleItem {
     pub text: String,
 }
 
-/// 气泡页快照 DTO：列表 + 满 5 提醒标记（提醒阈值裁决在 Rust 侧，前端零业务）
+/// 气泡页快照 DTO：列表 + 满额提醒标记（提醒阈值裁决在 Rust 侧，前端零业务）
 #[derive(Debug, Clone, Serialize)]
 pub struct BubbleSnapshot {
-    /// 气泡列表（新在前）
+    /// 气泡列表（sort_order 升序 = 拖拽序，PL013 起）
     pub items: Vec<BubbleItem>,
-    /// 是否达到提醒阈值（count >= MAX_BUBBLES）
+    /// 是否达到提醒阈值（count >= max_bubbles，PL014.2 配置化）
     pub remind: bool,
 }
 
-/// 满 5 提醒判定：条数达到 MAX_BUBBLES 即触发横幅（软提醒，不自动删——用户定案）
-pub fn should_remind(count: usize) -> bool {
-    count >= MAX_BUBBLES
+/// 满额提醒判定：条数达到上限即触发横幅（软提醒，不自动删——用户定案）。
+/// max 来自设置（PL014.2 config.json 持久化，默认 5）
+pub fn should_remind(count: usize, max: usize) -> bool {
+    count >= max
 }
 
 /// 捕获文本校验：trim 后非空且不超过 MAX_BUBBLE_TEXT_LEN（按字符计）
@@ -60,10 +62,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remind_at_and_above_five() {
-        assert!(!should_remind(4));
-        assert!(should_remind(5));
-        assert!(should_remind(6));
+    fn remind_at_and_above_threshold() {
+        assert!(!should_remind(4, 5));
+        assert!(should_remind(5, 5));
+        assert!(should_remind(6, 5));
+        // PL014.2 阈值参数化：随设置变化
+        assert!(!should_remind(6, 10));
+        assert!(should_remind(2, 2));
     }
 
     #[test]

@@ -52,7 +52,7 @@ interface MockBubbleSnapshot {
 }
 
 /** 气泡提醒阈值（PL014 接配置前的硬编码对齐值） */
-const MAX_BUBBLES = 5;
+let MAX_BUBBLES = 5;
 
 const HOUR = 3600 * 1000;
 const WEEK_NOTE = `本周完成事项：
@@ -65,6 +65,7 @@ const WEEK_NOTE = `本周完成事项：
 心得：这周最大的收获是吃透了"动效是覆盖层、重绘是事实源"这句话——所有位移都建立在数据一次性提交的基础上，顺序一旦颠倒，动画就成了修不完的补丁。第二个体会是占位符的价值：它让"拖走"与"放回"共用同一套布局数学，代码量直接省了一半。第三点是测试先行在动效上也成立：先写好断言的最终布局，动画随便怎么调，收不住布局就过不了关。`;
 
 /** 内存态（模块级单例：跨组件共享，等价 Rust 侧 db 单一事实源） */
+
 const state = {
   todoSeq: 0,
   bubbleSeq: 0,
@@ -272,6 +273,12 @@ const handlers: Record<string, CommandHandler> = {
       const item = state.bubbles.find((b) => b.id === id);
       if (item) item.sort_order = order;
     });
+    return null;
+  },
+  // 设置（PL014.2）：读取/写入气泡提醒上限（内存态；同步 remind 阈值）
+  settings_get_max_bubbles: () => MAX_BUBBLES,
+  settings_set_max_bubbles: (args) => {
+    MAX_BUBBLES = Math.min(20, Math.max(1, Number(args.value) || 5));
     return null;
   },
   whiteboard_load: () => state.whiteboard,

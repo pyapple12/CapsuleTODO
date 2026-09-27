@@ -12,7 +12,7 @@ import DetailOverlay from "./src/components/DetailOverlay.vue";
 import ArchiveOverlay from "./src/components/ArchiveOverlay.vue";
 import SettingsOverlay from "./src/components/SettingsOverlay.vue";
 import BubblesView from "./src/components/BubblesView.vue";
-import WhiteboardView from "./components/WhiteboardView.vue";
+import WhiteboardView from "./src/components/WhiteboardView.vue";
 import { initTitleParticles } from "./src/composables/titleParticles";
 import { useDragReorder } from "./src/composables/useDragReorder";
 import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
@@ -137,8 +137,17 @@ function onSettingsOpened(): void {
   closeDetail();
 }
 
-// 气泡提醒数量（设置板步进 1~20，会话内有效沿 design 定案）：BubblesView 警告阈值同源
+// 气泡提醒数量（PL014.2 持久化）：启动自 config.json 加载，设置板步进落库
 const maxBubbles = ref(5);
+
+/** 拉取气泡提醒上限（启动时初始化；失败保持默认 5） */
+async function refreshMaxBubbles(): Promise<void> {
+  try {
+    maxBubbles.value = await invoke<number>("settings_get_max_bubbles");
+  } catch (err) {
+    console.error("settings_get_max_bubbles 拉取失败", err);
+  }
+}
 
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
 const items = ref<TodoView[]>([]);
@@ -178,6 +187,7 @@ onMounted(async () => {
   await refresh();
   await refreshBadge();
   await refreshArchive();
+  await refreshMaxBubbles();
   // 标题粒子化（design text-particles.js 移植）：reduced-motion 下不初始化回退静态文字
   if (titleEl.value) titleFX.value = initTitleParticles(titleEl.value);
 });

@@ -6,6 +6,7 @@ import "./src/styles/archive.css";
 import "./src/styles/settings.css";
 import "./src/styles/todos.css";
 import "./src/styles/bubbles.css";
+import "./src/styles/whiteboard.css";
 import { installMockInvoke } from "./src/dev/mock-invoke";
 
 // PL008.1 DEV 冒烟基座：纯浏览器（无 Tauri runtime）时把 invoke 路由到内存模拟——

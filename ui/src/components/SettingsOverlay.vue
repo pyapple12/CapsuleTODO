@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
 
 // ===== 设置板（design panels.js setSettings + theme.js 1:1 移植）：主题双开关
-// （跟随系统 + 日夜切换）与气泡提醒数量步进（1~20，会话内有效）。与归档板同构：
-// 齿轮原点缩放飞出、双出口收板（再点齿轮 / 点板外）、三板互斥（经 opened 上抛父级）、
-// 开板保色（.open）。主题三态落 :root[data-theme]（glass.css 双块令牌接管），换档后
-// 上抛 themeChanged 让标题粒子按新 accent 重建 =====
+// （跟随系统 + 日夜切换）与气泡提醒数量步进（1~20，PL014.2 起落库持久化）。与归档
+// 板同构：齿轮原点缩放飞出、双出口收板（再点齿轮 / 点板外）、三板互斥（经 opened
+// 上抛父级）、开板保色（.open）。主题三态落 :root[data-theme]（glass.css 双块令牌
+// 接管），换档后上抛 themeChanged 让标题粒子按新 accent 重建 =====
 
 const emit = defineEmits<{
   opened: [];
@@ -141,10 +142,22 @@ onUnmounted(() => {
 // —— 气泡提醒数量步进（panels.js 同款）：范围 1~20 钳制，会话内有效（design 定案） ——
 
 const BUBBLE_MAX_LIMIT = 20;
+let settingBusy = false; // 落库请求防抖：进行中忽略连点
 
-function step(delta: -1 | 1): void {
+/** 步进：先落库（settings_set_max_bubbles，Rust 钳制 1~20），成功后经 v-model
+ * 更新父级（PL014.2 持久化——重启后仍生效）；失败静默回退保持原值并落控制台 */
+async function step(delta: -1 | 1): Promise<void> {
   const next = Math.min(BUBBLE_MAX_LIMIT, Math.max(1, props.maxBubbles + delta));
-  if (next !== props.maxBubbles) emit("update:maxBubbles", next);
+  if (next === props.maxBubbles || settingBusy) return;
+  settingBusy = true;
+  try {
+    await invoke("settings_set_max_bubbles", { value: next });
+    emit("update:maxBubbles", next);
+  } catch (err) {
+    console.error("保存气泡提醒数量失败", err);
+  } finally {
+    settingBusy = false;
+  }
 }
 </script>
 

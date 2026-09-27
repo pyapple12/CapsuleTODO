@@ -1,0 +1,56 @@
+/* ===== 白板页样式（PL014.1 自 design/assets/css/whiteboard.css 1:1 落位）：
+   board-shell 卡壳（panel 底/描边/落影/圆角静止）+ textarea 透明填壳——mask 只淡
+   文字墨迹（卡壳分离定案，2026-09-25）。溶解带/三角/滑杆样式在 board-read.css ===== */
+
+/* 白板页容器（.page 同款纵向约束） */
+.whiteboard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 书写卡壳（2026-09-25）：同笔记卡壳——textarea 身兼滚动容器（要被 mask）与玻璃卡
+   本体（不该被 mask）冲突，卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字 */
+.board-shell {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+}
+
+.board {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  word-break: break-word;
+}
+
+.board::placeholder {
+  color: var(--ink-2);
+}
+
+.status {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+/* 保存失败错误行（APP 扩展：严格报错策略可见化） */
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}

@@ -143,6 +143,7 @@ mod tests {
     fn test_context() -> AppContext {
         AppContext {
             storage: Mutex::new(Storage::open_in_memory().expect("内存库必须可开")),
+            settings: Mutex::new(crate::settings::WindowSettings::default()),
         }
     }
 
@@ -152,6 +153,7 @@ mod tests {
             storage: Mutex::new(
                 Storage::open_in_memory_with_now(Arc::new(move || now)).expect("内存库必须可开"),
             ),
+            settings: Mutex::new(crate::settings::WindowSettings::default()),
         }
     }
 

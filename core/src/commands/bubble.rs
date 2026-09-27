@@ -33,11 +33,13 @@ pub fn bubble_list(ctx: State<'_, AppContext>) -> Result<BubbleSnapshot, Command
     bubble_list_core(&ctx)
 }
 
-/// bubble_list 核心实现：出快照（倒序列表 + 满 5 提醒标记——阈值裁决在 Rust 侧，前端零业务）
+/// bubble_list 核心实现：出快照（倒序列表 + 满额提醒标记——阈值裁决在 Rust 侧，
+/// 上限来自设置 PL014.2，前端零业务）
 pub fn bubble_list_core(ctx: &AppContext) -> Result<BubbleSnapshot, CommandError> {
     let storage = ctx.lock_storage()?;
+    let max = ctx.lock_settings()?.max_bubbles as usize;
     let items = storage.list_bubbles()?;
-    let remind = should_remind(items.len());
+    let remind = should_remind(items.len(), max);
     Ok(BubbleSnapshot { items, remind })
 }
 
@@ -108,6 +110,7 @@ mod tests {
     fn test_context() -> AppContext {
         AppContext {
             storage: Mutex::new(Storage::open_in_memory().expect("内存库必须可开")),
+            settings: Mutex::new(crate::settings::WindowSettings::default()),
         }
     }
 

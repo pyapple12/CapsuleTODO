@@ -1,25 +1,33 @@
 //! Tauri 命令层：共享上下文与错误封装（命令按职责分文件）。
 
 pub mod bubble;
+pub mod settings;
 pub mod todo;
 pub mod whiteboard;
-
 use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
 
 use crate::bubble::BubbleError;
+use crate::settings::{SettingsError, WindowSettings};
 use crate::storage::{Storage, StorageError};
 use crate::todo::TodoError;
 use crate::whiteboard::WhiteboardError;
 
-/// 应用共享上下文：清单存储（单一事实源 = db；锁序 todo → storage 单向禁反向）
+/// 应用共享上下文：清单存储 + 运行时设置（单一事实源 = db + config.json；
+/// 锁序 storage → settings 单向禁反向）
 pub struct AppContext {
     pub storage: Mutex<Storage>,
+    pub settings: Mutex<WindowSettings>,
 }
 
 impl AppContext {
     /// 取存储锁；中毒严格报错（禁静默恢复）
     pub fn lock_storage(&self) -> Result<MutexGuard<'_, Storage>, CommandError> {
         poison(self.storage.lock())
+    }
+
+    /// 取设置锁（PL014.2：max_bubbles 运行时读写）
+    pub fn lock_settings(&self) -> Result<MutexGuard<'_, WindowSettings>, CommandError> {
+        poison(self.settings.lock())
     }
 }
 
@@ -39,6 +47,8 @@ pub enum CommandError {
     Clipboard(String),
     /// 白板内容非法，承载错误说明
     Whiteboard(String),
+    /// 设置持久化失败（JSON/IO），承载错误说明
+    Settings(String),
     /// 共享锁中毒（持锁线程 panic 后遗症，不可恢复）
     Poisoned,
 }
@@ -51,7 +61,8 @@ impl serde::Serialize for CommandError {
             CommandError::Todo(msg)
             | CommandError::Storage(msg)
             | CommandError::Clipboard(msg)
-            | CommandError::Whiteboard(msg) => serializer.serialize_str(msg),
+            | CommandError::Whiteboard(msg)
+            | CommandError::Settings(msg) => serializer.serialize_str(msg),
             CommandError::Poisoned => serializer.serialize_str("共享锁中毒"),
         }
     }
@@ -78,6 +89,12 @@ impl From<BubbleError> for CommandError {
 impl From<WhiteboardError> for CommandError {
     fn from(err: WhiteboardError) -> Self {
         CommandError::Whiteboard(err.to_string())
+    }
+}
+
+impl From<SettingsError> for CommandError {
+    fn from(err: SettingsError) -> Self {
+        CommandError::Settings(err.to_string())
     }
 }
 
