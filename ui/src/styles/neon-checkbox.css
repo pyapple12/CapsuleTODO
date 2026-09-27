@@ -403,3 +403,13 @@
 .neon-checkbox__rings .ring:nth-child(3) {
   animation-delay: 0.2s;
 }
+
+/* —— reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：粒子/流光/爆闪 +
+   对勾描画全关，勾选态瞬时呈现 —— */
+@media (prefers-reduced-motion: reduce) {
+  .neon-checkbox,
+  .neon-checkbox * {
+    animation: none;
+    transition: none;
+  }
+}

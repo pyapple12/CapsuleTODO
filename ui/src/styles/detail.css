@@ -126,3 +126,11 @@
   cursor: default;
   padding: 0;
 }
+
+/* reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：详情板揭示动画全关 */
+@media (prefers-reduced-motion: reduce) {
+  .detail-overlay,
+  .detail-overlay .board-glass {
+    transition: none;
+  }
+}

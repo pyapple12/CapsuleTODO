@@ -320,3 +320,18 @@
     opacity: 0;
   }
 }
+
+/* —— reduced-motion 守卫（A8 自 design tabs.css 守卫块 1:1 分发）：浮板揭示与
+   归档按钮出入场/粒子全关（JS 侧编排同样跳过，显隐瞬时完成） —— */
+@media (prefers-reduced-motion: reduce) {
+  .archive-overlay,
+  .settings-overlay,
+  .archive-overlay .board-glass,
+  .settings-overlay .board-glass,
+  .deleteButton.leaving,
+  .deleteButton.entering,
+  .archive-particle {
+    transition: none;
+    animation: none;
+  }
+}

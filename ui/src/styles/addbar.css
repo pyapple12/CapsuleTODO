@@ -107,3 +107,14 @@
   font-size: 12px;
   color: var(--danger);
 }
+
+/* —— reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：REC 按压位移/
+   落影变化瞬时（输入框聚焦环同步瞬时） —— */
+@media (prefers-reduced-motion: reduce) {
+  .btn-add,
+  .btn-add-face,
+  .btn-add-text,
+  .input {
+    transition: none;
+  }
+}

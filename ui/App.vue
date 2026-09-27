@@ -15,6 +15,7 @@ import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
 import { initTitleParticles } from "./src/composables/titleParticles";
 import { useDragReorder } from "./src/composables/useDragReorder";
+import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 // 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
@@ -66,6 +67,8 @@ function onTabChange(key: string): void {
 const detailTodo = ref<TodoItem | null>(null);
 const detailBubble = ref<BubbleItem | null>(null);
 // 气泡全文板数据源（PL012.3）：与 detailTodo 互斥（一开一关）
+// 飞出原点（A3）：被点行中心视口坐标，DetailOverlay 开板时换算板内 origin
+const detailAnchor = ref<{ x: number; y: number } | null>(null);
 
 // 三板互斥（design panels.js 定案）：任一板开启即收其余两板；开详情（行/气泡点击）同理
 const archiveRef = ref<InstanceType<typeof ArchiveOverlay> | null>(null);
@@ -76,18 +79,25 @@ function closeDetail(): void {
   detailBubble.value = null;
 }
 
-/** 行单击开详情板：以最新视图中的条目为数据源（防陈旧） */
-function onOpenDetail(item: TodoItem): void {
+/** 行单击开详情板：以最新视图中的条目为数据源（防陈旧）+ 行中心作飞出原点 */
+function onOpenDetail(item: TodoItem, anchor: { x: number; y: number }): void {
   archiveRef.value?.close();
   settingsRef.value?.close();
+  detailAnchor.value = anchor;
   detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
 }
 
-/** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读） */
-function onOpenBubble(item: BubbleItem): void {
+/** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读）+ 行中心原点 */
+function onOpenBubble(item: BubbleItem, anchor: { x: number; y: number }): void {
   archiveRef.value?.close();
   settingsRef.value?.close();
+  detailAnchor.value = anchor;
   detailBubble.value = item;
+}
+
+/** 勾选入档联动（A7 = design 勾选分支同款）：详情板正开着这条则随行收起 */
+function onArchived(item: TodoItem): void {
+  if (detailTodo.value?.id === item.id) closeDetail();
 }
 
 // —— 归档板（PL011）：数据源 + 变更重拉 —— 非清单页隐藏归档按钮（V0.015 定案：
@@ -115,7 +125,7 @@ function onListChanged(): void {
 
 // —— 三板互斥出口（design panels.js：两板互斥 + 详情板三方互斥） ——
 
-/** 归档板开启：收设置板 + 详情板 */
+/** 归档板开启：收设置板 + 详情板；开合都收口未决删除确认（A2 = design setBoard 首行） */
 function onArchiveOpened(): void {
   settingsRef.value?.close();
   closeDetail();
@@ -143,8 +153,10 @@ async function refresh(): Promise<void> {
 }
 
 // 切页编排（design tabs.js 同款）：回清单页重拉兜底 + 归档按钮出入场动画
-// （离清单页塌缩+粒子迸裂、回清单页粒子汇聚+回弹弹出——仅此处编排，与板开合解耦）
+// （离清单页塌缩+粒子迸裂、回清单页粒子汇聚+回弹弹出——仅此处编排，与板开合解耦）；
+// 切页收口未决删除确认（A2 = design tabs.js rollbackDelConfirms）
 watch(activeTab, (tab) => {
+  rollbackAllDelConfirms();
   if (tab === "todos") {
     void refresh();
   }
@@ -190,7 +202,12 @@ onUnmounted(() => {
     </nav>
     <div v-if="activeTab === 'todos'" class="page" id="page-todos">
       <AddBar @changed="onListChanged" />
-      <TodoList :items="items" @changed="onListChanged" @open-detail="onOpenDetail" />
+      <TodoList
+        :items="items"
+        @changed="onListChanged"
+        @open-detail="onOpenDetail"
+        @archived="onArchived"
+      />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">
       <BubblesView :max-bubbles="maxBubbles" @open-bubble="onOpenBubble" @changed="refreshBadge" />
@@ -214,12 +231,15 @@ onUnmounted(() => {
       @opened="onSettingsOpened"
       @theme-changed="titleFX?.refresh()"
     />
-    <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动 -->
+    <!-- 详情板（PL010.5）：todo 非 null 即开；三板互斥由其内部 syncVeils 联动；
+         anchor = 被点行中心（A3 飞出原点）。close 双清——只清 bubble 时同一条 todo
+         再点击会因 watch 同引用不触发而开不了板（真窗口实测 2026-09-28） -->
     <DetailOverlay
       :todo="detailTodo"
       :bubble="detailBubble"
+      :anchor="detailAnchor"
       @changed="onListChanged"
-      @close="detailBubble = null"
+      @close="closeDetail"
     />
   </main>
 </template>

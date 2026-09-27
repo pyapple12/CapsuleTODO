@@ -2,7 +2,7 @@
 // 隐藏原生滑杆，4×16 透明玻璃浮钮随滚动比例移动、可拖拽。浮钮悬浮锚在宿主层（默认
 // #board，不进滚动体内部——内贴会随内容滚走）；矩形每次同步按滚动体可视范围实测重算。
 // 数值零改动（右侧偏移 7.75/4.5、浮钮 4×16、scrollable 判定 +1 全沿实测定案） =====
-import { onUnmounted } from "vue";
+import { getCurrentInstance, onUnmounted } from "vue";
 
 /** 滑杆实例（注册表条目：useVeils 帘联动按 scroller id 匹配） */
 export interface GlassBarEntry {
@@ -25,15 +25,17 @@ export const glassBars: GlassBarEntry[] = [];
 
 /**
  * 挂玻璃滑杆：滚动/输入/内容增删三挂点驱动 sync；浮钮可拖拽（textarea 程序赋值
- * scrollTop 不派发 scroll 的 Chromium 固有行为，拖拽路径补发合成事件）
+ * scrollTop 不派发 scroll 的 Chromium 固有行为，拖拽路径补发合成事件）。
+ * 在 nextTick/watch 等异步上下文调用时 Vue 生命周期钩子失效（无组件实例），此时
+ * 须由调用方持有 destroy 并在卸载/重挂前手动调用
  * @param scroller 滚动容器
  * @param opts anchor/inset/right
- * @returns { sync } 手动同步入口（内容重建后调用）
+ * @returns { sync, destroy } 手动同步入口与显式清理入口
  */
 export function useGlassBar(
   scroller: HTMLElement,
   opts: GlassBarOptions = {},
-): { sync: () => void } {
+): { sync: () => void; destroy: () => void } {
   const anchor = opts.anchor ?? (document.getElementById("board") as HTMLElement);
   scroller.classList.add("glass-scroll");
   const bar = document.createElement("div");
@@ -101,17 +103,22 @@ export function useGlassBar(
   const entry: GlassBarEntry = { scroller, bar, sync };
   glassBars.push(entry);
 
-  // Vue 生命周期卸载：清监听、断观测、摘浮钮（design 无此环节——页面即生命周期）
-  onUnmounted(() => {
+  /** 显式清理（异步上下文挂载时 onUnmounted 拿不到组件实例，调用方手动调） */
+  const destroy = (): void => {
     scroller.removeEventListener("scroll", onScroll);
     scroller.removeEventListener("input", sync);
     observer.disconnect();
     const idx = glassBars.indexOf(entry);
     if (idx >= 0) glassBars.splice(idx, 1);
     bar.remove();
-  });
+  };
 
-  return { sync };
+  // 仅当存在组件实例（setup 同步期调用）时注册自动清理；异步挂载由调用方管理
+  if (getCurrentInstance()) {
+    onUnmounted(destroy);
+  }
+
+  return { sync, destroy };
 }
 
 /** 罩死同步钩子（useMaskDead 注册；本文件先声明避免循环 import——design 同款松耦合） */

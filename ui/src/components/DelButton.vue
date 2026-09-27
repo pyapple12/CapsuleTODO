@@ -10,14 +10,12 @@ const props = defineProps<{
   confirming: boolean;
 }>();
 
-const emit = defineEmits<{
-  /** 首点：进入确认态（父级置 confirming=true） */
-  press: [];
-  /** 再点：执行窗口（200ms）结束后触发，父级执行删除 */
-  confirm: [];
-}>();
+const emit = defineEmits<{ press: []; confirm: []; leave: [] }>();
 
 const root = ref<HTMLElement | null>(null);
+const pressing = ref(false); // 脉冲动画类（Vue 响应式驱动——classList.add 外部加类会被
+// 渲染 patch 的 class 重写抹掉，动画一帧未渲染即消失，2026-09-28 真窗口实测）
+let pressTimer: number | undefined;
 let confirmTimer: number | undefined;
 let pendingConfirm = false;
 
@@ -37,14 +35,24 @@ function onClick(): void {
   }
 }
 
-/** 按压脉冲：del-press 类挂载 180ms 后自摘（remove+回流保证连点重播） */
+/** 按压脉冲：pressing 置真挂 del-press 动画（0.18s 缩放），220ms 后自摘；
+ * remove+回流由 Vue class 切换天然完成重播 */
 function pulse(): void {
-  const el = root.value;
-  if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  el.classList.remove("del-press");
-  void el.offsetWidth; // 强制回流：重入时动画从头重播
-  el.classList.add("del-press");
-  window.setTimeout(() => el.classList.remove("del-press"), 220);
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  pressing.value = false;
+  void (root.value as HTMLElement | null)?.offsetWidth; // 强制回流：连点重播
+  pressing.value = true;
+  window.clearTimeout(pressTimer);
+  pressTimer = window.setTimeout(() => (pressing.value = false), 220);
+}
+
+/** 确认态鼠标离开即回退（design mouseout 委托等价：mouseleave 天然不含按钮内部
+ * 子元素间移动——relatedTarget 豁免免掉）；执行窗锁期间红底保持不被离开打断。
+ * 事件名用 leave（cancel 与 HTMLDialogElement 原生事件同名的键会触发 vue-tsc
+ * defineEmits 重载误判，实测 TS2344） */
+function onMouseLeave(): void {
+  if (!props.confirming || pendingConfirm) return;
+  emit("leave");
 }
 
 /** 父级收口接口：摘确认态（板开合/换页/单实例换目标时调用） */
@@ -61,6 +69,7 @@ defineExpose({ rollBack });
 
 onBeforeUnmount(() => {
   if (confirmTimer !== undefined) window.clearTimeout(confirmTimer);
+  window.clearTimeout(pressTimer);
 });
 </script>
 
@@ -68,9 +77,10 @@ onBeforeUnmount(() => {
   <button
     ref="root"
     class="del"
-    :class="{ 'del-open': confirming }"
+    :class="{ 'del-open': confirming, 'del-press': pressing }"
     aria-label="删除"
     @click.stop="onClick"
+    @mouseleave="onMouseLeave"
   >
     <svg class="del-icon" viewBox="0 0 448 512">
       <path

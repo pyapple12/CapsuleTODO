@@ -303,11 +303,12 @@ impl Storage {
     }
 
     /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目；
-    /// sort_order = 现存最大值 + 1（排尾追加——list_bubbles 按升序输出即新气泡垫底）
+    /// sort_order = 现存最小值 − 1（**排头插入**——design captureBubble unshift 语义：
+    /// 新捕获的气泡永远在最上，升序输出即新在前；拖拽重排后取 MIN−1 依然排头）
     pub fn add_bubble(&self, text: &str) -> Result<BubbleItem, StorageError> {
         self.conn.execute(
             "INSERT INTO bubbles(text, sort_order)
-             VALUES (?1, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM bubbles))",
+             VALUES (?1, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM bubbles))",
             [text],
         )?;
         Ok(BubbleItem {
@@ -316,9 +317,8 @@ impl Storage {
         })
     }
 
-    /// 气泡列表：按 sort_order 升序（拖拽序；新捕获的气泡因排尾追加自然垫底，
-    /// 与实验场 V0.027 起"展示序即拖拽序"一致——历史 id 倒序语义由 sort_order 初始
-    /// 回填保持：存量按 id 升序回填后倒序展示语义转为迁移当日快照）
+    /// 气泡列表：按 sort_order 升序（拖拽序；新捕获排头插入 = 展示序与实验场
+    /// unshift 语义一致，历史 id 倒序语义由迁移回填保持）
     pub fn list_bubbles(&self) -> Result<Vec<BubbleItem>, StorageError> {
         let mut stmt = self
             .conn
@@ -570,8 +570,9 @@ mod tests {
             .into_iter()
             .map(|it| it.id)
             .collect();
-        // PL013 起 list_bubbles = sort_order 升序（拖拽序）：新捕获排尾追加 → 先加在前
-        assert_eq!(ids, vec![a.id, b.id]);
+        // list_bubbles = sort_order 升序（拖拽序）：新捕获排头插入（design unshift
+        // 语义）→ 后加的在前
+        assert_eq!(ids, vec![b.id, a.id]);
     }
 
     #[test]

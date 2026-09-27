@@ -1,6 +1,7 @@
-//! 应用装配：DWM 焦点联动玻璃材质、桌面固定（置顶 + 全屏让位）、位置记忆与模块注册。
-//! 材质定案（沿 CapsulePulse PL010/PL011）：平时纯 alpha 透明常驻（不挂背板），
-//! 聚焦瞬间挂 DWM Acrylic 真磨砂（DWMSBT_TRANSIENTWINDOW），失焦即刻撤回（DWMSBT_NONE）。
+//! 应用装配：桌面固定（置顶 + 全屏让位）、位置记忆与模块注册。
+//! 玻璃材质定案（2026-09-28 用户定案更新）：窗口恒为纯 alpha 透明 + 前端 30% 纱，
+//! 不挂 DWM Acrylic 背板（聚焦磨砂糊住背后桌面，实测否决）；聚焦仅发 window-focus
+//! 事件驱动前端纱态与交互。
 
 pub mod bubble;
 pub mod commands;
@@ -18,35 +19,6 @@ use tauri::{Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 use commands::AppContext;
 use settings::WindowSettings;
 use storage::Storage;
-
-/// DWM 窗口属性编号：DWMWA_SYSTEMBACKDROP_TYPE（系统背板材质，Windows 11 22H2+；无官方 Rust 绑定，extern 直连魔数）
-#[cfg(target_os = "windows")]
-const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
-/// 背板材质：Acrylic 磨砂（DWMSBT_TRANSIENTWINDOW，微软终端同款）
-#[cfg(target_os = "windows")]
-const DWMSBT_TRANSIENTWINDOW: u32 = 3;
-/// 背板材质：无（失焦撤回磨砂；注意非 0——0 是 DWMSBT_AUTO，材质由系统自作主张）
-#[cfg(target_os = "windows")]
-const DWMSBT_NONE: u32 = 1;
-
-// DwmSetWindowAttribute 直连声明（dwmapi.lib；第四参数 = 值类型字节数，u32 为 4）
-#[cfg(target_os = "windows")]
-#[link(name = "dwmapi")]
-extern "system" {
-    fn DwmSetWindowAttribute(hwnd: isize, attr: u32, value: *const u32, size: u32) -> i32;
-}
-
-/// 设置窗口 DWM 背板材质；HRESULT 非零严格报错（是否降级由调用方按容错白名单决定）
-#[cfg(target_os = "windows")]
-fn set_backdrop(window: &tauri::Window, kind: u32) -> Result<(), Box<dyn std::error::Error>> {
-    let hwnd = window.hwnd()?.0 as isize;
-    let result = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &kind, 4) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(format!("DwmSetWindowAttribute 失败：HRESULT={result}").into())
-    }
-}
 
 /// 默认落位：主屏右下距边 40px（窗口物理尺寸按当前缩放比换算）
 fn default_position(
@@ -169,17 +141,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]
                 {
-                    // 焦点联动材质：聚焦挂 Acrylic 磨砂、失焦撤回透明。
-                    // 材质为纯装饰层——切换失败落日志维持前态，不中断主流程
-                    //（容错白名单①，下次焦点切换自动重试自愈）
-                    let kind = if *focused {
-                        DWMSBT_TRANSIENTWINDOW
-                    } else {
-                        DWMSBT_NONE
-                    };
-                    if let Err(err) = set_backdrop(window, kind) {
-                        eprintln!("焦点联动材质切换失败（维持前态）：{err}");
-                    }
+                    // 聚焦雾化取消（用户定案 2026-09-28）：不再切换 DWM 背板（Acrylic
+                    // 磨砂糊掉背后桌面，用户实测否决）——窗口恒为纯 alpha 透明 +
+                    // 前端 30% 纱。仅保留 focus 事件供前端分态纱/交互使用
                     // 前端分态纱随事件翻转（.focused class）；发送失败由下次焦点事件纠正
                     if let Err(err) = window.emit("window-focus", focused) {
                         eprintln!("window-focus 事件发送失败：{err}");

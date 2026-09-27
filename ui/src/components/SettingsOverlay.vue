@@ -78,12 +78,16 @@ function onDocClick(e: MouseEvent): void {
 
 const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
 const themeIdx = ref<0 | 1 | 2>(systemDark.matches ? 2 : 1);
+// 跟随模式下系统深浅变化的刷新触发器：matchMedia.matches 不是响应式源，
+// computed 里读它不会自动重算——onSystemChange 里 bump 一次驱动档位显示跟随
+const systemTick = ref(0);
 
 const followChecked = computed(() => themeIdx.value === 0);
 const daynightDisabled = computed(() => themeIdx.value === 0);
-const daynightChecked = computed(() =>
-  themeIdx.value === 0 ? systemDark.matches : themeIdx.value === 2,
-);
+const daynightChecked = computed(() => {
+  systemTick.value; // 响应式依赖登记（A9）
+  return themeIdx.value === 0 ? systemDark.matches : themeIdx.value === 2;
+});
 const daynightDesc = computed(() =>
   themeIdx.value === 0 ? "跟随系统当前深浅自动切换" : "手动选择浅色或暗色",
 );
@@ -117,8 +121,10 @@ function onDaynightChange(e: Event): void {
   applyTheme((e.target as HTMLInputElement).checked ? 2 : 1);
 }
 
-/** 跟随期间系统深浅实时变化 → 界面档位同步（手动模式不管） */
+/** 跟随期间系统深浅实时变化 → 界面档位同步（design theme.js syncThemeControls 同款；
+ * bump 触发器让读 matches 的 computed 重算，A9） */
 function onSystemChange(): void {
+  systemTick.value += 1;
   if (themeIdx.value === 0) emit("themeChanged");
 }
 

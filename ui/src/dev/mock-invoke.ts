@@ -217,12 +217,14 @@ const handlers: Record<string, CommandHandler> = {
     ),
     remind: state.bubbles.length >= MAX_BUBBLES,
   }),
-  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验入库链路）
+  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验入库链路）。
+  // sort_order = 现存最小值 − 1（排头插入，对齐 Rust add_bubble 的 unshift 语义）
   bubble_capture: () => {
     const text = `[mock 捕获] ${new Date().toLocaleTimeString()} 的剪贴板内容`;
     const err = text.trim() ? null : "气泡文本不能为空";
     if (err) throw err;
-    const item: MockBubble = { id: ++state.bubbleSeq, text };
+    const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
+    const item: MockBubble = { id: ++state.bubbleSeq, text, sort_order: min - 1 };
     state.bubbles.push(item);
     return item;
   },
@@ -238,7 +240,8 @@ const handlers: Record<string, CommandHandler> = {
     const text = String(args.text ?? "").trim();
     if (!text) throw "气泡文本不能为空";
     if (text.length > 2000) throw "气泡内容过长（上限 2000 字符）";
-    const item: MockBubble = { id: ++state.bubbleSeq, text };
+    const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
+    const item: MockBubble = { id: ++state.bubbleSeq, text, sort_order: min - 1 };
     state.bubbles.push(item);
     return item;
   },

@@ -2,7 +2,7 @@
 // 上下溶解遮罩 + ▲▼ 边缘三角 + scrollend 收尾（半截行 --fade-btm 渐隐）+ 到底抬带
 // （at-bottom 100ms）+ 隐区位移（maskShift）。算法与数值零改动（顶 6/底 14 软边、
 // 三角 26px、padB 8、迟滞判定 ±2 全沿实测定案） =====
-import { onUnmounted } from "vue";
+import { getCurrentInstance, onUnmounted } from "vue";
 
 /** 整板阅读实例（注册表条目：useVeils 帘联动按 el id 匹配） */
 export interface BoardReadEntry {
@@ -42,15 +42,22 @@ export function registerDragProbe(fn: () => boolean): void {
 
 /**
  * 挂整板阅读：容器加 .board-read 类（溶解遮罩），创建 ▲▼ 三角对挂宿主层，
- * scroll 滚动实时显隐/到底抬带、scrollend 半截行收尾、内容重建自动 settle
+ * scroll 滚动实时显隐/到底抬带、scrollend 半截行收尾、内容重建自动 settle。
+ * 在 nextTick/watch 等异步上下文调用时生命周期钩子失效（无组件实例），须由
+ * 调用方持有 destroy 并在卸载/重挂前手动调用
  * @param el 滚动容器
  * @param opts 见 BoardReadOptions
- * @returns { sync, settle, hints } 手动同步/收尾入口与三角对
+ * @returns { sync, settle, hints, destroy } 手动同步/收尾入口、三角对与显式清理
  */
 export function useBoardRead(
   el: HTMLElement,
   opts: BoardReadOptions = {},
-): { sync: () => void; settle: () => void; hints: [HTMLElement, HTMLElement] } {
+): {
+  sync: () => void;
+  settle: () => void;
+  hints: [HTMLElement, HTMLElement];
+  destroy: () => void;
+} {
   el.classList.add("board-read");
   const hintHost = opts.hintHost ?? (document.getElementById("board") as HTMLElement);
   const up = document.createElement("div");
@@ -164,7 +171,8 @@ export function useBoardRead(
   const inst: BoardReadEntry = { el, hints, sync, settle };
   boardReads.push(inst);
 
-  onUnmounted(() => {
+  /** 显式清理（异步上下文挂载时生命周期钩子失效，调用方手动调） */
+  const destroy = (): void => {
     el.removeEventListener("scroll", onScroll);
     el.removeEventListener("scrollend", onScrollEnd);
     observer.disconnect();
@@ -172,9 +180,14 @@ export function useBoardRead(
     if (idx >= 0) boardReads.splice(idx, 1);
     up.remove();
     down.remove();
-  });
+  };
 
-  return { sync, settle, hints };
+  // 仅当存在组件实例（setup 同步期调用）时注册自动清理；异步挂载由调用方管理
+  if (getCurrentInstance()) {
+    onUnmounted(destroy);
+  }
+
+  return { sync, settle, hints, destroy };
 }
 
 /** 全局别名：换页监听等挂点调用，逐实例重算三角显隐与几何 */

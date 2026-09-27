@@ -353,3 +353,18 @@
   height: 2em;
   bottom: 0;
 }
+
+/* —— reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：双开关动效全关
+   （日夜云星月亮/跟随系统滑块） —— */
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch__container,
+  .theme-switch__circle-container,
+  .theme-switch__sun-moon-container,
+  .theme-switch__moon,
+  .theme-switch__clouds,
+  .theme-switch__stars-container,
+  .switch .slider,
+  .switch .slider:before {
+    transition: none;
+  }
+}

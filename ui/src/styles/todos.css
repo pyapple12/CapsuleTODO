@@ -2,6 +2,18 @@
    分组虚拟外框 / 行 / t-text / t-edit / 出入场 / 罩死灰化 / age-alert / 空态。
    罩死与拖拽期的行级规则在此随行接线生效；数值全部沿实测定案 ===== */
 
+/* 清单页容器（design DOM 无此层——Vue 组件多包一层 section，补齐 .page 同款
+   纵向约束：无此约束时 overflow:visible 的普通块拒绝收缩（min-height:auto），
+   把 .page 撑破 → ul.group 永远等于内容高，清单不可滚——真窗口实测 2026-09-28） */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
 /* 空态（design bubbles.css 共享段同值） */
 .empty,
 .placeholder {
@@ -53,11 +65,13 @@
 }
 
 /* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规；
-   padding 一次写全清掉 UA 默认上下 1px（行盒非整数时 0.1~0.3px 下扩，实测） */
+   padding 一次写全清掉 UA 默认上下 1px（行盒非整数时 0.1~0.3px 下扩，实测）。
+   左内距 0：与 t-text 文字起点严格对齐（2px 起点差 = 双击瞬间文字右移，
+   真窗口实测 2026-09-28；design 的 2px 在 focus+select 全选高亮下不可感） */
 .t-edit {
   flex: 1;
   min-width: 0;
-  padding: 0 36px 0 2px;
+  padding: 0 36px 0 0;
   border: none;
   outline: none;
   background: transparent;
@@ -68,6 +82,12 @@
 }
 
 .is-done-text {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* 归档行删除线（design .is-done .t-text 同款；此前漏迁——归档行删除线无样式） */
+.is-done .t-text {
   text-decoration: line-through;
   opacity: 0.55;
 }

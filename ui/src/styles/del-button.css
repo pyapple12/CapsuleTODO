@@ -92,8 +92,12 @@
   transition-duration: 0.3s;
 }
 
-/* Delete 字渐隐（用户定案）：开盖时鼠标必在 hover 态，须压过 hover 的 opacity:1 */
-.del-open::before {
+/* Delete 字渐隐（用户定案）：开盖时鼠标必在 hover 态，须压过 hover 的 opacity:1。
+   特异性对齐 design（.del-open .del:hover::before 0,3,0）：组件化后 del-open 挂钮
+   本体，须写 .del-open:hover::before（0,2,0，与 .del:hover::before 同级靠声明
+   顺序取胜）——写成 .del-open::before 只剩 0,1,0 会被 hover 压住，渐隐消失
+   （真窗口实测 2026-09-28） */
+.del-open:hover::before {
   opacity: 0;
   transition: opacity 0.35s ease;
 }
@@ -117,4 +121,17 @@
 
 .del-press {
   animation: del-press 0.18s ease-in-out;
+}
+
+/* —— reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：删除钮展宽/图标
+   位移/文字滑入/盖翻全部瞬时 —— */
+@media (prefers-reduced-motion: reduce) {
+  .del,
+  .del::before,
+  .del-icon,
+  .del-lid,
+  .del-press {
+    transition: none;
+    animation: none;
+  }
 }

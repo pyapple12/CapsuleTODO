@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { TodoItem } from "../../types";
 import DelButton from "./DelButton.vue";
@@ -7,6 +7,7 @@ import NeonCheckbox from "./NeonCheckbox.vue";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
+import { registerDelConfirms, rollbackAllDelConfirms } from "../composables/delConfirmBus";
 
 // ===== 归档板（PL011.2）：已完成条目管理（勾选退回 / 删除二态）。
 // 板揭示 = 动态落位（板顶=页签顶-4）+ origin 注入 scale 回弹（从归档图标飞出）；
@@ -87,11 +88,17 @@ function setArchiveVisible(visible: boolean): void {
   }
 }
 
-/** 开合归档板：开板重拉数据 + 动态落位 + 揭示动画 + 450ms 后 settle（揭示中几何中间态防御） */
+/** 开合归档板：开板重拉数据 + 动态落位 + 揭示动画 + 450ms 后 settle（揭示中几何中间态防御）。
+ * 开合都先收口未决删除确认（A2 = design setBoard 首行：板开遮盖清单行、收板后板内行复见）。
+ * 开板 listKey++ 强制列表重建（design renderBoard 每次开板 innerHTML 重建 → 勾选态的
+ * 粒子迸发/环脉冲/对勾描画在新元素上重播——Vue 持久 vnode 不重建则开屏无动画，
+ * 真窗口实测 2026-09-28） */
 async function toggle(): Promise<void> {
+  rollbackAllDelConfirms();
   const next = !isOpen.value;
   if (next) {
-    emit("opened"); // 三板互斥：父级收其余两板（design setBoard 同款）
+    emit("opened"); // 三板互斥：父级收其余两板
+    listKey.value += 1;
     isOpen.value = true;
     syncVeils();
     await nextTick();
@@ -134,6 +141,7 @@ async function toggle(): Promise<void> {
 /** 收板（互斥出口：详情/设置板开启时由父级调用）；已关早退 */
 function close(): void {
   if (!isOpen.value) return;
+  rollbackAllDelConfirms();
   isOpen.value = false;
   syncVeils();
 }
@@ -162,12 +170,28 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.clearTimeout(animTimer);
+  window.clearTimeout(restoreTimer);
+  unregisterRollback?.();
 });
 
 // —— 二态确认删除（与清单同款；单实例收口在板内行间） ——
 
 const confirmingId = ref<number | null>(null);
 const delRefs = new Map<number, InstanceType<typeof DelButton>>();
+// 列表重建计数：开板时勾选态粒子/环/描画动画重播（design renderBoard 重建语义）
+const listKey = ref(0);
+
+// 收口总线注册（A2）：板开合/页签切换时批量摘未决确认（归档板自家行也在列——
+// design rollbackDelConfirms 收全局 .del-open）
+let unregisterRollback: (() => void) | null = null;
+onMounted(() => {
+  unregisterRollback = registerDelConfirms(() => {
+    if (confirmingId.value != null) {
+      delRefs.get(confirmingId.value)?.rollBack();
+      confirmingId.value = null;
+    }
+  });
+});
 
 function setDelRef(id: number, el: InstanceType<typeof DelButton> | null): void {
   if (el) delRefs.set(id, el);
@@ -191,15 +215,43 @@ async function onConfirm(item: TodoItem): Promise<void> {
   }
 }
 
-/** 勾选退回：确认态直接翻转（归档行删除线态，两拍确认不适用——退回是低危操作） */
+/** 确认态鼠标离开即回退（A1：V0.025 定案，归档行并入同款） */
+function onCancel(item: TodoItem): void {
+  if (confirmingId.value === item.id) confirmingId.value = null;
+}
+
+/** 退场钉高（⑤ = design collapseRow 第一步 1:1，与清单同款）：height auto→0 不可
+ * 过渡，leave 前钉实测高度作过渡起点，缺失即"行直接消失" */
+function pinLeaveHeight(el: Element): void {
+  (el as HTMLElement).style.height = `${(el as HTMLElement).offsetHeight}px`;
+}
+
+/** 勾选退回（⑥ = design 归档分支时序 1:1）：invoke 成功后**乐观置位**——勾选框
+ * 熄灭 + 删除线摘除（design input.checked=false + 摘 is-done 的立即置位，退回视觉
+ * 起播），300ms 主拍播完才塌缩离场 */
+let restoreTimer: number | undefined;
+const restoringId = ref<number | null>(null);
 async function restore(item: TodoItem): Promise<void> {
   try {
     await invoke("todo_toggle", { id: item.id });
-    emit("changed");
+    restoringId.value = item.id;
+    window.clearTimeout(restoreTimer);
+    restoreTimer = window.setTimeout(() => emit("changed"), 300); // 主拍 300ms（用户定案）
   } catch (err) {
     console.error("退回失败", err);
   }
 }
+
+// restoringId 的清空必须等 items 真正更新移除该行之后（flush post）：changed 后
+// refreshArchive 是异步的——同步清会让该行在离场前恢复勾选态（粒子动画重播 +
+// 删除线闪回，真窗口实测 2026-09-28）
+watch(
+  () => props.items,
+  () => {
+    if (restoringId.value != null) restoringId.value = null;
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
@@ -235,19 +287,26 @@ async function restore(item: TodoItem): Promise<void> {
         tag="ul"
         name="todo"
         class="board-list board-read"
+        :key="listKey"
         :duration="320"
+        @before-leave="pinLeaveHeight"
       >
         <li v-for="item in items" :key="item.id" class="todo-item">
           <!-- 整行点击驱动勾选退回（design 语义：checkbox pointer-events 关闭，
                行 click 触发 toggle；删除钮 stop 自有语义） -->
-          <div class="todo-row is-done" @click="restore(item)">
-            <NeonCheckbox :checked="true" />
+          <div
+            class="todo-row"
+            :class="{ 'is-done': restoringId !== item.id }"
+            @click="restore(item)"
+          >
+            <NeonCheckbox :checked="restoringId !== item.id" />
             <span class="t-text">{{ item.text }}</span>
             <DelButton
               :ref="(el) => setDelRef(item.id, el as InstanceType<typeof DelButton>)"
               :confirming="confirmingId === item.id"
               @press="onPress(item)"
               @confirm="onConfirm(item)"
+              @leave="onCancel(item)"
             />
           </div>
         </li>

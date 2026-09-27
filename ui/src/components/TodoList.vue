@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { TodoItem, TodoView } from "../../types";
 import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
@@ -8,6 +8,7 @@ import { rowMaskDead, syncMaskDead } from "../composables/useMaskDead";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { deferDuringDrag, installDragHooks, isSuppressed } from "../composables/useDragReorder";
+import { registerDelConfirms } from "../composables/delConfirmBus";
 
 // ===== 清单页（PL010.4 换装实验场形态）：行模板 1:1（NeonCheckbox + t-text +
 // DelButton 二态 + age-alert 黄红提醒）+ TransitionGroup 出入场（0.3s 显式 duration——
@@ -20,7 +21,12 @@ const props = defineProps<{
   items: TodoView[];
 }>();
 
-const emit = defineEmits<{ changed: []; openDetail: [item: TodoItem] }>();
+const emit = defineEmits<{
+  changed: [];
+  openDetail: [item: TodoItem, anchor: { x: number; y: number }];
+  /** 勾选入档成功（A7：详情板若正开着这条随行收起——design 勾选分支同款联动） */
+  archived: [item: TodoItem];
+}>();
 
 const listEl = ref<HTMLElement | null>(null);
 
@@ -59,6 +65,23 @@ async function onConfirm(item: TodoItem): Promise<void> {
   }
 }
 
+/** 确认态鼠标离开即回退（A1：DelButton mouseleave 上抛，父级摘 confirming） */
+function onCancel(item: TodoItem): void {
+  if (confirmingId.value === item.id) confirmingId.value = null;
+}
+
+// 收口总线注册（A2 = design rollbackDelConfirms）：归档板开合/页签切换时批量摘
+// 本列表的未决确认——行被遮盖后 mouseout 不再来，不收口会在板收/切回后红态复活
+let unregisterRollback: (() => void) | null = null;
+onMounted(() => {
+  unregisterRollback = registerDelConfirms(() => {
+    if (confirmingId.value != null) {
+      delRefs.get(confirmingId.value)?.rollBack();
+      confirmingId.value = null;
+    }
+  });
+});
+
 // —— 勾选 / 点击语义 ——
 
 /** 罩死判定的行元素定位（null 安全：行不在 DOM 即视为不罩死——塌缩离场中） */
@@ -69,24 +92,63 @@ function rowEl(id: number): HTMLElement {
   );
 }
 
-/** 勾选翻转：成功后通知父级重拉（300ms 流光主拍由 CSS 播放，不需 JS 等待——
- * 入档塌缩编排属 PL011 归档板接线） */
+/** 勾选翻转（⑥ = design 勾选分支时序 1:1）。勾选视觉用 **DOM 直改**（input.checked
+ * + 删除线类，= design 的 input.checked=true 立即置位）——不能走响应式乐观置位：
+ * item.done=true 会瞬时触发 active computed 重算把行从列表剔除（比主拍快），勾选
+ * 视觉没机会播 = "勾选瞬间坍缩"（真窗口实测 2026-09-28）。
+ * 勾选视觉播 300ms 主拍，播完 emit changed（行离场）+ archived（详情联动） */
+let toggleTimer: number | undefined;
 async function toggle(item: TodoItem): Promise<void> {
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行勾选失效（V0.022 定案）
+  const wasUndone = item.done === false; // 未完成 → 勾选入档方向
   try {
     await invoke("todo_toggle", { id: item.id });
-    emit("changed");
+    // 乐观视觉置位（DOM 直改，绕开响应式——见上注）
+    const row = rowEl(item.id);
+    const input = row.querySelector("input");
+    if (input) input.checked = wasUndone;
+    row.querySelector(".t-text")?.classList.toggle("is-done-text", wasUndone);
+    window.clearTimeout(toggleTimer);
+    toggleTimer = window.setTimeout(() => {
+      emit("changed");
+      if (wasUndone) emit("archived", item);
+    }, 300); // 勾选动效主拍 300ms（用户定案）
   } catch (err) {
     console.error("勾选失败", err);
   }
 }
 
+/** 退场钉高（⑤ = design collapseRow 第一步 1:1）：height 从 auto 收 0 不可过渡，
+ * leave 前先把实测高度钉成内联起点，塌缩动画才有过渡区间——缺失即"行直接消失" */
+function pinLeaveHeight(el: Element): void {
+  (el as HTMLElement).style.height = `${(el as HTMLElement).offsetHeight}px`;
+}
+
 let clickTimer: number | undefined;
-function onRowClick(item: TodoItem): void {
+function onRowClick(item: TodoItem, e: MouseEvent): void {
+  // 勾选框坐标分流（A10 = design todos.js 行 click 分支 1:1）：点中勾选框范围 =
+  // 勾选入档（不受拖拽落点抑制约束——design suppress 只拦开详情）；点正文 = 开详情
+  const row = e.currentTarget as HTMLElement;
+  const cb = row.querySelector(".neon-checkbox")?.getBoundingClientRect();
+  const inBox =
+    cb != null &&
+    e.clientX >= cb.left &&
+    e.clientX <= cb.right &&
+    e.clientY >= cb.top &&
+    e.clientY <= cb.bottom;
+  if (inBox) {
+    void toggle(item);
+    return;
+  }
   if (isSuppressed()) return; // 拖拽落点抑制（useDragReorder 350ms 窗口）
   if (rowMaskDead(rowEl(item.id))) return;
   clearTimeout(clickTimer);
-  clickTimer = window.setTimeout(() => emit("openDetail", item), 180);
+  // 行中心视口坐标随行上抛（A3：详情板飞出原点 = 被点行中心）
+  const anchor = (() => {
+    const r = row.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })();
+  clickTimer = window.setTimeout(() => emit("openDetail", item, anchor), 180);
 }
 
 function onRowDblClick(item: TodoItem): void {
@@ -98,10 +160,17 @@ function onRowDblClick(item: TodoItem): void {
 
 const editingId = ref<number | null>(null);
 const editDraft = ref("");
+const editEl = ref<HTMLInputElement | null>(null);
 
 function startInlineEdit(item: TodoItem): void {
   editingId.value = item.id;
   editDraft.value = item.text;
+  // focus + 全选（design startInlineEdit 同款）：无焦点则无光标无高亮，
+  // 且文字基线视觉断裂（真窗口报"文字往右移动"的主因）
+  void nextTick(() => {
+    editEl.value?.focus();
+    editEl.value?.select();
+  });
 }
 
 async function commitEdit(item: TodoItem): Promise<void> {
@@ -141,61 +210,69 @@ installDragHooks({
 });
 
 // 主窗挂点（design glass-bar.js 同款）：滑杆 inset + 整板阅读 skipDuringDrag。
-// TransitionGroup 渲染后 ul 才存在——nextTick 后挂；items 空时 ul 不渲染，空→非空
-// 重建的 ul 失去挂载？TransitionGroup v-else 分支切换会重建元素——用 watch 补挂
-let glassBar: { sync: () => void } | null = null;
+// 挂载时机（泄漏教训 2026-09-28）：此前用 rAF 链轮询等 .list 入 DOM——组件卸载后
+// rAF 闭包仍存活，切页往返会给新 DOM 重复挂载滑杆/三角且无人清理（白板页黄三角
+// 残留的根因）。改为 items 长度 watch + nextTick：挂载时机与数据到达对齐；
+// composable 在异步上下文挂载时生命周期钩子失效（无组件实例），destroy 由本组件
+// 持有，重挂/卸载时显式调用
+let glassBar: { sync: () => void; destroy: () => void } | null = null;
+let boardRead: { destroy: () => void } | null = null;
 
-/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；幂等——只挂一次）。boardRead 返回值
- * 挂注册表（useVeils/useMaskDead 遍历），本地不再持句柄 */
+/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；dataset.mounted 防重挂） */
 function mountScrollKit(): void {
   // TransitionGroup 的 template ref 指向组件实例——真实 UL 须经 $el 取（PL011 同教训）
   const ul =
     (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? (listEl.value as HTMLElement | null);
-  if (!ul || glassBar) return;
+  if (!ul || glassBar || ul.dataset.mounted === "1") return;
   ul.dataset.mounted = "1";
   glassBar = useGlassBar(ul, { inset: true });
-  useBoardRead(ul, { skipDuringDrag: true });
+  boardRead = useBoardRead(ul, { skipDuringDrag: true });
 }
 
-void nextTick(mountScrollKit);
-// 空→非空重建 ul 后补挂（glassBar 非空说明旧实例已挂——TransitionGroup v-else 切换
-// 重建的元素失去监听，须重挂：先卸旧再挂新）
-watchListRebuild();
+/** 拆旧挂新前显式清理（监听/observer/三角/浮钮全清） */
+function unmountScrollKit(): void {
+  glassBar?.destroy();
+  boardRead?.destroy();
+  glassBar = null;
+  boardRead = null;
+  delete document.getElementById("todo-active")?.dataset.mounted;
+}
 
-/** 监听列表重建（v-else 切换使 ul 换元素）：卸旧实例重挂。setup 同步段 .list 尚未
- * 入 DOM、mock invoke 返回又早于 50ms 重试——observer 注册晚于首场渲染即死等（冷启动
- * 实测）。改为 rAF 链轮询：每帧查 host + 未挂则直挂，挂上后切换 observer 只管重建 */
-function watchListRebuild(): void {
-  const host = document.querySelector(".list");
-  if (!host) {
-    requestAnimationFrame(watchListRebuild); // 组件 DOM 未挂：下一帧再看（不设上限——挂载是必然事件）
-    return;
-  }
+// items 到达/清空 → 渲染完成后挂载（覆盖首挂与 v-else 重建两种时机）
+watch(
+  () => props.items.length,
+  () => {
+    void nextTick(mountScrollKit);
+  },
+);
+
+// v-else 切换重建 ul 兜底（items 长度不变但 ul 换元素的场景）：观测 section.list
+// 子树替换即重挂
+let rebuildObserver: MutationObserver | null = null;
+
+onMounted(() => {
   rebuildObserver = new MutationObserver(() => {
     const ul =
       (listEl.value as unknown as { $el?: HTMLElement })?.$el ??
       (listEl.value as HTMLElement | null);
     if (!ul) return;
-    if (!glassBar) {
-      // 首挂早退（setup 时 items 未到、listEl 为 null）后的补挂口：items 渲染真实 ul
-      // 后任何子树变化都会走到这里
-      mountScrollKit();
-    } else if (ul.dataset.mounted !== "1") {
-      // ul 已换新元素：重挂
-      glassBar = null;
+    if (!glassBar || ul.dataset.mounted !== "1") {
+      unmountScrollKit();
       mountScrollKit();
     }
   });
-  rebuildObserver.observe(host, { childList: true });
-  // observer 就位前渲染可能已完成（最后一场变化没人接）：host 在手直接补一次挂
-  mountScrollKit();
-}
-
-let rebuildObserver: MutationObserver | null = null;
+  rebuildObserver.observe(document.querySelector(".list") ?? document.body, {
+    childList: true,
+  });
+  void nextTick(mountScrollKit);
+});
 
 onUnmounted(() => {
   clearTimeout(clickTimer);
+  clearTimeout(toggleTimer);
   rebuildObserver?.disconnect();
+  unmountScrollKit();
+  unregisterRollback?.();
 });
 </script>
 
@@ -211,17 +288,19 @@ onUnmounted(() => {
       class="group"
       :key="listKey"
       :duration="320"
+      @before-leave="pinLeaveHeight"
     >
       <li v-for="item in active" :key="item.id" class="todo-item" :class="{ 'mask-dead': false }">
         <div
           class="todo-row"
           :data-row-id="item.id"
-          @click="onRowClick(item)"
+          @click="onRowClick(item, $event)"
           @dblclick="onRowDblClick(item)"
         >
           <NeonCheckbox :checked="item.done" @toggle="toggle(item)" />
           <input
             v-if="editingId === item.id"
+            ref="editEl"
             v-model="editDraft"
             class="t-edit"
             maxlength="12"
@@ -235,6 +314,7 @@ onUnmounted(() => {
             :confirming="confirmingId === item.id"
             @press="onPress(item)"
             @confirm="onConfirm(item)"
+            @leave="onCancel(item)"
           />
         </div>
         <p v-if="item.age_level === 'Yellow'" class="age-alert age-alert--yellow">

@@ -8,13 +8,17 @@ import { syncVeils } from "../composables/useVeils";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { installDragHooks, isSuppressed } from "../composables/useDragReorder";
+import { registerDelConfirms } from "../composables/delConfirmBus";
 
 // ===== 气泡页（PL012.2 换装实验场形态 V0.017–V0.020 + V0.028 对调语义）：
 // 捕获钮（clipboard 双图标 + 占字 1s 反馈）/ 一键清空二态（宽度动画 + 悬停感知 2s
 // 超时 + 旁路取消）/ 满仓警告红字（has-warning 两档偏移 + 隐区位移在 useBoardRead）/
 // 行（两行截断 + DelButton 二态 + 单击开板双击复制 180ms 消歧）。数值全沿实测定案 =====
 
-const emit = defineEmits<{ openBubble: [item: BubbleItem]; changed: [] }>();
+const emit = defineEmits<{
+  openBubble: [item: BubbleItem, anchor: { x: number; y: number }];
+  changed: [];
+}>();
 
 const props = defineProps<{
   /** 满仓警告阈值（设置板步进同源，父级持有；超过才警告——design 定案语义） */
@@ -50,19 +54,31 @@ async function refresh(): Promise<void> {
 }
 
 // 主窗挂点（design glass-bar.js 同款）：滑杆 inset + 整板阅读（skipDuringDrag + maskShift）。
-// TransitionGroup v-else 切换：空→非空重建 ul 须重挂——沿 TodoList 的 observer 方案
-let glassBar: { sync: () => void } | null = null;
+// composable 在异步上下文挂载时生命周期钩子失效，destroy 由本组件持有，重挂/卸载
+// 时显式调用（泄漏教训同 TodoList 2026-09-28）
+let glassBar: { sync: () => void; destroy: () => void } | null = null;
+let boardRead: { destroy: () => void } | null = null;
 
-/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；幂等——只挂一次） */
+/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；dataset.mounted 防重挂） */
 function mountScrollKit(): void {
   const ul = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
-  if (!ul || glassBar) return;
+  if (!ul || glassBar || ul.dataset.mounted === "1") return;
+  ul.dataset.mounted = "1";
   glassBar = useGlassBar(ul, { inset: true });
-  useBoardRead(ul, {
+  boardRead = useBoardRead(ul, {
     rowSel: ".bubble-row",
     skipDuringDrag: true,
     maskShift: { threshold: 8.5, depth: 6 },
   });
+}
+
+/** 拆旧挂新前显式清理（监听/observer/三角/浮钮全清） */
+function unmountScrollKit(): void {
+  glassBar?.destroy();
+  boardRead?.destroy();
+  glassBar = null;
+  boardRead = null;
+  delete document.getElementById("bubble-list")?.dataset.mounted;
 }
 
 let rebuildObserver: MutationObserver | null = null;
@@ -153,6 +169,29 @@ async function onClearClick(): Promise<void> {
     return;
   }
   resetClearButton();
+  // 集体退场（⑥ design bubbles.js 同款两段式）：先 DOM 直改钉高+挂塌缩类播集体
+  // 退场，300ms 收尾后才落库刷新——立即清数据会走 v-if/v-else 整体卸载（空态切换），
+  // 逐行退场动画没有机会触发 = "直接消失"（真窗口实测 2026-09-28）
+  const rows = [...document.querySelectorAll<HTMLElement>("#bubble-list .bubble-row")];
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (rows.length && !reduce) {
+    rows.forEach((li) => {
+      li.style.boxSizing = "border-box";
+      li.style.height = `${li.offsetHeight}px`;
+      li.classList.add("todo-leave-active"); // 复用清单塌缩三通道（height/transform/opacity）
+      void li.offsetHeight; // 强制回流：锁定起步高度
+      li.style.height = "0";
+    });
+    window.setTimeout(async () => {
+      try {
+        await invoke("bubble_clear");
+        await refresh();
+      } catch (err) {
+        console.error("清空失败", err);
+      }
+    }, 300);
+    return;
+  }
   try {
     await invoke("bubble_clear");
     await refresh();
@@ -168,14 +207,67 @@ function cancelClearConfirm(): void {
 
 // —— 行交互（V0.028 对调语义）：单击开板（180ms 延迟）、双击复制（占字反馈） ——
 
-async function onRowClick(item: BubbleItem): Promise<void> {
+// —— DelButton 二态单实例（对齐 design V0.026 三处二态推广：气泡删除也是两拍确认，
+// 此前 :confirming 恒 false 属移植遗漏）——
+
+/** 当前确认中的条目 id（null = 无）；换目标时旧行自动回退 */
+const confirmingId = ref<number | null>(null);
+
+/** 行组件的 rollBack expose 句柄（id → 组件实例） */
+const delRefs = new Map<number, InstanceType<typeof DelButton>>();
+
+function setDelRef(id: number, el: InstanceType<typeof DelButton> | null): void {
+  if (el) delRefs.set(id, el);
+  else delRefs.delete(id);
+}
+
+/** 首点进确认态：单实例收口（旧确认行立即回退） */
+function onPress(item: BubbleItem): void {
+  if (confirmingId.value != null && confirmingId.value !== item.id) {
+    delRefs.get(confirmingId.value)?.rollBack();
+  }
+  confirmingId.value = item.id;
+}
+
+/** 删除单条（确认态第二拍执行） */
+async function remove(item: BubbleItem): Promise<void> {
+  try {
+    await invoke("bubble_remove", { id: item.id });
+    await refresh();
+  } catch (err) {
+    console.error("删除失败", err);
+  }
+}
+
+/** 再点执行：摘确认态 + 删除（DelButton 已延迟 200ms 播完脉冲） */
+async function onConfirm(item: BubbleItem): Promise<void> {
+  confirmingId.value = null;
+  await remove(item);
+}
+
+/** 确认态鼠标离开即回退（A1：V0.025 定案） */
+function onCancel(item: BubbleItem): void {
+  if (confirmingId.value === item.id) confirmingId.value = null;
+}
+
+async function onRowClick(item: BubbleItem, e: MouseEvent): Promise<void> {
   if (isSuppressed()) return; // 拖拽落点抑制（useDragReorder 350ms 窗口）
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行禁交互
+  cancelClearConfirm(); // 确认清空期间点气泡行：一键清空旁路退回（A5，todos.js:307 同款）
   clearTimeout(clickTimer);
-  clickTimer = window.setTimeout(() => emit("openBubble", item), 180);
+  // 行中心视口坐标随行上抛（A3：全文板飞出原点 = 被点行中心）
+  const row = (e.currentTarget as HTMLElement).closest(".bubble-row") as HTMLElement | null;
+  const anchor = row
+    ? (() => {
+        const r = row.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      })()
+    : { x: 0, y: 0 };
+  clickTimer = window.setTimeout(() => emit("openBubble", item, anchor), 180);
 }
 
 async function onRowDblClick(item: BubbleItem): Promise<void> {
+  if (isSuppressed()) return; // 拖拽收场落点双击不当作复制（A6，detail.js:145 同款）
   clearTimeout(clickTimer); // 掐掉未决的开板定时器：双击只复制不开板
   if (rowMaskDead(rowEl(item.id))) return;
   try {
@@ -185,16 +277,6 @@ async function onRowDblClick(item: BubbleItem): Promise<void> {
     copiedTimer = window.setTimeout(() => (copied.value = false), 1000);
   } catch (err) {
     console.error("复制失败", err);
-  }
-}
-
-/** 删除单条（DelButton 二态确认） */
-async function remove(item: BubbleItem): Promise<void> {
-  try {
-    await invoke("bubble_remove", { id: item.id });
-    await refresh();
-  } catch (err) {
-    console.error("删除失败", err);
   }
 }
 
@@ -208,6 +290,15 @@ function rowEl(id: number): HTMLElement {
 
 defineExpose({ refresh, cancelClearConfirm });
 
+/** 退场钉高（⑤ = design collapseRow 第一步，与清单同款）：单删/清空集体退场共用。
+ * 必须同时锁 border-box——气泡行自带 9px 上下内距且默认 content-box，把 offsetHeight
+ * 写进 content 高会瞬间膨胀 18px（单行"变两行再坍缩"，真窗口实测 2026-09-28） */
+function pinLeaveHeight(el: Element): void {
+  const h = el as HTMLElement;
+  h.style.boxSizing = "border-box";
+  h.style.height = `${h.offsetHeight}px`;
+}
+
 // 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 收场重拉）
 const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（同 TodoList）
 installDragHooks({
@@ -220,9 +311,18 @@ installDragHooks({
   },
 });
 
+// 收口总线注册（A2）：归档板开合/页签切换时批量摘本列表的未决确认
+let unregisterRollback: (() => void) | null = null;
+
 onMounted(() => {
   void refresh();
   syncVeils();
+  unregisterRollback = registerDelConfirms(() => {
+    if (confirmingId.value != null) {
+      delRefs.get(confirmingId.value)?.rollBack();
+      confirmingId.value = null;
+    }
+  });
   // v-else 切换重建 ul 补挂：观察 section.bubbles 子树（ul 换元素即重挂）；
   // refresh 后 nextTick 直接挂（items 到位 ul 已渲染——onMounted 时序比 TodoList 的
   // setup 同步段晚，此路径首挂即中）
@@ -232,10 +332,8 @@ onMounted(() => {
     rebuildObserver = new MutationObserver(() => {
       const ul = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
       if (!ul) return;
-      if (!glassBar) {
-        mountScrollKit();
-      } else if (ul.dataset.mounted !== "1") {
-        glassBar = null;
+      if (!glassBar || ul.dataset.mounted !== "1") {
+        unmountScrollKit();
         mountScrollKit();
       }
     });
@@ -246,19 +344,21 @@ onMounted(() => {
 onUnmounted(() => {
   [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
   rebuildObserver?.disconnect();
+  unmountScrollKit();
+  unregisterRollback?.();
 });
 </script>
 
 <template>
   <section class="bubbles">
     <div class="actions">
-      <!-- 捕获钮：占字态换 clipboard-check 图标 + "已复制到剪贴板" + 50% 紫禁点 -->
+      <!-- 捕获钮：占字态换 clipboard-check 图标 + "已捕获" + 50% 紫禁点（文案定案 2026-09-28） -->
       <button class="capture" :disabled="copied" @click="capture">
         <span v-if="!copied" class="cap-idle">
           <span class="cap-icon" v-html="CLIPBOARD_ICON"></span>捕获剪贴板
         </span>
         <span v-else class="cap-idle">
-          <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已复制到剪贴板
+          <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已捕获
         </span>
       </button>
       <!-- 一键清空：红染玻璃卡；0 气泡灰染 disabled -->
@@ -286,6 +386,7 @@ onUnmounted(() => {
       :class="{ 'has-warning': hasWarning }"
       :key="listKey"
       :duration="320"
+      @before-leave="pinLeaveHeight"
     >
       <!-- 满仓警告：滚动容器内部首项，随内容滚动（V0.017 ⑧ 定案） -->
       <li v-if="hasWarning" key="__warn" class="full-warning">
@@ -296,11 +397,17 @@ onUnmounted(() => {
         :key="item.id"
         class="bubble-row"
         :data-row-id="item.id"
-        @click="onRowClick(item)"
+        @click="onRowClick(item, $event)"
         @dblclick="onRowDblClick(item)"
       >
         <span class="b-text">{{ item.text }}</span>
-        <DelButton :confirming="false" @press="remove(item)" @confirm="remove(item)" />
+        <DelButton
+          :ref="(el) => setDelRef(item.id, el as InstanceType<typeof DelButton>)"
+          :confirming="confirmingId === item.id"
+          @press="onPress(item)"
+          @confirm="onConfirm(item)"
+          @leave="onCancel(item)"
+        />
       </li>
     </TransitionGroup>
   </section>

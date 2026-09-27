@@ -16,6 +16,8 @@ const props = defineProps<{
   todo: TodoItem | null;
   /** 气泡全文板数据源（PL012.3 bubble 模式；todo 优先级低——两源互斥由父级保证） */
   bubble: BubbleItem | null;
+  /** 被点行中心视口坐标（A3：飞出原点 = 行中心——design positionDetailOverlay 同款） */
+  anchor: { x: number; y: number } | null;
 }>();
 
 const emit = defineEmits<{ changed: []; close: [] }>();
@@ -34,7 +36,8 @@ const noteEl = ref<HTMLTextAreaElement | null>(null);
 let boardRead: { sync: () => void; settle: () => void } | null = null;
 let glassBar: { sync: () => void } | null = null;
 
-/** 开板：揭示动画几何注入（页签顶实测上扩 4px；origin = 左上归档图标方向兜底） */
+/** 开板：揭示动画几何注入（页签顶实测上扩 4px；飞出原点 = 被点行中心——A3，
+ * design positionDetailOverlay 同款，origin 在 nextTick 后注入见 open 内注释） */
 function open(): void {
   const ov = overlay.value;
   if (!ov) return;
@@ -49,6 +52,13 @@ function open(): void {
   syncVeils();
   // 首帧挂载板内组件（textarea 出现后才有滚动几何）+ 450ms 后 settle 重算
   void nextTick(() => {
+    // 飞出原点注入放 nextTick：watch(todo) flush pre 时父级的 anchor prop 尚未
+    // 传递到子组件（同一 tick 内先后赋值），渲染完成后读才是本次的行中心
+    if (props.anchor) {
+      const or = ov.getBoundingClientRect();
+      ov.style.setProperty("--origin-x", `${Math.round(props.anchor.x - or.left)}px`);
+      ov.style.setProperty("--origin-y", `${Math.round(props.anchor.y - or.top)}px`);
+    }
     if (noteEl.value && !boardRead) {
       boardRead = useBoardRead(noteEl.value, {
         gate: () => isOpen.value,
@@ -56,16 +66,31 @@ function open(): void {
       });
       glassBar = useGlassBar(noteEl.value, { right: 4.75 });
     }
+    // 滚动复位（A4 = design resetDetailScroll）：换内容必归零——上一次会话的
+    // scrollTop 会残留（实测开板落在文末）；textarea 程序赋值不派发 scroll，
+    // 补发合成事件让三角/到底抬带停在复位后状态
+    const note = noteEl.value;
+    if (note) {
+      note.scrollTop = 0;
+      note.dispatchEvent(new Event("scroll"));
+    }
     window.setTimeout(() => {
+      if (!isOpen.value) return; // 早关板防污染：settle 不把 at-bottom/带挂回已收的板
       boardRead?.settle();
       glassBar?.sync();
     }, 450);
   });
 }
 
-/** 关板：摘 open 类（0.35s 缩回）+ 帘布复位 */
+/** 关板：摘 open 类（0.35s 缩回）+ 帘布复位 + 清到底抬带残留（A4：类常驻后双模式
+ * 都出溶解带，不清则下次开板继承上次滚动态——design setDetail(false) 同款） */
 function close(): void {
   isOpen.value = false;
+  const note = noteEl.value;
+  if (note) {
+    note.classList.remove("at-bottom");
+    note.style.removeProperty("--fade-btm");
+  }
   syncVeils();
   emit("close");
 }
