@@ -14,6 +14,8 @@ interface MockTodo {
   created_at: number | null;
   done_at: number | null;
   note: string;
+  /** 拖拽排序键（PL013；种子行未赋值回退 id 序） */
+  sort_order?: number;
 }
 
 /** 龄期档位（镜像 AgeLevel） */
@@ -39,6 +41,8 @@ type MockTodoView = MockTodo & { age_level: MockAgeLevel };
 interface MockBubble {
   id: number;
   text: string;
+  /** 拖拽排序键（PL013；种子行未赋值回退 id 序） */
+  sort_order?: number;
 }
 
 /** 气泡页快照（镜像 BubbleSnapshot；满 5 提醒裁决在 mock 侧对齐 Rust 语义） */
@@ -121,11 +125,14 @@ function validateText(text: string): string | null {
   return null;
 }
 
-/** 排序视图（对齐 Rust sorted_view：未完成在前按 id 升序、已完成在后按 id 升序） */
+/** 排序视图（PL013 起对齐 Rust：未完成按 sort_order、已完成按 sort_order 殿后；
+ * sort_order 缺省（未迁移种子行）回退 id 序） */
 function sortedTodos(): MockTodo[] {
   return [...state.todos].sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
-    return a.id - b.id;
+    const sa = a.sort_order ?? a.id;
+    const sb = b.sort_order ?? b.id;
+    return sa - sb || a.id - b.id;
   });
 }
 
@@ -185,9 +192,29 @@ const handlers: Record<string, CommandHandler> = {
     state.todos.splice(idx, 1);
     return null;
   },
+  // 重排（PL013）：ids = 未完成条目目标全量序——校验语义对齐 Rust（长度/幽灵/重复）
+  todo_reorder: (args) => {
+    const ids = (args.ids as unknown[]).map(Number);
+    const actives = state.todos.filter((t) => !t.done);
+    const uniq = new Set(ids);
+    if (ids.length !== uniq.size || ids.length !== actives.length) {
+      throw "重排 id 集合不合法：与未完成集不一致";
+    }
+    const set = new Set(actives.map((t) => t.id));
+    for (const id of ids) {
+      if (!set.has(id)) throw `重排 id 集合不合法：幽灵 id ${id}`;
+    }
+    ids.forEach((id, order) => {
+      const item = state.todos.find((t) => t.id === id);
+      if (item) item.sort_order = order;
+    });
+    return null;
+  },
   bubble_list: (): MockBubbleSnapshot => ({
-    // 展示按 id 倒序 = 新在前（沿 Rust bubble_list 语义）
-    items: [...state.bubbles].sort((a, b) => b.id - a.id),
+    // 展示 = sort_order 升序（PL013 拖拽序；缺省回退 id 序）——对齐 Rust list_bubbles
+    items: [...state.bubbles].sort(
+      (a, b) => (a.sort_order ?? a.id) - (b.sort_order ?? b.id) || a.id - b.id,
+    ),
     remind: state.bubbles.length >= MAX_BUBBLES,
   }),
   // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验入库链路）
@@ -226,6 +253,23 @@ const handlers: Record<string, CommandHandler> = {
     const removed = state.bubbles.length;
     state.bubbles = [];
     return removed;
+  },
+  // 重排（PL013）：ids = 全量气泡目标序——校验语义对齐 Rust
+  bubble_reorder: (args) => {
+    const ids = (args.ids as unknown[]).map(Number);
+    const uniq = new Set(ids);
+    if (ids.length !== uniq.size || ids.length !== state.bubbles.length) {
+      throw "重排 id 集合不合法：与气泡集不一致";
+    }
+    const set = new Set(state.bubbles.map((b) => b.id));
+    for (const id of ids) {
+      if (!set.has(id)) throw `重排 id 集合不合法：幽灵 id ${id}`;
+    }
+    ids.forEach((id, order) => {
+      const item = state.bubbles.find((b) => b.id === id);
+      if (item) item.sort_order = order;
+    });
+    return null;
   },
   whiteboard_load: () => state.whiteboard,
   whiteboard_save: (args) => {

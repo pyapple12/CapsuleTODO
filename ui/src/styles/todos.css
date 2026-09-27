@@ -106,6 +106,48 @@
     opacity 0.3s ease-in;
 }
 
+/* —— 拖拽排序视觉（PL013.3a 自 design/assets/css/todos.css 1:1，生产级重挂模型）：
+   被拖行重挂卡片层浮起——translateY 跟指针 + 放大 1.03 由 JS 内联合成（不得挂
+   transition，须 1:1 跟手），这里只管压层/落影加深/抓手；其余行 .shifting 平移让位 —— */
+li.todo-item.dragging {
+  z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
+  cursor: grabbing;
+}
+
+li.todo-item.dragging .todo-row {
+  z-index: 2; /* 行本体 position:relative，压过相邻行 */
+  cursor: grabbing;
+  box-shadow:
+    var(--panel-stroke),
+    var(--panel-shadow),
+    0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
+}
+
+/* 等高占位符：行本体重挂卡片层期间留在清单里的落点指示，重排时滑向目标槽。
+   禁止 flex 收缩：清单是限高纵向 flex，内容溢出时空占位符会被压成 0 高，
+   让位快照全盘失真——拖拽只在溢出时错位的根因（2026-09-22） */
+li.todo-ghost {
+  flex-shrink: 0;
+  border-radius: var(--radius-panel);
+  background: var(--panel-bg);
+  opacity: 0.4;
+}
+
+li.todo-item.shifting {
+  transition: transform 0.2s ease; /* 让位平移的顺滑过渡 */
+}
+
+/* 拖拽期间锁定清单滚动：防中途滚动令布局快照失真（重挂后行本体已不在清单内） */
+.group.drag-live {
+  overflow-y: hidden;
+}
+
+/* 拖拽期间删除按钮整体失效（用户定案）：不响应悬停展开、不可能误删，松手即恢复 */
+.group.drag-live .del,
+li.todo-item.dragging .del {
+  pointer-events: none;
+}
+
 /* —— 罩死行（用户定案 2026-09-26）：侵入溶解带 ≥38% 整卡禁交互——三件套灰变、
    光标回箭头、删除钮失效；摘类同拍恢复（恢复渐变落各常态规则） —— */
 .todo-item.mask-dead .todo-row {

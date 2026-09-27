@@ -168,3 +168,31 @@
 .bubble-row.mask-dead .del-icon path {
   fill: rgba(255, 255, 255, 0.35);
 }
+
+/* ===== 拖拽排序（PL013.3a 自 design/assets/css/bubbles.css 1:1，机制与清单共用）===== */
+
+/* 拖拽浮起视觉（与清单 dragging 同款配方）：被拖行重挂卡片层——translateY 跟手 +
+   1.03 放大由 JS 内联合成（不得挂 transition，须 1:1 跟手）。border-box 钉宽语义：
+   宽度按实测 border-box 钉定，行自带 12px 内距在 content-box 下会被撑宽 24px */
+li.bubble-row.dragging {
+  box-sizing: border-box;
+  z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
+  cursor: grabbing;
+  box-shadow:
+    var(--panel-stroke),
+    var(--panel-shadow),
+    0 14px 28px rgba(0, 0, 0, 0.35); /* 原配方叠深影 = 提升感 */
+}
+
+/* 等高占位符（与清单 todo-ghost 同款语义）：行本体重挂期间留在列表里的落点指示。
+   禁止 flex 收缩 + border-box：JS 按实测钉高，content-box 会撑高 18px */
+li.bubble-ghost {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  opacity: 0.4; /* 玻璃底/圆角/描边由 .bubble-row 基类承担，此处只降透明度作弱化指示 */
+}
+
+/* 让位平移的顺滑过渡（与清单 .todo-item.shifting 同款）：只动 transform，不重排 DOM */
+li.bubble-row.shifting {
+  transition: transform 0.2s ease;
+}

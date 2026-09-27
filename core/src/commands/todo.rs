@@ -120,6 +120,18 @@ pub fn todo_archive_list_core(ctx: &AppContext) -> Result<Vec<TodoItem>, Command
     Ok(storage.list_done()?)
 }
 
+/// 清单重排（拖拽落点提交）：ids = 未完成条目的目标顺序（全量集，一致性校验在 storage 层）
+#[tauri::command]
+pub fn todo_reorder(ids: Vec<i64>, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+    todo_reorder_core(&ids, &ctx)
+}
+
+/// todo_reorder 核心实现：透传 storage.reorder_todos（校验+事务在存储层）
+pub fn todo_reorder_core(ids: &[i64], ctx: &AppContext) -> Result<(), CommandError> {
+    let storage = ctx.lock_storage()?;
+    Ok(storage.reorder_todos(ids)?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -215,5 +227,25 @@ mod tests {
         assert_eq!(view[0].age_level, AgeLevel::None);
         let _ = system_now; // 引用防 unused（生产默认时钟路径）
         let _ = item;
+    }
+
+    // —— PL013.2 重排命令 ——
+
+    #[test]
+    fn reorder_core_roundtrip_and_mismatch() {
+        let ctx = test_context();
+        let a = todo_add_core("甲", &ctx).expect("合法文本必须成功");
+        let b = todo_add_core("乙", &ctx).expect("合法文本必须成功");
+        let c = todo_add_core("丙", &ctx).expect("合法文本必须成功");
+        todo_reorder_core(&[c.id, b.id, a.id], &ctx).expect("全量重排必须成功");
+        let ids: Vec<i64> = todo_list_core(&ctx)
+            .expect("读命令必须成功")
+            .into_iter()
+            .map(|v| v.item.id)
+            .collect();
+        assert_eq!(ids, vec![c.id, b.id, a.id]);
+        // 部分集 / 幽灵 id：错误跨命令层可见
+        assert!(todo_reorder_core(&[a.id], &ctx).is_err());
+        assert!(todo_reorder_core(&[a.id, b.id, 99], &ctx).is_err());
     }
 }

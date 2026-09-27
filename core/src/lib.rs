@@ -134,11 +134,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_remove,
             commands::todo::todo_list,
             commands::todo::todo_archive_list,
+            commands::todo::todo_reorder,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
             commands::bubble::bubble_copy,
             commands::bubble::bubble_remove,
             commands::bubble::bubble_clear,
+            commands::bubble::bubble_reorder,
         ])
         .setup(|app| {
             let window = app

@@ -85,6 +85,18 @@ pub fn bubble_clear_core(ctx: &AppContext) -> Result<usize, CommandError> {
     Ok(storage.clear_bubbles()?)
 }
 
+/// 气泡重排（拖拽落点提交）：ids = 全量气泡的目标顺序（一致性校验在 storage 层）
+#[tauri::command]
+pub fn bubble_reorder(ids: Vec<i64>, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+    bubble_reorder_core(&ids, &ctx)
+}
+
+/// bubble_reorder 核心实现：透传 storage.reorder_bubbles（校验+事务在存储层）
+pub fn bubble_reorder_core(ids: &[i64], ctx: &AppContext) -> Result<(), CommandError> {
+    let storage = ctx.lock_storage()?;
+    Ok(storage.reorder_bubbles(ids)?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -144,5 +156,26 @@ mod tests {
         let snapshot = bubble_list_core(&ctx).expect("读命令必须成功");
         assert!(snapshot.items.is_empty());
         assert!(!snapshot.remind);
+    }
+
+    // —— PL013.2 重排命令 ——
+
+    #[test]
+    fn reorder_core_roundtrip_and_mismatch() {
+        let ctx = test_context();
+        let a = bubble_capture_core("一", &ctx).expect("合法文本必须成功");
+        let b = bubble_capture_core("二", &ctx).expect("合法文本必须成功");
+        let c = bubble_capture_core("三", &ctx).expect("合法文本必须成功");
+        bubble_reorder_core(&[c.id, a.id, b.id], &ctx).expect("全量重排必须成功");
+        let ids: Vec<i64> = bubble_list_core(&ctx)
+            .expect("读命令必须成功")
+            .items
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![c.id, a.id, b.id]);
+        // 部分集 / 幽灵 id：错误跨命令层可见
+        assert!(bubble_reorder_core(&[a.id], &ctx).is_err());
+        assert!(bubble_reorder_core(&[a.id, 99], &ctx).is_err());
     }
 }

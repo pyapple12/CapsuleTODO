@@ -27,7 +27,7 @@ export type TodoView = TodoItem & {
 
 /** 单条气泡（镜像 BubbleItem） */
 export interface BubbleItem {
-  /** 条目唯一标识（创建序，展示按 id 倒序 = 新在前） */
+  /** 条目唯一标识（创建序） */
   id: number;
   /** 气泡文本 */
   text: string;
@@ -35,7 +35,7 @@ export interface BubbleItem {
 
 /** 气泡页快照（镜像 BubbleSnapshot；满 5 提醒标记由 Rust 侧裁决，前端零业务） */
 export interface BubbleSnapshot {
-  /** 气泡列表（新在前） */
+  /** 气泡列表（sort_order 升序 = 拖拽序，PL013 起） */
   items: BubbleItem[];
   /** 是否达到提醒阈值 */
   remind: boolean;

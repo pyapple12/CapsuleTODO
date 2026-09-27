@@ -5,6 +5,14 @@ import vue from "@vitejs/plugin-vue";
 export default defineConfig({
   plugins: [vue()],
   clearScreen: false,
-  server: { port: 5173, strictPort: true },
+  server: {
+    port: 5173,
+    strictPort: true,
+    // core/target 与 .temp 在 watch 排除段：cargo 编译期间产物文件句柄被锁，chokidar
+    // watch 会 EBUSY 直接崩掉 dev 服务（Windows 实测，2026-09-27 PL013 期间两次中招）
+    watch: {
+      ignored: ["**/core/target/**", "**/dist/**", "**/data/**", "**/.temp/**"],
+    },
+  },
   envPrefix: ["VITE_", "TAURI_ENV_"],
 });

@@ -14,11 +14,16 @@ import SettingsOverlay from "./src/components/SettingsOverlay.vue";
 import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./components/WhiteboardView.vue";
 import { initTitleParticles } from "./src/composables/titleParticles";
+import { useDragReorder } from "./src/composables/useDragReorder";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 // 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
 // （shallowRef：volar 对裸 let 的模板收窄会把回调内赋值判成 never，实测 TS2339）
 const titleFX = shallowRef<{ refresh: () => void } | null>(null);
+
+// 拖拽机制安装（PL013：document 级 mousedown/mousemove/mouseup + blur 收尾，
+// App 顶层一次安装，机制对全部 DRAG_TARGETS 生效）
+useDragReorder();
 
 // PL011 管线：分态纱浓度由 .focused class 驱动——初值经 isFocused 查询兜底，
 // 此后随 Rust 的 window-focus 事件翻转（Rust 侧 Focused 分支同步切 DWM 背板）
@@ -99,7 +104,9 @@ async function refreshArchive(): Promise<void> {
   }
 }
 
-/** 清单变更统一出口：重拉清单/归档/徽章三源 + 三板互斥（开详情板时归档收） */
+/** 清单变更统一出口：重拉清单/归档/徽章三源 + 三板互斥（开详情板时归档收）。
+ * 拖拽期冻结防线挂组件层（TodoList/BubblesView 列表 watch deferDuringDrag 早退），
+ * 此处不设守卫——收场 rerender 即重拉（forceRemount 已修 vnode 断链，时序安全） */
 function onListChanged(): void {
   void refresh();
   void refreshArchive();

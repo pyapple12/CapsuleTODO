@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::bubble::BubbleItem;
 use crate::todo::TodoItem;
 
-/// 存储层错误：SQLite 透传 / IO（目录自建失败）/ 指定条目不存在
+/// 存储层错误：SQLite 透传 / IO（目录自建失败）/ 指定条目不存在 / 重排 id 集合不合法
 #[derive(Debug, Error)]
 pub enum StorageError {
     /// SQLite 操作失败（打开/建表/读写）
@@ -25,6 +25,9 @@ pub enum StorageError {
     /// 指定 id 的条目不存在（更新/删除零行，零静默）
     #[error("待办条目不存在：{0}")]
     NotFound(i64),
+    /// 重排 id 集合与现存集合不一致（长度不符 / 幽灵 id / 重复 id——防丢行，拒绝执行）
+    #[error("重排 id 集合不合法：{0}")]
+    ReorderMismatch(String),
 }
 
 /// 时间源（注入可测：默认系统时钟 epoch 毫秒；测试注入固定值）
@@ -127,15 +130,64 @@ impl Storage {
                 [],
             )?;
         }
+        self.migrate_sort_order()?;
+        Ok(())
+    }
+
+    /// PL013 数据迁移：todos/bubbles 各补 sort_order INTEGER 列（幂等），存量回填 =
+    /// 现序号（todos 未完成按 id 升序 0..n；done 行与气泡按 id 升序 0..n——读出重写
+    /// 幂等，列已在位时直接跳过不重算，避免覆盖用户拖拽结果）
+    fn migrate_sort_order(&self) -> Result<(), StorageError> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(todos)")?;
+        let todo_cols: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect();
+        drop(stmt);
+        let mut stmt = self.conn.prepare("PRAGMA table_info(bubbles)")?;
+        let bubble_cols: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect();
+        drop(stmt);
+        let todo_missing = !todo_cols.contains("sort_order");
+        let bubble_missing = !bubble_cols.contains("sort_order");
+        if todo_missing {
+            self.conn
+                .execute("ALTER TABLE todos ADD COLUMN sort_order INTEGER", [])?;
+        }
+        if bubble_missing {
+            self.conn
+                .execute("ALTER TABLE bubbles ADD COLUMN sort_order INTEGER", [])?;
+        }
+        // 存量回填仅在补列的当次执行（幂等：列已在位 = 已有用户排序，禁覆盖）
+        if todo_missing {
+            self.conn.execute_batch(
+                "UPDATE todos SET sort_order = (
+                     SELECT COUNT(*) FROM todos t2
+                     WHERE t2.done = todos.done AND t2.id < todos.id
+                 );",
+            )?;
+        }
+        if bubble_missing {
+            self.conn.execute_batch(
+                "UPDATE bubbles SET sort_order = (
+                     SELECT COUNT(*) FROM bubbles b2 WHERE b2.id < bubbles.id
+                 );",
+            )?;
+        }
         Ok(())
     }
 
     /// 新增待办（文本须先经 todo::validate_text 业务校验），返回含回填 id 的条目；
-    /// created_at = 时间源 now（新建行非 NULL）
+    /// created_at = 时间源 now（新建行非 NULL）；sort_order = 现存最大值 + 1（排尾追加）
     pub fn add(&self, text: &str) -> Result<TodoItem, StorageError> {
         let now = (self.now)();
         self.conn.execute(
-            "INSERT INTO todos(text, done, created_at, note) VALUES (?1, 0, ?2, '')",
+            "INSERT INTO todos(text, done, created_at, note, sort_order)
+             VALUES (?1, 0, ?2, '', (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM todos))",
             rusqlite::params![text, now],
         )?;
         Ok(TodoItem {
@@ -226,10 +278,13 @@ impl Storage {
         Ok(())
     }
 
-    /// 清单排序视图：未完成在前按 id 升序、已完成在后按 id 升序
+    /// 清单排序视图：未完成在前按 sort_order 升序（拖拽序）、已完成在后按 sort_order
+    /// 升序（done 段 sort_order 沿勾选前快照，归档序另由 list_done 的 done_at 裁决；
+    /// 次级键 id 兜底 NULL/同值——迁移回填已满射，此处为防御）
     pub fn list(&self) -> Result<Vec<TodoItem>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, done, created_at, done_at, note FROM todos ORDER BY done ASC, id ASC",
+            "SELECT id, text, done, created_at, done_at, note FROM todos
+             ORDER BY done ASC, sort_order ASC, id ASC",
         )?;
         let rows = stmt.query_map([], Self::row_to_item)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -247,21 +302,27 @@ impl Storage {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目
+    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目；
+    /// sort_order = 现存最大值 + 1（排尾追加——list_bubbles 按升序输出即新气泡垫底）
     pub fn add_bubble(&self, text: &str) -> Result<BubbleItem, StorageError> {
-        self.conn
-            .execute("INSERT INTO bubbles(text) VALUES (?1)", [text])?;
+        self.conn.execute(
+            "INSERT INTO bubbles(text, sort_order)
+             VALUES (?1, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM bubbles))",
+            [text],
+        )?;
         Ok(BubbleItem {
             id: self.conn.last_insert_rowid(),
             text: text.to_string(),
         })
     }
 
-    /// 气泡列表：新在前（id 倒序）
+    /// 气泡列表：按 sort_order 升序（拖拽序；新捕获的气泡因排尾追加自然垫底，
+    /// 与实验场 V0.027 起"展示序即拖拽序"一致——历史 id 倒序语义由 sort_order 初始
+    /// 回填保持：存量按 id 升序回填后倒序展示语义转为迁移当日快照）
     pub fn list_bubbles(&self) -> Result<Vec<BubbleItem>, StorageError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, text FROM bubbles ORDER BY id DESC")?;
+            .prepare("SELECT id, text FROM bubbles ORDER BY sort_order ASC, id ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok(BubbleItem {
                 id: row.get(0)?,
@@ -269,6 +330,90 @@ impl Storage {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 清单重排（拖拽落点提交）：ids = 未完成条目的目标顺序（全量集）。
+    /// 事务内三重校验——集合与现存未完成集长度一致、无幽灵 id、无重复 id——
+    /// 任一不符整体回滚拒绝执行（防丢行/幽灵行）；校验通过逐条 UPDATE sort_order
+    pub fn reorder_todos(&self, ids: &[i64]) -> Result<(), StorageError> {
+        let mut active: Vec<i64> = self
+            .conn
+            .prepare("SELECT id FROM todos WHERE done = 0")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        active.sort_unstable();
+        let mut given: Vec<i64> = ids.to_vec();
+        given.sort_unstable();
+        given.dedup();
+        if given.len() != ids.len() || given != active {
+            return Err(StorageError::ReorderMismatch(format!(
+                "ids 长度 {}（去重 {}）与未完成集 {} 不一致",
+                ids.len(),
+                given.len(),
+                active.len()
+            )));
+        }
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            for (order, id) in ids.iter().enumerate() {
+                self.conn.execute(
+                    "UPDATE todos SET sort_order = ?1 WHERE id = ?2",
+                    rusqlite::params![order as i64, id],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// 气泡重排（拖拽落点提交）：ids = 全量气泡的目标顺序。校验与事务语义同 reorder_todos
+    pub fn reorder_bubbles(&self, ids: &[i64]) -> Result<(), StorageError> {
+        let mut current: Vec<i64> = self
+            .conn
+            .prepare("SELECT id FROM bubbles")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        current.sort_unstable();
+        let mut given: Vec<i64> = ids.to_vec();
+        given.sort_unstable();
+        given.dedup();
+        if given.len() != ids.len() || given != current {
+            return Err(StorageError::ReorderMismatch(format!(
+                "ids 长度 {}（去重 {}）与气泡集 {} 不一致",
+                ids.len(),
+                given.len(),
+                current.len()
+            )));
+        }
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            for (order, id) in ids.iter().enumerate() {
+                self.conn.execute(
+                    "UPDATE bubbles SET sort_order = ?1 WHERE id = ?2",
+                    rusqlite::params![order as i64, id],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
     }
 
     /// 读取单条气泡（复制回剪贴板的取数源）；不存在返回 NotFound
@@ -413,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn bubble_add_list_roundtrip_desc() {
+    fn bubble_add_list_roundtrip() {
         let st = storage();
         let a = st.add_bubble("片段一").expect("写入必须成功");
         let b = st.add_bubble("片段二").expect("写入必须成功");
@@ -425,8 +570,8 @@ mod tests {
             .into_iter()
             .map(|it| it.id)
             .collect();
-        // 新在前（id 倒序）
-        assert_eq!(ids, vec![b.id, a.id]);
+        // PL013 起 list_bubbles = sort_order 升序（拖拽序）：新捕获排尾追加 → 先加在前
+        assert_eq!(ids, vec![a.id, b.id]);
     }
 
     #[test]
@@ -634,5 +779,187 @@ mod tests {
             st.set_note(99, "x"),
             Err(StorageError::NotFound(99))
         ));
+    }
+
+    // ===== PL013.1 排序持久化（TDD） =====
+
+    /// 造旧 schema 库（V0.1.1 原始形态：todos/bubbles 均无 sort_order），插入存量行
+    fn legacy_storage_with_bubbles() -> Storage {
+        let conn = Connection::open_in_memory().expect("内存库必须可开");
+        conn.execute_batch(
+            "CREATE TABLE todos (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE bubbles (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL
+            );
+            INSERT INTO todos(text, done) VALUES ('旧一', 0);
+            INSERT INTO todos(text, done) VALUES ('旧二', 0);
+            INSERT INTO todos(text, done) VALUES ('旧三', 0);
+            INSERT INTO bubbles(text) VALUES ('旧泡一');
+            INSERT INTO bubbles(text) VALUES ('旧泡二');",
+        )
+        .expect("旧 schema 必须可建");
+        Storage {
+            conn,
+            now: Arc::new(system_now),
+        }
+    }
+
+    #[test]
+    fn migration_backfills_sort_order() {
+        let st = legacy_storage_with_bubbles();
+        st.init().expect("迁移必须成功");
+        // 存量回填 = 现序号：未完成按 id 升序得 0/1/2（list 视图语义）
+        let ids: Vec<i64> = st
+            .list()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "三条存量未完成行都在");
+        // 迁移后 list 顺序稳定（回填后 sort_order 与原 id 序一致）
+        let first = st.list().expect("读取必须成功");
+        assert!(
+            first.windows(2).all(|w| w[0].id < w[1].id),
+            "回填序 = 原 id 序"
+        );
+    }
+
+    #[test]
+    fn reorder_todos_persists_new_order() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        let c = st.add("丙").expect("写入必须成功");
+        // 拖拽语义：把 a 挪到 c 后面 → b、c、a
+        st.reorder_todos(&[b.id, c.id, a.id]).expect("重排必须成功");
+        let ids: Vec<i64> = st
+            .list()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![b.id, c.id, a.id], "list 按新 sort_order 输出");
+    }
+
+    #[test]
+    fn reorder_todos_ignores_done_rows_in_list() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        let c = st.add("丙").expect("写入必须成功");
+        st.toggle(c.id).expect("勾选必须成功");
+        // 活动项重排不受 done 项影响：sort_order 落库，list 未完成段按新序
+        st.reorder_todos(&[b.id, a.id]).expect("重排必须成功");
+        let ids: Vec<i64> = st
+            .list()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![b.id, a.id, c.id], "done 项沿原位（id 序兜底）");
+    }
+
+    #[test]
+    fn reorder_todos_partial_id_set_is_error() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let _b = st.add("乙").expect("写入必须成功");
+        // 长度不符（2 个活动项只给 1 个 id）：拒绝执行防丢行
+        assert!(matches!(
+            st.reorder_todos(&[a.id]),
+            Err(StorageError::ReorderMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn reorder_todos_ghost_id_is_error() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        // 幽灵 id：集合内含不存在的 id（长度恰好凑对也拒）
+        assert!(matches!(
+            st.reorder_todos(&[a.id, b.id, 99]),
+            Err(StorageError::ReorderMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn reorder_todos_duplicate_id_is_error() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        // 重复 id：集合非法（长度对但差集虽空——去重后长度不符同拒）
+        assert!(matches!(
+            st.reorder_todos(&[a.id, a.id, b.id]),
+            Err(StorageError::ReorderMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn reorder_todos_keeps_done_rows_sort_order() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        st.toggle(b.id).expect("勾选必须成功");
+        // done 行的 sort_order 不被 reorder 触碰：归档序仍由 done_at 裁决
+        st.reorder_todos(&[a.id]).expect("单元素重排必须成功");
+        let done = st.list_done().expect("读取必须成功");
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, b.id);
+    }
+
+    #[test]
+    fn reorder_bubbles_persists_new_order() {
+        let st = storage();
+        let a = st.add_bubble("泡一").expect("写入必须成功");
+        let b = st.add_bubble("泡二").expect("写入必须成功");
+        let c = st.add_bubble("泡三").expect("写入必须成功");
+        // 气泡全量集重排：list_bubbles 输出 = 传入序（前端展示序即存储序）
+        st.reorder_bubbles(&[c.id, a.id, b.id])
+            .expect("重排必须成功");
+        let ids: Vec<i64> = st
+            .list_bubbles()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![c.id, a.id, b.id], "气泡按新 sort_order 输出");
+    }
+
+    #[test]
+    fn reorder_bubbles_partial_or_ghost_is_error() {
+        let st = storage();
+        let a = st.add_bubble("泡一").expect("写入必须成功");
+        let _b = st.add_bubble("泡二").expect("写入必须成功");
+        assert!(matches!(
+            st.reorder_bubbles(&[a.id]),
+            Err(StorageError::ReorderMismatch(_))
+        ));
+        assert!(matches!(
+            st.reorder_bubbles(&[a.id, 99]),
+            Err(StorageError::ReorderMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn new_rows_get_increasing_sort_order() {
+        let st = storage();
+        let a = st.add("甲").expect("写入必须成功");
+        let b = st.add("乙").expect("写入必须成功");
+        st.reorder_todos(&[b.id, a.id]).expect("重排必须成功");
+        let c = st.add("丙").expect("写入必须成功");
+        // 新行 sort_order 排尾：追加不插队（list 末位）
+        let ids: Vec<i64> = st
+            .list()
+            .expect("读取必须成功")
+            .into_iter()
+            .map(|it| it.id)
+            .collect();
+        assert_eq!(ids, vec![b.id, a.id, c.id], "新行落排尾");
     }
 }

@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, BubbleSnapshot } from "../../types";
 import DelButton from "./DelButton.vue";
 import { rowMaskDead } from "../composables/useMaskDead";
 import { syncVeils } from "../composables/useVeils";
+import { useBoardRead } from "../composables/useBoardRead";
+import { useGlassBar } from "../composables/useGlassBar";
+import { installDragHooks, isSuppressed } from "../composables/useDragReorder";
 
 // ===== 气泡页（PL012.2 换装实验场形态 V0.017–V0.020 + V0.028 对调语义）：
 // 捕获钮（clipboard 双图标 + 占字 1s 反馈）/ 一键清空二态（宽度动画 + 悬停感知 2s
@@ -26,11 +29,11 @@ let copiedTimer = 0;
 let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
-let suppressUntil = 0; // 拖拽落点点击抑制（PL013 写入）
 
 const clearBtn = ref<HTMLElement | null>(null);
+const listEl = ref<HTMLElement | null>(null);
 
-/** 满仓警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
+/** 满 maxBubbles 警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
  * 阈值由设置板步进（会话内有效）。snapshot.remind（Rust 满 5 裁决）不再消费，
  * 持久化配置落位时（PL014）再议 */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
@@ -45,6 +48,24 @@ async function refresh(): Promise<void> {
     console.error("bubble_list 拉取失败", err);
   }
 }
+
+// 主窗挂点（design glass-bar.js 同款）：滑杆 inset + 整板阅读（skipDuringDrag + maskShift）。
+// TransitionGroup v-else 切换：空→非空重建 ul 须重挂——沿 TodoList 的 observer 方案
+let glassBar: { sync: () => void } | null = null;
+
+/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；幂等——只挂一次） */
+function mountScrollKit(): void {
+  const ul = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
+  if (!ul || glassBar) return;
+  glassBar = useGlassBar(ul, { inset: true });
+  useBoardRead(ul, {
+    rowSel: ".bubble-row",
+    skipDuringDrag: true,
+    maskShift: { threshold: 8.5, depth: 6 },
+  });
+}
+
+let rebuildObserver: MutationObserver | null = null;
 
 // —— 捕获占字反馈（V0.020 ⑤ 定案）：图标换 clipboard-check + 文字换 + 50% 紫 + 禁点 1s ——
 
@@ -148,7 +169,7 @@ function cancelClearConfirm(): void {
 // —— 行交互（V0.028 对调语义）：单击开板（180ms 延迟）、双击复制（占字反馈） ——
 
 async function onRowClick(item: BubbleItem): Promise<void> {
-  if (Date.now() < suppressUntil) return; // 拖拽落点抑制（PL013 写入）
+  if (isSuppressed()) return; // 拖拽落点抑制（useDragReorder 350ms 窗口）
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行禁交互
   clearTimeout(clickTimer);
   clickTimer = window.setTimeout(() => emit("openBubble", item), 180);
@@ -187,13 +208,44 @@ function rowEl(id: number): HTMLElement {
 
 defineExpose({ refresh, cancelClearConfirm });
 
+// 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 收场重拉）
+const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（同 TodoList）
+installDragHooks({
+  cancelPendingClick: () => clearTimeout(clickTimer),
+  markSuppress: () => {},
+  rerenderTodos: () => {}, // 清单路 rerender 由 TodoList 注册
+  rerenderBubbles: () => void refresh(),
+  forceRemount: () => {
+    listKey.value += 1;
+  },
+});
+
 onMounted(() => {
   void refresh();
   syncVeils();
+  // v-else 切换重建 ul 补挂：观察 section.bubbles 子树（ul 换元素即重挂）；
+  // refresh 后 nextTick 直接挂（items 到位 ul 已渲染——onMounted 时序比 TodoList 的
+  // setup 同步段晚，此路径首挂即中）
+  void nextTick(mountScrollKit);
+  const host = document.querySelector(".bubbles");
+  if (host) {
+    rebuildObserver = new MutationObserver(() => {
+      const ul = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
+      if (!ul) return;
+      if (!glassBar) {
+        mountScrollKit();
+      } else if (ul.dataset.mounted !== "1") {
+        glassBar = null;
+        mountScrollKit();
+      }
+    });
+    rebuildObserver.observe(host, { childList: true });
+  }
 });
 
 onUnmounted(() => {
   [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
+  rebuildObserver?.disconnect();
 });
 </script>
 
@@ -226,10 +278,13 @@ onUnmounted(() => {
     <p v-if="items.length === 0" class="empty">暂无气泡，点上方捕获剪贴板</p>
     <TransitionGroup
       v-else
+      ref="listEl"
       tag="ul"
       name="todo"
+      id="bubble-list"
       class="group"
       :class="{ 'has-warning': hasWarning }"
+      :key="listKey"
       :duration="320"
     >
       <!-- 满仓警告：滚动容器内部首项，随内容滚动（V0.017 ⑧ 定案） -->
