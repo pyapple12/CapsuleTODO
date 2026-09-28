@@ -27,13 +27,13 @@ pub fn bubble_capture_core(text: &str, ctx: &AppContext) -> Result<BubbleItem, C
     Ok(storage.add_bubble(text.trim())?)
 }
 
-/// 气泡列表（新在前）
+/// 气泡列表（sort_order 升序拖拽序，新捕获排头插入）
 #[tauri::command]
 pub fn bubble_list(ctx: State<'_, AppContext>) -> Result<BubbleSnapshot, CommandError> {
     bubble_list_core(&ctx)
 }
 
-/// bubble_list 核心实现：出快照（倒序列表 + 满额提醒标记——阈值裁决在 Rust 侧，
+/// bubble_list 核心实现：出快照（升序拖拽序 + 满额提醒标记——阈值裁决在 Rust 侧，
 /// 上限来自设置 PL014.2，前端零业务）
 pub fn bubble_list_core(ctx: &AppContext) -> Result<BubbleSnapshot, CommandError> {
     let storage = ctx.lock_storage()?;

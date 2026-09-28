@@ -174,8 +174,6 @@ let confirmTimer = 0;
 let clearWidthTimer = 0;
 let copiedTimer = 0;
 let bubbleCopyTimer = 0; // 气泡单击开板延迟句柄（留双击窗口给复制，todos.js 置 detail.js 清）
-let wbTimer = 0;
-let wbSaved = "";
 let snippetIdx = 0;
 
 const $ = (id) => document.getElementById(id);

@@ -3,9 +3,13 @@
    单一来源 = design/glass.css（基准配方读数见其头部注释）；本文件为
    APP 侧落位副本——两边同步改（APP 回归期暂以人工对照保证，字段级
    diff 见 design/README.md 映射表）。
-   相对实验场的差异（仅两处，均为 APP 运行环境必需）：
-   ① 无 body[data-bg] 演示背景段（APP 无背景图，真窗口 = DWM 背板）
+   相对实验场的差异（仅三处，均为 APP 运行环境必需）：
+   ① 无 body[data-bg] 演示背景段（APP 无背景图，真窗口恒纯 alpha 透明）
    ② .glass-card 引擎段保留在 APP（App.vue scoped 继续用令牌引用）
+   ③ 浮板黑纱档 --glass-bg-strong（0.25，2026-09-28 用户定案：黑纱替代白纱，深浅
+      主题同值）+ 内容自雾化（Pulse glass.css 同款方法——WebView2 透明窗口下
+      backdrop-filter 不渲染，改被盖内容自挂 filter: blur，板上黑纱组合出毛玻璃；
+      标题与浮板按钮豁免，Pulse topbar 豁免同构）
    ============================================================ */
 
 :root {
@@ -14,6 +18,7 @@
   --ink-2: color-mix(in srgb, #1d1d1f 55%, transparent);
   --font-stack: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --glass-bg: rgba(255, 255, 255, 0.3); /* 纱浓度 30%（基准） */
+  --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，深浅主题同值，见头部③） */
   --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.78);
   --panel-bg: rgba(255, 255, 255, 0.76); /* 玻璃板深度 ×2（REC 配方推广，前值 0.38） */
   --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
@@ -49,6 +54,7 @@
     --ink: #f5f5f7;
     --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
     --glass-bg: rgba(0, 0, 0, 0.3);
+    --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，见头部③） */
     --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
     --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
     --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
@@ -69,6 +75,7 @@
   --ink: #f5f5f7;
   --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
   --glass-bg: rgba(0, 0, 0, 0.3);
+  --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，见头部③） */
   --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
   --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
   --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
@@ -80,4 +87,19 @@
   --shadow-candy: 0 16px 40px rgba(0, 0, 0, 0.5);
   --glider-bg: rgba(192, 176, 253, 0.3); /* 深度 +50% */
   --rec-frame: var(--panel-bg); /* 已与玻璃板统一 */
+}
+
+/* —— 浮板开合·内容自雾化（Pulse glass.css 同款方法，2026-09-28 目验定案）：
+   WebView2 透明窗口下 backdrop-filter 不渲染（引擎限制，CDP 渲染帧实证），
+   改被盖内容自挂 filter: blur，板上黑纱组合出毛玻璃。被盖主体 = 页签栏 + 三页签
+   页体；标题与浮板按钮在板区外豁免（Pulse topbar 豁免同构）；4px 沿 Pulse 用户
+   定案值，过渡与三板飞出/收回同步 —— */
+.glass-card .page,
+.glass-card .tabs {
+  transition: filter 0.35s ease;
+}
+.glass-card:has(.archive-overlay.open) :is(.page, .tabs),
+.glass-card:has(.settings-overlay.open) :is(.page, .tabs),
+.glass-card:has(.detail-overlay.open) :is(.page, .tabs) {
+  filter: blur(4px);
 }

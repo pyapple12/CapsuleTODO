@@ -1,4 +1,5 @@
-/* 白板页（WhiteboardView） */
+/* 白板页（WhiteboardView）。状态行已按 2026-09-28 目验定案移除（自动保存属默认
+   行为不做展示），.status 规则与 whiteboard.js 随之删除 */
 /* 书写卡壳（2026-09-25）：同笔记卡壳——textarea 身兼滚动容器（要被 mask）与玻璃卡
    本体（不该被 mask）冲突，卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字 */
 .board-shell {
@@ -27,10 +28,4 @@
 
 .board::placeholder {
   color: var(--ink-2);
-}
-
-.status {
-  margin: 0;
-  font-size: 12px;
-  opacity: 0.55;
 }

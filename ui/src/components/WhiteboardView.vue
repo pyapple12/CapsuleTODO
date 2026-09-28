@@ -8,13 +8,13 @@ import { useGlassBar } from "../composables/useGlassBar";
 // textarea 透明填壳——mask 只淡文字墨迹；板内滑杆（right 7.75，居中于编辑区右缘
 // ↔ 卡片描边缝隙）+ 整板阅读（textarea 退化：恒定软边带顶 6/底 14 + 到底抬带）。
 // 防抖 800ms 自动保存（design whiteboard.js 同拍），flush 暴露给 App 供切页与
-// 关窗前强制保存；保存失败错误行可见（严格报错策略）
+// 关窗前强制保存；保存失败错误行可见（严格报错策略）。自动保存属默认行为不做
+// 展示（2026-09-28 目验定案：状态行"编辑中…/已自动保存"移除，APP 与 design 同步）
 
 const DEBOUNCE_MS = 800; // 防抖自动保存间隔（design whiteboard.js 同值）
 
 const content = ref("");
 const savedContent = ref(""); // 最近一次成功保存的内容（脏判定基准）
-const status = ref(""); // 空 = 无状态；"编辑中…" / "✓ 已自动保存"
 const error = ref("");
 const boardEl = ref<HTMLTextAreaElement | null>(null);
 let debounceTimer = 0;
@@ -42,7 +42,6 @@ async function flush(): Promise<boolean> {
     await invoke("whiteboard_save", { content: content.value });
     savedContent.value = content.value;
     error.value = "";
-    status.value = "✓ 已自动保存";
     return true;
   } catch (err) {
     error.value = `保存失败：${String(err)}`;
@@ -50,13 +49,11 @@ async function flush(): Promise<boolean> {
   }
 }
 
-/** 输入：脏则置状态并重置防抖计时；同步滑杆/溶解带（design syncDetailBar 同款） */
+/** 输入：脏则重置防抖计时 + 同步滑杆/溶解带（design syncDetailBar 同款） */
 function onInput(): void {
   if (content.value === savedContent.value) {
-    status.value = "";
     return;
   }
-  status.value = "编辑中…";
   window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => {
     void flush();
@@ -101,7 +98,6 @@ onUnmounted(() => {
       ></textarea>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
-    <p v-else-if="status" class="status">{{ status }}</p>
   </section>
 </template>
 

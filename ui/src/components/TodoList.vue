@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import type { TodoItem, TodoView } from "../../types";
 import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
@@ -97,7 +97,11 @@ function rowEl(id: number): HTMLElement {
  * item.done=true 会瞬时触发 active computed 重算把行从列表剔除（比主拍快），勾选
  * 视觉没机会播 = "勾选瞬间坍缩"（真窗口实测 2026-09-28）。
  * 勾选视觉播 300ms 主拍，播完 emit changed（行离场）+ archived（详情联动） */
-let toggleTimer: number | undefined;
+/** 逐行勾选主拍定时器（id → handle，FIX003.5）：单句柄版在 300ms 内连勾两行时
+ * clearTimeout 掐死前行拍子——前行 archived 上抛丢失（A7 详情联动失效）、离场搭
+ * 后行拍子。每行各自 300ms 到点互不取消；changed 由末拍收口一次（提前收口的
+ * 全量重拉会把其他行在飞的主拍截断，"勾选瞬间坍缩"换入口复活） */
+const toggleTimers = new Map<number, number>();
 async function toggle(item: TodoItem): Promise<void> {
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行勾选失效（V0.022 定案）
   const wasUndone = item.done === false; // 未完成 → 勾选入档方向
@@ -108,11 +112,16 @@ async function toggle(item: TodoItem): Promise<void> {
     const input = row.querySelector("input");
     if (input) input.checked = wasUndone;
     row.querySelector(".t-text")?.classList.toggle("is-done-text", wasUndone);
-    window.clearTimeout(toggleTimer);
-    toggleTimer = window.setTimeout(() => {
-      emit("changed");
-      if (wasUndone) emit("archived", item);
-    }, 300); // 勾选动效主拍 300ms（用户定案）
+    // 同行再点重挂自家拍子（design row._moveTimer 同款）；跨行拍子互不取消
+    clearTimeout(toggleTimers.get(item.id));
+    toggleTimers.set(
+      item.id,
+      window.setTimeout(() => {
+        toggleTimers.delete(item.id);
+        if (wasUndone) emit("archived", item); // A7 联动随自家拍子逐行上抛
+        if (toggleTimers.size === 0) emit("changed"); // 末拍收口
+      }, 300), // 勾选动效主拍 300ms（用户定案）
+    );
   } catch (err) {
     console.error("勾选失败", err);
   }
@@ -188,12 +197,11 @@ async function commitEdit(item: TodoItem): Promise<void> {
 // 内容增删后罩死复核（滚动监听经 useGlassBar 钩子已通；此处补重渲染路径）。
 // Vue 冻结防线（PL013 红线）：拖拽 engaged 期间外部 items 到达不重渲染——重挂 DOM
 // 与虚拟 DOM 打架防线；落点收场 rerender 统一重拉
-const stopMask = computed(() => {
+watchEffect(() => {
   syncMaskDead();
-  if (deferDuringDrag()) return -1; // 冻结期哨兵值（不参与正常语义）
-  return props.items.length;
+  if (deferDuringDrag()) return; // 冻结期跳过（拖拽收场 rerender 统一复核）
+  void props.items.length; // 依赖收集：items 变化即复核
 });
-void stopMask;
 
 // 拖拽钩子安装（本组件只装一次——气泡组件重复调用幂等覆盖，钩子语义一致）
 const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（见 useDragReorder）
@@ -269,7 +277,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearTimeout(clickTimer);
-  clearTimeout(toggleTimer);
+  toggleTimers.forEach((handle) => clearTimeout(handle));
+  toggleTimers.clear();
   rebuildObserver?.disconnect();
   unmountScrollKit();
   unregisterRollback?.();
@@ -290,14 +299,14 @@ onUnmounted(() => {
       :duration="320"
       @before-leave="pinLeaveHeight"
     >
-      <li v-for="item in active" :key="item.id" class="todo-item" :class="{ 'mask-dead': false }">
+      <li v-for="item in active" :key="item.id" class="todo-item">
         <div
           class="todo-row"
           :data-row-id="item.id"
           @click="onRowClick(item, $event)"
           @dblclick="onRowDblClick(item)"
         >
-          <NeonCheckbox :checked="item.done" @toggle="toggle(item)" />
+          <NeonCheckbox :checked="item.done" />
           <input
             v-if="editingId === item.id"
             ref="editEl"

@@ -297,3 +297,82 @@
 >
 > 红线：验收不达标不宣布完成；观察项沿 y.problems 登记。
 > 状态：✅ 已完成（2026-09-28，任务组见 x.progress.md PL014；设置板 UI 前置于 PL012.6/PL012.5，持久化随本组落位）
+
+## 附录 A003：全量代码审计报告（第3轮，2026-09-28）
+
+> 范围：core/ 全部 .rs + Cargo.toml + tauri.conf.json + capabilities + ui/ 全部 .ts/.vue/.css + package.json + vite.config.ts；不含 design/（用户指定排除）。方式：三路并行只读通读（Rust 业务组 / Tauri 集成组 / Vue 前端组）+ A002 修复项回归复核 + 主会话全局 grep。
+> 状态：📌 待修复（FIX003 任务清单见 x.progress.md）
+
+### 零、上轮（A002）修复复核清单
+
+| A002 条目                       | 现状                      | 证据                                                                  |
+| ------------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| 气泡无长度上限                  | ✅ 仍在位                 | core/src/bubble.rs:12（MAX_BUBBLE_TEXT_LEN=2000）+ 校验与边界测试     |
+| storage.rs count_bubbles 死代码 | ✅ 已删                   | 全仓 grep 零命中                                                      |
+| 气泡行拖动劫持                  | ✅ 方案替代               | 拖动收敛 topbar（data-tauri-drag-region），交互区无白名单依赖         |
+| BubblesView 计时器卸载清理      | ✅ 已补                   | onUnmounted 清 4 个 timer                                             |
+| AGENTS 目录树滞后               | ⚠️ 本轮审计收口时顺手修正 | settings.rs max_bubbles 语义 / commands/settings.rs / ui/src 结构已补 |
+
+### 一、P0-P3 修复清单
+
+#### P1（确定性缺陷，真机必现）
+
+| 文件:行号                   | 类型     | 描述                                                                                                                                                                                                                          | 建议                                                                                                       | 性质                         | 影响面              |
+| --------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------- |
+| core/src/lib.rs:112-129     | 1 正确性 | whiteboard_load/whiteboard_save 从未注册 invoke_handler（generate_handler 16 条无 whiteboard）。前端常驻挂载即 invoke load（恒失败静默回空串）、800ms 防抖保存恒失败。IAB 全绿漏网根因 = mock-invoke 有这两条而真机注册面没有 | 注册面补两行；固化"新命令必须 generate_handler + 真机冒烟"纪律                                             | 新增（存量，PL005.2 起即缺） | 白板页签全功能      |
+| core/src/storage.rs:174-180 | 1 正确性 | 存量气泡迁移回填方向反：V0.1.1.10 前展示序 = id 倒序（新在前），PL013 迁移按 id 升序回填且列表改升序输出 → 老库升级后存量气泡整体倒序；注释自称"历史语义由回填保持"与实现矛盾（todos 侧方向正确反衬笔误）                     | 回填 SQL 改 b2.id > bubbles.id + 修 sort_order_migration.rs 断言与两处注释；只影响未拖拽过的存量库首次迁移 | 新增（PL013 引入）           | 存储层 / 业务状态机 |
+
+#### P2（高，交互正确性）
+
+| 文件:行号                                                           | 类型                      | 描述                                                                                                                                                                   | 建议                                                            | 性质            | 影响面              |
+| ------------------------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------- | ------------------- |
+| ui/src/components/ArchiveOverlay.vue:101,118-134                    | 1 正确性（V0.1.2.1 回归） | 开板 listKey++ 重建 UL 后，滑杆/整板阅读仍绑 detached 旧 UL（!boardRead 守卫不重挂、无 rebuildObserver）→ 第二次开板起：三角/抬带/收尾带全死、滑杆消失、原生滚动条裸露 | 重建后 unmount+重挂（沿 TodoList 模式），或按 UL 元素身份判重挂 | V0.1.2.1 批引入 | 归档板滚动体验      |
+| ui/src/components/DetailOverlay.vue:128-149                         | 1/8 正确性                | 防抖保存定时器回调触发时刻读 props.todo!.id：300ms 内关板 → null.id 未捕获 TypeError 草稿丢；300ms 内切条目 B → A 的未决保存被取消（静默丢失），B.note 恰同则交叉污染  | 调度时闭包捕获 id；切源/关板先 flush 未决保存                   | 新增            | 详情板编辑链路      |
+| ui/src/components/TodoList.vue:100-115 + ArchiveOverlay.vue:232-239 | 1/8 正确性                | 共享单定时器：300ms 内连续勾选 A、B → clearTimeout 取消 A 的 emit(changed) → A 行带已勾视觉滞留清单，再点 A 会反向翻转 DB（UI/DB 分叉）。归档 restore 同款             | per-item 定时器 Map 或被取消时立即补偿 emit                     | 新增            | 清单勾选 / 归档退回 |
+| ui/src/composables/useVeils.ts:33,39 + ArchiveOverlay.vue:284       | 1/5 正确性                | 归档豁免是死条件：全仓无 id="archive-list" 元素（TransitionGroup 未挂 id）→ 特判永不命中 → 归档板开板时自家滑杆/三角被 .veiled 隐藏，与"归档自家豁免"设计注释相反      | TransitionGroup 补 id="archive-list" 一行                       | 新增            | 归档板滚动形态      |
+| ui/src/composables/useVeils.ts:13 + DetailOverlay.vue 全文          | 1/5 正确性                | bindOverlayState("detail") 全仓零调用、textarea 缺 id="detail-note" → 详情板开板不吃帘，.edge-hint(z4) 盖过 .detail-overlay(z3)——清单可滚时 ▲▼ 在详情板上方闪烁        | DetailOverlay 注册 bind + textarea 补 id                        | 新增            | 详情板视觉          |
+
+#### P3（清理/规范/防御收尾）
+
+| 文件:行号                                                                                                                           | 类型             | 描述                                                                                                                        | 建议                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| ui/src/components/WhiteboardView.vue:67 + App.vue                                                                                   | 1/5              | flush 已 expose 但 App 零调用——关窗路径 800ms 防抖窗口内输入必丢                                                            | beforeunload 兜底 flush 或与 Rust CloseRequested 联合方案 |
+| ui/src/components/DetailOverlay.vue:151-156                                                                                         | 1                | flushPending 只 clearTimeout 不保存（名实不符），close 不调用——防抖窗口内编辑关板即丢                                       | flushPending 改真保存 + close 首行调用                    |
+| core/src/settings.rs:17-29 + core/src/lib.rs:92                                                                                     | 2 防御           | load 路径 max_bubbles 无钳制（手改 config 0/9999 直进运行时）；结构体注释"越界兜底"对 max 不成立                            | load 后 clamp(1,20)                                       |
+| core/src/commands/settings.rs:40                                                                                                    | 13 错误策略      | settings_set 越界静默钳制未登记容错白名单                                                                                   | AGENTS 白名单补第五条或改严格报错                         |
+| core/src/lib.rs:160                                                                                                                 | 13 错误策略      | 关闭时 settings 锁中毒 → 以默认 5 覆盖落盘（吞用户自定义值）                                                                | 中毒分支跳过保存落日志                                    |
+| core/src/commands/mod.rs:106-134                                                                                                    | 10 可测试性      | 契约测试缺 CommandError::Settings 变体断言                                                                                  | 补断言                                                    |
+| core/src/bubble.rs:9 + core/src/settings.rs:11 + core/src/commands/settings.rs:47-50                                                | 5/12 死代码/双源 | MAX_BUBBLES 死常量 + 默认值双源（5 两处各写）+ default_max_bubbles() 死代码注释失实                                         | 删常量或 DEFAULT_MAX_BUBBLES 单一来源                     |
+| core/capabilities/default.json:8-9                                                                                                  | 12 配置死键      | clipboard-manager 两 ACL 权限无消费方（剪贴板全走 Rust 侧）                                                                 | 删除或注释预留                                            |
+| core/src/storage.rs:112-153                                                                                                         | 4 重复           | PRAGMA 列探测逻辑同文件三份                                                                                                 | 抽 column_set 助手                                        |
+| core/src/storage.rs:372,413                                                                                                         | 13 错误策略      | reorder 回滚 let _ = 吞错（白名单未登记；settings.rs:71 先例是落日志）                                                      | eprintln 落日志                                           |
+| core/src/fullscreen.rs:74                                                                                                           | 4 规范           | fn 内 use（孤例）                                                                                                           | 上提文件头                                                |
+| AGENTS.md:15,32,48 + ui/src/components/App.vue:30                                                                                   | 6 文档           | DWM 移除后四处文档/注释仍描述 Acrylic 现行机制（状态头已改，其余未改）                                                      | 按 2026-09-28 定案改写                                    |
+| ui/src/components/BubblesView.vue:185-192                                                                                           | 8 并发           | 清空集体退场 300ms 嵌套 setTimeout 未入卸载清理清单                                                                         | 句柄入 onUnmounted                                        |
+| ui/src/components/TodoList.vue:293,300 + ui/src/composables/useDragReorder.ts:160 + ui/src/components/NeonCheckbox.vue:13-16        | 5 死代码         | 恒假 class 绑定 / @toggle 死绑（勾选已走坐标分流）/ 自引用空模块声明 / onClick 保留位                                       | 删除                                                      |
+| ui/src/components/BubblesView.vue:41 + ui/src/components/SettingsOverlay.vue:142 + core/src/bubble.rs:36                            | 6 文档           | 注释漂移三处（"会话内有效再议"×2 已持久化 / "倒序列表"已改升序）                                                            | 改注释                                                    |
+| ui/App.vue:44 + ui/src/components/TodoList.vue:191 + ui/src/components/DelButton.vue:61,71 + ui/src/components/DetailOverlay.vue:87 | 6/14/8 规范      | 徽章计数内联类型未复用 types.ts / stopMask computed 副作用（宜 watchEffect）/ !== undefined 判空两处 / close 缺 isOpen 早退 | 小改                                                      |
+| core/src/commands/todo.rs:19 vs :48                                                                                                 | 4 重复           | todo_add 存原文不 trim（rename/bubble 均 trim 落库）——同字段两套落库语义，API 直调可绕前端 trim                             | add 统一 trim 落库                                        |
+| core/src/commands/todo.rs:218-232                                                                                                   | 10 可测试性      | age_level 命令层测试断言力≈0（自陈无法构造跨阈值场景）                                                                      | open_with_now 双时钟补真断言                              |
+
+### 二、参考级观察项（豁免，含回落理由）
+
+1. lib.rs default_position 300×400 与 tauri.conf.json 双处——有注释依据且"尺寸固定不入配置"定案在位（改尺寸须两处同步）。
+2. lib.rs:90 {db:?} 路径进启动错误消息——本地桌面应用助排障，豁免。
+3. fullscreen.rs 轮询 1000ms——有注释依据。
+4. fullscreen 轮询线程不随窗口关闭退出——进程生命周期线程。
+5. lib.rs:133 setup 内 expect——装配期配置不变量断言，非业务散落。
+6. 最小化 -32000 坐标入 config.json——启动越界兜底自愈。
+7. bubble.rs 双锁 SQLite 读——低频 UI 读锁内耗时微小。
+8. BubbleError → CommandError::Clipboard 复用——气泡文本唯一来源即剪贴板，语义可容。
+9. examples/seed_data.rs 写真实 data/todo.db——注释完备的开发期注入工具。
+10. 单实例 window.show() 对最小化窗行为——需验证，路径实际不可达。
+11. 常驻三板 nextTick 挂载未持 composable destroy——无卸载语义（改 v-if 须补）。
+12. DelButton pulse 强制回流连点重播——需验证，理论缺口。
+13. 主题三态不持久化——产品决策观察（与 max_bubbles 已持久化不对称）。
+14. remind >= 与前端警告 > 语义分歧——remind 前端不消费，未来接横幅须统一。
+15. 300×400 数据量小列表无虚拟化、类名 camelCase/kebab 混用（uiverse 保形）——豁免。
+
+### 三、亮点
+
+SQL 全参数化零拼接；迁移逐列幂等可断点续迁；时间源全注入零 sleep；锁序纪律全路径合规无反向；types.ts 与 serde 契约零漂移；mock-invoke 22 条命令语义与 Rust 注册面一致（唯覆盖缺口见 P1）；delConfirmBus 注册注销三处对称。

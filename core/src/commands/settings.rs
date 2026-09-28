@@ -4,7 +4,7 @@
 use tauri::State;
 
 use super::{AppContext, CommandError};
-use crate::settings::DEFAULT_MAX_BUBBLES;
+use crate::settings::clamp_max_bubbles;
 
 /// 读取气泡提醒上限
 #[tauri::command]
@@ -37,16 +37,11 @@ pub fn settings_set_max_bubbles_core(
     path: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
-    let clamped = value.clamp(1, 20);
+    let clamped = clamp_max_bubbles(value);
     let mut settings = ctx.lock_settings()?;
     settings.max_bubbles = clamped;
     crate::settings::save(path, &settings).map_err(CommandError::from)?;
     Ok(())
-}
-
-/// 气泡提醒上限默认值出口（前端初始化与测试共用语义）
-pub fn default_max_bubbles() -> u32 {
-    DEFAULT_MAX_BUBBLES
 }
 
 #[cfg(test)]
@@ -54,6 +49,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::settings::DEFAULT_MAX_BUBBLES;
     use crate::storage::Storage;
 
     /// 测试上下文：内存库 + 默认设置

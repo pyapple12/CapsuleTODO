@@ -88,8 +88,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 运行时数据双落址（PL002）：dev = 仓库根 / release = exe 同级；库打开失败启动即报错
     let db = paths::db_path()?;
     let storage = Storage::open(&db).map_err(|err| format!("清单库打开失败（{db:?}）：{err}"))?;
-    // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错
-    let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
+    // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
+    // max_bubbles 读路径钳制闭环（白名单⑤——手改文件越界静默收敛边界，与写路径同规）
+    let mut app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
+    app_settings.max_bubbles = settings::clamp_max_bubbles(app_settings.max_bubbles);
 
     tauri::Builder::default()
         // 单实例（PL003）：builder 首位注册；二次启动唤起已运行实例的主窗口
@@ -124,6 +126,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::bubble::bubble_remove,
             commands::bubble::bubble_clear,
             commands::bubble::bubble_reorder,
+            commands::whiteboard::whiteboard_load,
+            commands::whiteboard::whiteboard_save,
             commands::settings::settings_get_max_bubbles,
             commands::settings::settings_set_max_bubbles,
         ])
@@ -152,13 +156,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 位置记忆：关闭时保存（拖动中不写盘）。max_bubbles 从运行时设置透传，
             // 与位置共存一份 config.json（PL014.2）
             if let WindowEvent::CloseRequested { .. } = event {
-                let max_bubbles = window
-                    .app_handle()
-                    .state::<AppContext>()
-                    .lock_settings()
-                    .map(|s| s.max_bubbles)
-                    .unwrap_or(settings::DEFAULT_MAX_BUBBLES);
-                save_window_position(window, max_bubbles);
+                // 锁中毒跳过保存落日志（AGENTS 容错白名单登记项）：默认值写盘会静默
+                // 覆盖用户已存设置——位置同弃（下次启动回默认位），磁盘现值不动
+                match window.app_handle().state::<AppContext>().lock_settings() {
+                    Ok(guard) => save_window_position(window, guard.max_bubbles),
+                    Err(err) => eprintln!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}"),
+                }
             }
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]

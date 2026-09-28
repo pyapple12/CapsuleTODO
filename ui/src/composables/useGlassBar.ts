@@ -23,6 +23,12 @@ export interface GlassBarOptions {
 /** 全局滑杆注册表（useVeils 遍历挂帘） */
 export const glassBars: GlassBarEntry[] = [];
 
+/** 全局滑杆重算（换页挂点调用，与 useBoardRead.syncHints 对称）：逐实例 sync——
+ * 宿主隐藏（v-show 切走 rect 归零）时 sync 内建判定自动隐藏浮钮，切回按新几何恢复 */
+export function syncGlassBars(): void {
+  for (const g of glassBars) g.sync();
+}
+
 /**
  * 挂玻璃滑杆：滚动/输入/内容增删三挂点驱动 sync；浮钮可拖拽（textarea 程序赋值
  * scrollTop 不派发 scroll 的 Chromium 固有行为，拖拽路径补发合成事件）。

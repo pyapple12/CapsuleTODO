@@ -34,10 +34,13 @@
   padding: 12px;
   overflow-y: auto;
   border-radius: var(--radius-board);
-  background: var(--glass-bg);
+  background: var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
   box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
+  /* blur 3→40px + saturate（2026-09-28 目验定案）：浮板毛玻璃 = 板下内容糊到不可
+     辨认——16px 下文字轮廓仍可辨，40px 彻底溶掉（IAB 截图实证）；配
+     --glass-bg-strong 补偿档（glass.css 头部③） */
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  backdrop-filter: blur(40px) saturate(1.6);
   transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
   transform: scale(0);
   transition: transform 0.35s ease;

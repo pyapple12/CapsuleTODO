@@ -10,6 +10,12 @@ use thiserror::Error;
 /// 气泡提醒上限缺省值（serde default：旧 config.json 缺字段兼容）
 pub const DEFAULT_MAX_BUBBLES: u32 = 5;
 
+/// 气泡提醒上限合法区间钳制（1~20，与设置板步进同规）：读路径（config.json 加载点）
+/// 与写路径（settings_set 命令）共用单一来源——手改文件越界静默收敛到边界（白名单⑤）
+pub fn clamp_max_bubbles(value: u32) -> u32 {
+    value.clamp(1, 20)
+}
+
 fn default_max_bubbles() -> u32 {
     DEFAULT_MAX_BUBBLES
 }
@@ -152,5 +158,25 @@ mod tests {
     #[test]
     fn default_impl_uses_five() {
         assert_eq!(WindowSettings::default().max_bubbles, DEFAULT_MAX_BUBBLES);
+    }
+
+    #[test]
+    fn clamp_max_bubbles_bounds() {
+        // FIX003.8：共享钳制单一来源（1~20），读写两路径同规
+        assert_eq!(clamp_max_bubbles(0), 1);
+        assert_eq!(clamp_max_bubbles(1), 1);
+        assert_eq!(clamp_max_bubbles(20), 20);
+        assert_eq!(clamp_max_bubbles(99), 20);
+    }
+
+    #[test]
+    fn out_of_range_config_field_clamps_on_load() {
+        // FIX003.8 读路径闭环：手改 config.json max_bubbles:0 → 加载点钳 1（模拟
+        // lib.rs 装配调用方式：load 后经共享钳制函数再入运行时副本）
+        let path = temp_path("oob-max.json");
+        std::fs::write(&path, r#"{"x": 3, "y": 4, "max_bubbles": 0}"#).expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert_eq!(clamp_max_bubbles(loaded.max_bubbles), 1);
+        std::fs::remove_file(&path).expect("清理必须成功");
     }
 }

@@ -38,8 +38,8 @@ const clearBtn = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
 /** 满 maxBubbles 警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
- * 阈值由设置板步进（会话内有效）。snapshot.remind（Rust 满 5 裁决）不再消费，
- * 持久化配置落位时（PL014）再议 */
+ * 阈值由设置板步进（已持久化，PL014.2 落库）。snapshot.remind（Rust 满额裁决）不再
+ * 消费，前端以本地阈值比较显隐 */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
 
 /** 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里） */
@@ -382,12 +382,17 @@ onUnmounted(() => {
       tag="ul"
       name="todo"
       id="bubble-list"
-      class="group"
+      class="group board-read glass-scroll"
       :class="{ 'has-warning': hasWarning }"
       :key="listKey"
       :duration="320"
       @before-leave="pinLeaveHeight"
     >
+      <!-- board-read/glass-scroll 写进静态 class（FIX 目验③）：has-warning 动态切换
+           会触发 Vue class patch 以 vdom 重写 class 属性，抹掉套件运行时 add 的类
+           （原生滚动条回归 + 溶解遮罩消失）——静态+动态合并后 patch 两者恒在。
+           挂载前已有类无碍：mountScrollKit 同帧 nextTick 执行，且隐藏原生滚动条
+           本就是套件职责 -->
       <!-- 满仓警告：滚动容器内部首项，随内容滚动（V0.017 ⑧ 定案） -->
       <li v-if="hasWarning" key="__warn" class="full-warning">
         气泡已经超过{{ maxBubbles }}个啦！都溢出来啦！(*ﾉωﾉ) EEK

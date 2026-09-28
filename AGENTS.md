@@ -2,18 +2,18 @@
 
 玻璃质感的桌面 Todo 看板：固定在桌面、以玻璃为基底，只呈现 Todo 清单供用户勾选的极简互动小程序；二期规划临时剪贴板（玻璃板上以气泡提示 + 白板，满 5 个气泡提醒清理），三期规划 AI 规范 Todo 与临时内容（均仅记录待细化）。总体规划见 `CapsuleTODO_plan.md`。
 
-**当前状态**：**V0.1.2.1（2026-09-28）——PL008–PL013 APP 回归全部完成推送；PL014 白板/设置收口已实施，待用户一次总目视验收（验收问题走 FIX003）**。版本线：V0.1.1.5 玻璃基座 → V0.1.1.6 横切工厂 → V0.1.1.7 清单与数据迁移 → V0.1.1.8 归档板 → V0.1.1.9 气泡页与剪贴板 → V0.1.1.10 复刻缺漏修复与设置板前置 → V0.1.1.11 拖拽排序与持久化 → **V0.1.2.1 三段推进（0.1.1→0.1.2）+ 真窗口修复批**。**APP 回归工作模式（用户定案 2026-09-26）**：不开分支直干 main；每 PL 自验三道闸（Rust TDD 全绿 / IAB 冒烟行为断言 / 截图比对 design 形态忠实）+ 一条 feat 提交推送；**中间零人工目验，PL014 后用户一次总目视验收**，问题走 FIX003。实验场现状（V0.1.1.4 并入内容）：`design/` 独立原型三页签全交互（纯 HTML/CSS/JS 零构建；assets/css|js 共 22 文件，引用顺序 = 级联/执行顺序不得乱序），清单删除钮二态盖翻确认、罩死行禁交互灰化、长按拖拽重挂模型，气泡单击开全文板/双击复制、拖拽与罩死同款推广，归档成品化与边缘三角随板缩放生长，玻璃滑杆与整板阅读工厂五容器统一；uiverse 组件五处引入（R001 规范，均用户目验定值）；配色基准 `design/color_spark.md`。三期 AI 规范待立项讨论（仅记录见计划书 §6）。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + 玻璃材质（2026-09-28 用户定案：取消 DWM Acrylic 聚焦雾化，恒纯 alpha 透明 + 前端 30% 纱）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
+**当前状态**：**V0.1.2.3（2026-09-28）——APP 回归 PL008–PL014 全部完成；第 3 轮全量审计（A003）修复组 FIX003 全组收口（P1×2 / P2×5 / P3 合并批）；总目视验收进行中，目验缺陷五批已修（浮板滑杆残留 / 白板状态行 / 气泡警告切类 / 网页行为抑制 / 浮板毛玻璃——backdrop 在 WebView2 透明窗不渲染，改 CP 同款内容自雾化 + 黑纱）**。版本线：V0.1.1.5 玻璃基座 → V0.1.1.6 横切工厂 → V0.1.1.7 清单与数据迁移 → V0.1.1.8 归档板 → V0.1.1.9 气泡页与剪贴板 → V0.1.1.10 复刻缺漏修复与设置板前置 → V0.1.1.11 拖拽排序与持久化 → V0.1.2.1 三段推进（0.1.1→0.1.2）+ 真窗口修复批 → V0.1.2.2 白板/设置持久化收口（PL014）→ **V0.1.2.3 第 3 轮审计修复收口（FIX003 全组）**。**APP 回归工作模式（用户定案 2026-09-26）**：不开分支直干 main；每 PL 自验三道闸（Rust TDD 全绿 / IAB 冒烟行为断言 / 截图比对 design 形态忠实）+ 一条 feat 提交推送；**中间零人工目验，PL014 后用户一次总目视验收**，问题走 FIX003。实验场现状（V0.1.1.4 并入内容）：`design/` 独立原型三页签全交互（纯 HTML/CSS/JS 零构建；assets/css|js 共 22 文件，引用顺序 = 级联/执行顺序不得乱序），清单删除钮二态盖翻确认、罩死行禁交互灰化、长按拖拽重挂模型，气泡单击开全文板/双击复制、拖拽与罩死同款推广，归档成品化与边缘三角随板缩放生长，玻璃滑杆与整板阅读工厂五容器统一；uiverse 组件五处引入（R001 规范，均用户目验定值）；配色基准 `design/color_spark.md`。三期 AI 规范待立项讨论（仅记录见计划书 §6）。沿系列基线：Tauri 2 + 纯 Rust 业务 + Vue 展示 + 玻璃材质（2026-09-28 用户定案：取消 DWM Acrylic 聚焦雾化，恒纯 alpha 透明 + 前端 30% 纱）；macOS/Linux 适配延后 [problems#1]。`.agents/skills/` 存放项目自建 skill（audit-project / audit-report / progress-task）。遗留与远期项登记 `y.problems.md`。
 
 ## 技术栈
 
-| 组件     | 选型                                                                                                                           |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 框架     | Tauri 2（Rust 后端 + 系统 WebView）                                                                                            |
-| 前端 UI  | Vue 3 + TypeScript + Vite（只做展示，业务零含量）                                                                              |
-| 核心逻辑 | 纯 Rust（状态机/持久化/业务规则，cargo test 直测）                                                                             |
-| 存储     | rusqlite（SQLite，`data/` 双落址沿系列基线，一期定案后回改）                                                                   |
-| 玻璃效果 | DWM 焦点联动材质（extern dwmapi 直连：平时 alpha 透明、聚焦 DWMSBT_TRANSIENTWINDOW Acrylic；macOS vibrancy / Linux blur 延后） |
-| 通知常驻 | 一期定案：无系统通知常驻（板子常驻桌面即所见）；系统通知随后续需求另议                                                         |
+| 组件     | 选型                                                                                                                 |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| 框架     | Tauri 2（Rust 后端 + 系统 WebView）                                                                                  |
+| 前端 UI  | Vue 3 + TypeScript + Vite（只做展示，业务零含量）                                                                    |
+| 核心逻辑 | 纯 Rust（状态机/持久化/业务规则，cargo test 直测）                                                                   |
+| 存储     | rusqlite（SQLite，`data/` 双落址沿系列基线，一期定案后回改）                                                         |
+| 玻璃效果 | 恒纯 alpha 透明 + 前端 30% 分态纱（2026-09-28 定案：DWM Acrylic 聚焦雾化整体移除；macOS vibrancy / Linux blur 延后） |
+| 通知常驻 | 一期定案：无系统通知常驻（板子常驻桌面即所见）；系统通知随后续需求另议                                               |
 
 ## 启动命令（规划）
 
@@ -29,7 +29,7 @@ npm run build          # 前端构建校验（含 vue-tsc；产物 dist/ 内嵌�
 ## 架构要点
 
 - **业务逻辑全在 Rust 侧**（项目学习目标，也是架构基线，沿系列）：Todo 状态机、持久化、业务规则全部放 core/src，前端只做展示与命令转发——禁止把业务逻辑写进 Vue 组件
-- **玻璃效果**（系列基线，计划书 §2.4）：Windows 焦点联动材质——平时纯 alpha 透明常驻，聚焦瞬间 `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` 挂 Acrylic、失焦即刻撤回（extern dwmapi 直连零新依赖，配方沿 CapsulePulse PL010/PL011 定案，当前实机验证平台）；前端玻璃卡片用 CSS `backdrop-filter` 叠加（浮层内容之上仍有效）；编译期 `#[cfg(target_os)]` 分支互不影响；macOS/Linux 适配延后至 Windows 版成熟后 [problems#1]
+- **玻璃效果**（2026-09-28 用户定案，覆盖系列旧基线）：窗口**恒纯 alpha 透明**常驻 + 前端 30% 分态纱（聚焦纱退 0%）——DWM Acrylic 聚焦雾化整体移除（聚焦磨砂糊住背后桌面，用户实测否决；DWM 挂载代码已删）；聚焦仅发 `window-focus` 事件驱动前端 `.focused` 纱态翻转；前端玻璃卡片 CSS `backdrop-filter` 叠加保留（浮层内容之上仍有效）；编译期 `#[cfg(target_os)]` 分支互不影响；macOS/Linux 适配延后至 Windows 版成熟后 [problems#1]
 - **运行时数据**：沿系列双落址基线——config.json 落 `configs/`、数据库落 `data/`（dev=项目根、release=exe 同级）；备份 = 直接拷 configs/ + data/；一期方案定案后回改
 - **常驻形态与 Todo 数据模型**（固定桌面方式、勾选交互、schema）待一期讨论定案后在此补充
 
@@ -45,17 +45,17 @@ core/             # Tauri 2 后端（框架文件须与 Cargo.toml 同住）
   icons/          # 应用图标（一期占位，正式图标随打包期替换）
   tests/          # storage_probe.rs（rusqlite bundled 冒烟探针）
   src/
-    lib.rs        # 应用装配：玻璃挂载 + 桌面固定（置顶/全屏让位/位置记忆/单实例）+ 模块注册
+    lib.rs        # 应用装配：桌面固定（置顶/全屏让位/位置记忆/单实例）+ 设置加载（含越界钳制）+ 命令注册
     main.rs       # 薄入口（调 capsule_todo::run()）
     todo.rs       # 业务纯逻辑：TodoItem DTO + 文本校验（禁 import tauri）
     bubble.rs     # 业务纯逻辑：气泡 DTO/快照 + 满 5 阈值 + 捕获文本校验
     whiteboard.rs # 业务纯逻辑：白板内容长度校验
     storage.rs    # SQLite Repository（todos/bubbles/whiteboard 表，参数化 SQL）
     paths.rs      # 运行时数据双落址解析（data/ 与 configs/，目录自建）
-    settings.rs   # 窗口位置持久化（JSON 原子写）
+    settings.rs   # 运行时设置持久化（窗口位置 + 气泡提醒上限 max_bubbles，JSON 原子写）
     fullscreen.rs # 全屏让位（逐边包含判定纯函数 + user32 轮询线程）
-    commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs / bubble.rs / whiteboard.rs）
-ui/               # Vue 前端（App.vue 三页签骨架 + components/AddBar、TodoList、BubblesView、WhiteboardView；types.ts 镜像 IPC DTO）
+    commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs / bubble.rs / whiteboard.rs / settings.rs）
+ui/               # Vue 前端（App.vue 三页签骨架 + src/components/ 十组件 + src/composables/ 组合式 + src/styles/ 样式层 + src/dev/ 冒烟基座；types.ts 镜像 IPC DTO）
 configs/          # 程序读的固定参数与用户参数（config.json 窗口位置，运行时写入，gitignore）
 data/             # 运行时数据（todo.db，gitignore，运行时自建）
 .agents/skills/   # 项目自建 skill（audit-project / audit-report / progress-task）
@@ -174,10 +174,12 @@ y.problems.md     # 问题与远期改进备忘录（只增不删、编号递增
 
 容错白名单（初始为空；仅产品明确允许的边界可容错，**新增容错须先在此登记**，写明场景、降级行为与理由三要素）：
 
-- **焦点联动材质切换失败维持前态**（PL001.3 登记，2026-09-17）：场景——窗口焦点切换时 DWM 背板设置失败（DwmSetWindowAttribute 非零）或 window-focus 事件发送失败；降级行为——错误落控制台日志，材质/纱态维持切换前状态；理由——材质为纯装饰层，运行时焦点事件不可中断主流程，下次焦点切换自动重试自愈（沿 CapsulePulse FIX003.7 同款先例）。
+- **焦点联动材质切换失败维持前态**（PL001.3 登记，2026-09-17）：场景——窗口焦点切换时 DWM 背板设置失败（DwmSetWindowAttribute 非零）或 window-focus 事件发送失败；降级行为——错误落控制台日志，材质/纱态维持切换前状态；理由——材质为纯装饰层，运行时焦点事件不可中断主流程，下次焦点切换自动重试自愈（沿 CapsulePulse FIX003.7 同款先例）。**〔已失效〕2026-09-28 定案移除 DWM 材质切换（恒纯 alpha），背板设置路径随行为删除；window-focus 事件发送失败的落日志降级仍在用，登记留存备查**
 - **全屏监视轮询失败维持置顶态**（PL003.3 登记，2026-09-17）：场景——全屏让位后台线程的 Win32 轮询（GetWindowRect/GetMonitorInfoW）失败或前台窗句柄为空；降级行为——错误落日志（失败态翻转时只报一次防刷屏），置顶态维持不变，下轮轮询自动重试；理由——让位为体验增强层，轮询失败不该抖动常驻行为，恢复正常后自动收敛。
 - **窗口设置文件不存在回默认位**（PL003.4 登记，2026-09-17）：场景——首启或用户删除 configs/config.json，载入 NotFound；降级行为——返回默认落位（主屏右下距边 40px）不报错；理由——首启无设置文件是正常态而非错误，回默认即"开箱即用"；JSON 损坏等其余错误仍严格报错不在此列。
 - **窗口位置保存失败不阻断关闭**（PL003.4 登记，2026-09-17）：场景——关闭窗口时读取/保存 config.json 失败；降级行为——错误落日志，关闭照常进行；理由——退出意图优先，位置丢失代价小（可再拖一次），不能因保存失败把用户困在应用里（沿 Pulse"退出前落库失败仍退出"先例）。
+- **设置文件越界 max_bubbles 静默钳制**（FIX003.8 登记，2026-09-28）：场景——config.json 为用户可手改的明文，max_bubbles 字段越界（<1 或 >20）；降级行为——加载点经共享钳制函数（settings::clamp_max_bubbles）静默收敛到 1/20 边界，不报错不崩；理由——配置非法不该崩常驻应用，钳制与设置板步进及命令层写路径同规（读写两路径单一来源）。
+- **关闭时设置锁中毒跳过保存**（FIX003.8 登记，2026-09-28）：场景——CloseRequested 时 AppContext.settings 锁中毒（持锁线程 panic 后遗症）；降级行为——跳过位置与上限保存落日志（锁中毒 Debug 串），关闭照常进行，磁盘现值不动；理由——以默认值透传保存会静默覆盖用户已存 max_bubbles（数据回退），跳过的代价（位置回默认位）小于覆盖真实设置。
 
 ## 素材与环境陷阱
 

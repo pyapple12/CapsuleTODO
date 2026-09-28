@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
-import type { BubbleItem, TodoItem, TodoView } from "./types";
+import type { BubbleItem, BubbleSnapshot, TodoItem, TodoView } from "./types";
 import AddBar from "./src/components/AddBar.vue";
 import TabsBar from "./src/components/TabsBar.vue";
 import TodoList from "./src/components/TodoList.vue";
@@ -16,6 +16,8 @@ import WhiteboardView from "./src/components/WhiteboardView.vue";
 import { initTitleParticles } from "./src/composables/titleParticles";
 import { useDragReorder } from "./src/composables/useDragReorder";
 import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
+import { syncGlassBars } from "./src/composables/useGlassBar";
+import { syncHints } from "./src/composables/useBoardRead";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 // 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
@@ -27,7 +29,7 @@ const titleFX = shallowRef<{ refresh: () => void } | null>(null);
 useDragReorder();
 
 // PL011 管线：分态纱浓度由 .focused class 驱动——初值经 isFocused 查询兜底，
-// 此后随 Rust 的 window-focus 事件翻转（Rust 侧 Focused 分支同步切 DWM 背板）
+// 此后随 Rust 的 window-focus 事件翻转（窗口恒纯 alpha 透明，2026-09-28 定案）
 const windowFocused = ref(false);
 let unlistenFocus: UnlistenFn | undefined;
 
@@ -38,10 +40,10 @@ const activeTab = ref<TabKey>("todos");
 // 页签徽章：气泡未读计数（PL008.4 接 mock/真实 bubble_list 长度；≥10 显示 9+）
 const bubbleCount = ref(0);
 
-/** 拉取气泡徽章计数（snapshot.items 长度即条目数，与页内显示同源） */
+/** 拉取气泡徽章计数（复用 BubbleSnapshot 契约类型，items 长度即条目数，与页内同源） */
 async function refreshBadge(): Promise<void> {
   try {
-    const snap = await invoke<{ items: unknown[] }>("bubble_list");
+    const snap = await invoke<BubbleSnapshot>("bubble_list");
     bubbleCount.value = snap.items.length;
   } catch (err) {
     console.error("bubble_list 徽章计数拉取失败", err);
@@ -60,6 +62,13 @@ const tabDefs = computed(() => [
 /** TabKey 兼容 TabsBar 字符串 key（v-model 回写收敛回三键类型） */
 function onTabChange(key: string): void {
   activeTab.value = key as TabKey;
+  // 换页重算挂点（design glass-bar.js 换页监听同款）：白板页 v-show 常驻不卸载，
+  // 切走时锚层滑杆/三角无人驱动——nextTick 等 display 生效后逐实例 sync，
+  // 宿主 rect 归零即自动隐藏，切回白板页按新几何恢复
+  void nextTick(() => {
+    syncGlassBars();
+    syncHints();
+  });
 }
 
 // —— 详情板（PL010.5）：行单击 openDetail 上抛 → 置 detailTodo 开板 ——
@@ -261,9 +270,8 @@ onUnmounted(() => {
 </style>
 
 <style scoped>
-/* 玻璃板（全窗单层 / PL011 焦点联动材质）：聚焦 = DWM Acrylic 背板真磨砂（0% 纱），
-   失焦 = 纯 alpha 透明 + 30% 纱（浅白/暗黑双主题，保可读）+ 亮边 + rim + 落影；
-   8px 圆角对齐系统窗口圆角 */
+/* 玻璃板（全窗单层）：恒纯 alpha 透明 + 30% 纱（浅白/暗黑双主题，保可读）+ 亮边
+   + rim + 落影；聚焦态纱退 0%（透明度靠背后桌面透出）；8px 圆角对齐系统窗口圆角 */
 .glass-card {
   position: relative;
   display: flex;
@@ -281,8 +289,8 @@ onUnmounted(() => {
   font-family: var(--font-stack);
 }
 
-/* 纱体色层：叠在 DWM 背板/透明底之上、内容之下；分态浓度（PL011 用户定案）——
-   失焦透明态 30% 纱保可读，聚焦磨砂态退 0%（磨砂已足够） */
+/* 纱体色层：叠在透明底之上、内容之下；分态浓度（PL011 用户定案）——
+   失焦透明态 30% 纱保可读，聚焦态退 0%（恒纯 alpha 定案，无背板磨砂） */
 .glass-card::before {
   content: "";
   position: absolute;

@@ -156,11 +156,8 @@ export const DRAG_TARGETS: DragTarget[] = [
   },
 ];
 
-/** 组件层注入的收场重拉句柄（rerender 回调转发） */
-declare module "./useDragReorder" {}
-
-// 组件层注入：cancelPendingClick / markSuppress / rerenderTodos / rerenderBubbles
-// （四个钩子全部由 installDragTargets 注册——组合式不持组件引用）
+// 组件层注入的收场重拉句柄：cancelPendingClick / markSuppress / rerenderTodos /
+// rerenderBubbles（四个钩子全部由 installDragTargets 注册——组合式不持组件引用）
 const hookBag: {
   rerenderTodos?: () => void;
   rerenderBubbles?: () => void;

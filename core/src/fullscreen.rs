@@ -3,6 +3,9 @@
 //! 判法定案：逐边包含法（Chromium 同款）而非面积占比——最大化窗口只到工作区、必留
 //! 任务栏条，包含法不会把它误判为全屏；面积法在小任务栏显示器上会误判（占比可 >95%）。
 
+#[cfg(target_os = "windows")]
+use tauri::Manager;
+
 /// 屏幕坐标矩形（像素）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
@@ -71,8 +74,6 @@ const WATCH_INTERVAL_MS: u64 = 1000;
 /// 轮询失败维持当前置顶态并只在失败态翻转时落日志（容错白名单②）
 #[cfg(target_os = "windows")]
 pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
-    use tauri::Manager;
-
     let Some(window) = app.get_webview_window("main") else {
         eprintln!("全屏让位监视未启动：主窗口不存在");
         return;

@@ -139,7 +139,7 @@ onUnmounted(() => {
   systemDark.removeEventListener("change", onSystemChange);
 });
 
-// —— 气泡提醒数量步进（panels.js 同款）：范围 1~20 钳制，会话内有效（design 定案） ——
+// —— 气泡提醒数量步进（panels.js 同款）：范围 1~20 钳制，步进即落库持久化（PL014.2） ——
 
 const BUBBLE_MAX_LIMIT = 20;
 let settingBusy = false; // 落库请求防抖：进行中忽略连点

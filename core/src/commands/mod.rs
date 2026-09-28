@@ -131,5 +131,10 @@ mod tests {
                 .expect("序列化必须成功"),
             "\"白板内容过长\""
         );
+        assert_eq!(
+            serde_json::to_string(&CommandError::Settings("config.json 保存失败".into()))
+                .expect("序列化必须成功"),
+            "\"config.json 保存失败\""
+        );
     }
 }

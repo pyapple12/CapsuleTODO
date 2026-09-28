@@ -12,11 +12,11 @@ pub fn todo_add(text: String, ctx: State<'_, AppContext>) -> Result<TodoItem, Co
     todo_add_core(&text, &ctx)
 }
 
-/// todo_add 核心实现：业务校验 + 写库
+/// todo_add 核心实现：业务校验 + trim 落库（与 rename/bubble 同规——首尾空白不入库）
 pub fn todo_add_core(text: &str, ctx: &AppContext) -> Result<TodoItem, CommandError> {
     validate_text(text)?;
     let storage = ctx.lock_storage()?;
-    Ok(storage.add(text)?)
+    Ok(storage.add(text.trim())?)
 }
 
 /// 勾选翻转（不存在经 NotFound 严格报错）
@@ -137,22 +137,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::storage::{system_now, Storage};
+    use crate::storage::Storage;
 
     /// 测试上下文：内存库（禁触真实用户数据）
     fn test_context() -> AppContext {
         AppContext {
             storage: Mutex::new(Storage::open_in_memory().expect("内存库必须可开")),
-            settings: Mutex::new(crate::settings::WindowSettings::default()),
-        }
-    }
-
-    /// 注入固定时间的测试上下文（龄期断言用）
-    fn context_with_now(now: i64) -> AppContext {
-        AppContext {
-            storage: Mutex::new(
-                Storage::open_in_memory_with_now(Arc::new(move || now)).expect("内存库必须可开"),
-            ),
             settings: Mutex::new(crate::settings::WindowSettings::default()),
         }
     }
@@ -215,19 +205,37 @@ mod tests {
     }
 
     #[test]
+    fn add_trims_surrounding_whitespace() {
+        // FIX003.10：add 与 rename 同规 trim 落库
+        let ctx = test_context();
+        let item = todo_add_core("  任务一  ", &ctx).expect("合法文本必须成功");
+        assert_eq!(item.text, "任务一", "add 走 trim 存储语义");
+    }
+
+    #[test]
     fn list_attaches_age_level_from_storage_clock() {
-        // 注入"创建时刻"写行，再把时钟拨到 30h 后读视图 → Yellow
-        let created = 1_700_000_000_000i64;
-        let ctx = context_with_now(created);
+        // 可变时钟真断言（FIX003.10）：建行于 T0 → 拨至 +25h 断言 Yellow → 拨至
+        // +49h 断言 Red（命令层龄期裁决全链，替代旧恒 None 弱断言）
+        let t0 = 1_700_000_000_000i64;
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(t0));
+        let ctx = AppContext {
+            storage: Mutex::new(
+                Storage::open_in_memory_with_now(Arc::new({
+                    let clock = Arc::clone(&clock);
+                    move || clock.load(std::sync::atomic::Ordering::SeqCst)
+                }))
+                .expect("内存库必须可开"),
+            ),
+            settings: Mutex::new(crate::settings::WindowSettings::default()),
+        };
         let item = todo_add_core("老任务", &ctx).expect("合法文本必须成功");
-        // 换一个"当前时刻 = 创建 + 30h"的上下文共享同一内存库不可行（Storage 持时钟）——
-        // 直接以同时钟读：created == now 时恒 None；再构造 created_at 更老的行（SQL 注入
-        // 绕过不可取）——改为时钟回拨场景：固定 now=created+30h，先 add（落 created_at=
-        // now+30h 不对）……故此用例改验"新行恒 None"与"无 created_at（迁移行）恒 None"，
-        // 跨阈值升级已由 storage/todo 单元测试覆盖（时间源注入）
+        let hour = 3_600_000i64;
+        clock.store(t0 + 25 * hour, std::sync::atomic::Ordering::SeqCst);
         let view = todo_list_core(&ctx).expect("读命令必须成功");
-        assert_eq!(view[0].age_level, AgeLevel::None);
-        let _ = system_now; // 引用防 unused（生产默认时钟路径）
+        assert_eq!(view[0].age_level, AgeLevel::Yellow, "超 24h 升 Yellow");
+        clock.store(t0 + 49 * hour, std::sync::atomic::Ordering::SeqCst);
+        let view = todo_list_core(&ctx).expect("读命令必须成功");
+        assert_eq!(view[0].age_level, AgeLevel::Red, "超 48h 升 Red");
         let _ = item;
     }
 

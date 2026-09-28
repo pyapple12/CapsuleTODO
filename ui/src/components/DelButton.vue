@@ -58,7 +58,7 @@ function onMouseLeave(): void {
 /** 父级收口接口：摘确认态（板开合/换页/单实例换目标时调用） */
 function rollBack(): void {
   // confirming 由父级置 false；此处仅防御性清执行窗计时器
-  if (confirmTimer !== undefined) {
+  if (confirmTimer != null) {
     window.clearTimeout(confirmTimer);
     confirmTimer = undefined;
     pendingConfirm = false;
@@ -68,7 +68,7 @@ function rollBack(): void {
 defineExpose({ rollBack });
 
 onBeforeUnmount(() => {
-  if (confirmTimer !== undefined) window.clearTimeout(confirmTimer);
+  if (confirmTimer != null) window.clearTimeout(confirmTimer);
   window.clearTimeout(pressTimer);
 });
 </script>

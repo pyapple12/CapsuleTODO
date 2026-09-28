@@ -1,12 +1,8 @@
-//! 气泡纯逻辑：DTO、满 5 提醒判定与捕获文本校验（禁 import tauri，业务纯逻辑约束）。
+//! 气泡纯逻辑：DTO、满额提醒判定与捕获文本校验（禁 import tauri，业务纯逻辑约束）。
 //! 单一事实源 = db：气泡存取由 storage.rs 承载，本模块只剩契约、阈值与校验。
 
 use serde::Serialize;
 use thiserror::Error;
-
-/// 气泡提醒阈值缺省值：满 5 个提醒清理（2026-09-17 用户定案）；PL014.2 起可经
-/// 设置持久化调整（config.json max_bubbles），此常量仅作缺省语义保留
-pub const MAX_BUBBLES: usize = 5;
 
 /// 气泡文本长度上限（按字符数；A002-P2-2 定案——气泡 = 短片段语义，防超长剪贴板无界入库，可调）
 pub const MAX_BUBBLE_TEXT_LEN: usize = 2_000;
@@ -25,7 +21,7 @@ pub enum BubbleError {
 /// 单条气泡（跨进程 DTO：serde 为前端 types.ts 的契约单一来源）
 #[derive(Debug, Clone, Serialize)]
 pub struct BubbleItem {
-    /// 条目唯一标识（库内自增主键，创建序；展示按 id 倒序 = 新在前）
+    /// 条目唯一标识（库内自增主键，创建序；展示 = sort_order 拖拽序，新捕获排头插入）
     pub id: i64,
     /// 气泡文本（捕获的剪贴板内容，入库前已 trim）
     pub text: String,

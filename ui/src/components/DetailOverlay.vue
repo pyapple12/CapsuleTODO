@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, TodoItem } from "../../types";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
-import { syncVeils } from "../composables/useVeils";
+import { bindOverlayState, syncVeils } from "../composables/useVeils";
 
 // ===== 详情板（PL010.5 todo 模式；bubble 模式 PL012 填充）：
 // 揭示动画（origin 注入 + scale 回弹）/ 标题行内改名（≤12 字实时 todo_rename）/
@@ -30,6 +30,10 @@ const titleDraft = ref("");
 const noteDraft = ref("");
 
 const isOpen = ref(false);
+
+// 帘联动注册（FIX003.7）：详情开合进 useVeils 全局读取器——板开时主清单滑杆/三角
+// 吃 .veiled 淡出、关板恢复（useVeils detail 特判按 textarea id=detail-note 匹配）
+bindOverlayState("detail", () => isOpen.value);
 
 // 板内整板阅读（gate：仅开板时亮三角）+ 玻璃滑杆（textarea 透明填壳同源滚动）
 const noteEl = ref<HTMLTextAreaElement | null>(null);
@@ -85,6 +89,8 @@ function open(): void {
 /** 关板：摘 open 类（0.35s 缩回）+ 帘布复位 + 清到底抬带残留（A4：类常驻后双模式
  * 都出溶解带，不清则下次开板继承上次滚动态——design setDetail(false) 同款） */
 function close(): void {
+  if (!isOpen.value) return; // 幂等守卫：已关再调不重复 flush/emit（FIX003.10⑧）
+  void flushPending(); // 关板先 flush 未决保存（FIX003.4：保存不丢弃）
   isOpen.value = false;
   const note = noteEl.value;
   if (note) {
@@ -100,6 +106,7 @@ watch(
   () => props.todo,
   (t) => {
     if (t) {
+      void flushPending(); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
       titleDraft.value = t.text;
       noteDraft.value = t.note;
       open();
@@ -113,6 +120,7 @@ watch(
   () => props.bubble,
   (b) => {
     if (b) {
+      void flushPending(); // todo→bubble 切源同款先 flush（FIX003.4）
       noteDraft.value = b.text; // 气泡全文只读展示
       open();
     } else if (!props.todo) {
@@ -123,13 +131,23 @@ watch(
 
 // —— 标题改名（maxlength 12，input 实时同步回清单——debounce 300ms 合并 IPC）。
 // bubble 模式只读：head 整个隐藏无 input，此 watch 天然不触发 ——
+// FIX003.4：待保存快照 = { 触发时刻 id + 草稿 }，回调与 flush 只用快照、不回读
+// props.todo——旧实现回调实时解引用 props.todo!.id，快关板 = null.id TypeError、
+// 快切条目 = A 的草稿写进 B 的 id（静默数据污染）
 
+/** 改名待保存快照（null = 无未决保存） */
+let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
 watch(titleDraft, (text) => {
-  if (!props.todo || text === props.todo.text) return;
+  const todo = props.todo;
+  if (todo == null || text === todo.text) return;
   clearTimeout(renameTimer);
+  renamePending = { id: todo.id, text };
   renameTimer = window.setTimeout(() => {
-    void invoke("todo_rename", { id: props.todo!.id, text })
+    const pending = renamePending;
+    renamePending = null;
+    if (pending == null) return;
+    void invoke("todo_rename", { id: pending.id, text: pending.text })
       .then(() => emit("changed"))
       .catch((err) => console.error("改名失败", err));
   }, 300);
@@ -137,21 +155,49 @@ watch(titleDraft, (text) => {
 
 // —— 笔记防抖 300ms 保存（与实验场白板同拍）；bubble 模式 readonly 不触发 ——
 
+/** 笔记待保存快照（null = 无未决保存） */
+let notePending: { id: number; note: string } | null = null;
 let noteTimer: number | undefined;
 watch(noteDraft, (note) => {
-  if (!props.todo || note === props.todo.note) return;
+  const todo = props.todo;
+  if (todo == null || note === todo.note) return;
   clearTimeout(noteTimer);
+  notePending = { id: todo.id, note };
   noteTimer = window.setTimeout(() => {
-    void invoke("todo_set_note", { id: props.todo!.id, note })
+    const pending = notePending;
+    notePending = null;
+    if (pending == null) return;
+    void invoke("todo_set_note", { id: pending.id, note: pending.note })
       .then(() => emit("changed"))
       .catch((err) => console.error("笔记保存失败", err));
   }, 300);
 });
 
-/** 组件卸载前若有未落库草稿，立即保存（防抖兜底） */
-function flushPending(): void {
+/** 立即保存未决草稿（关板/切源/卸载的 flush——保存不丢弃，FIX003.4）；快照自带
+ * id，切换数据源后旧条目的草稿仍写回旧 id */
+async function flushPending(): Promise<void> {
   clearTimeout(renameTimer);
   clearTimeout(noteTimer);
+  const rename = renamePending;
+  const note = notePending;
+  renamePending = null;
+  notePending = null;
+  const jobs: Array<Promise<void>> = [];
+  if (rename != null) {
+    jobs.push(
+      invoke("todo_rename", { id: rename.id, text: rename.text })
+        .then(() => emit("changed"))
+        .catch((err) => console.error("改名失败", err)),
+    );
+  }
+  if (note != null) {
+    jobs.push(
+      invoke("todo_set_note", { id: note.id, note: note.note })
+        .then(() => emit("changed"))
+        .catch((err) => console.error("笔记保存失败", err)),
+    );
+  }
+  await Promise.all(jobs);
 }
 defineExpose({ close, flushPending });
 
@@ -165,7 +211,7 @@ function onGlobalDown(e: MouseEvent): void {
 window.addEventListener("mousedown", onGlobalDown, true);
 
 onBeforeUnmount(() => {
-  flushPending();
+  void flushPending();
   window.removeEventListener("mousedown", onGlobalDown, true);
 });
 </script>
@@ -180,6 +226,7 @@ onBeforeUnmount(() => {
       <div class="note-shell" :class="{ 'bubble-shell': isBubbleMode }">
         <textarea
           ref="noteEl"
+          id="detail-note"
           v-model="noteDraft"
           class="detail-note board-read"
           :class="{ 'bubble-note': isBubbleMode }"

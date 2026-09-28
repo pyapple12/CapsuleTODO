@@ -56,7 +56,11 @@ fn file_db_migrates_sort_order_and_persists_reorder() {
         .iter()
         .map(|b| b.id)
         .collect();
-    assert_eq!(bids, vec![1, 2, 3], "气泡回填序 = 原 id 序");
+    assert_eq!(
+        bids,
+        vec![3, 2, 1],
+        "气泡回填后展示序 = 新在前（历史 unshift 语义）"
+    );
 
     // 3) reorder 落盘（清单 + 气泡）
     st.reorder_todos(&[3, 1, 2]).expect("重排");

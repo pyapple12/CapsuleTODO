@@ -82,8 +82,8 @@ impl Storage {
         Ok(storage)
     }
 
-    /// 建表（幂等：CREATE TABLE IF NOT EXISTS）+ 迁移（PL010：todos 三列幂等补齐；
-    /// bubbles 同理暂不扩——排序按 id 倒序即创建序，PL013 再加 sort_order）
+    /// 建表（幂等：CREATE TABLE IF NOT EXISTS）+ 迁移（PL010/PL013：todos 五列、
+    /// bubbles 一列幂等补齐，见 migrate/migrate_sort_order）
     pub fn init(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS todos (
@@ -104,18 +104,24 @@ impl Storage {
         Ok(())
     }
 
+    /// 探测表的列名集合（PRAGMA table_info 收敛：migrate/migrate_sort_order 三处
+    /// 共用的幂等前置判定；table 仅内部字面量传入，无外部注入面）
+    fn column_set(&self, table: &str) -> Result<std::collections::HashSet<String>, StorageError> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let cols: std::collections::HashSet<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .collect();
+        Ok(cols)
+    }
+
     /// PL010 数据迁移：todos 补 created_at/done_at/note 三列（幂等——先探列再 ALTER）。
     /// 存量回填语义：created_at/done_at = NULL（不模拟历史时间，龄期裁决对 NULL 恒无提醒）；
     /// note = ''（自由文本缺省）。新库建表后同样走本函数补齐（建表语句保持 V0.1.1 原样，
     /// 让"旧 schema → 迁移"路径与新库路径汇合同一份代码）
     fn migrate(&self) -> Result<(), StorageError> {
-        let mut stmt = self.conn.prepare("PRAGMA table_info(todos)")?;
-        let existing: std::collections::HashSet<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect();
-        drop(stmt);
+        let existing = self.column_set("todos")?;
         if !existing.contains("created_at") {
             self.conn
                 .execute("ALTER TABLE todos ADD COLUMN created_at INTEGER", [])?;
@@ -135,23 +141,12 @@ impl Storage {
     }
 
     /// PL013 数据迁移：todos/bubbles 各补 sort_order INTEGER 列（幂等），存量回填 =
-    /// 现序号（todos 未完成按 id 升序 0..n；done 行与气泡按 id 升序 0..n——读出重写
-    /// 幂等，列已在位时直接跳过不重算，避免覆盖用户拖拽结果）
+    /// 现序号（todos 按 done 段内 id 升序 0..n；气泡按 id 倒序 0..n——升序输出即新
+    /// 在前，保历史 unshift 展示序。读出重写幂等，列已在位时直接跳过不重算，避免
+    /// 覆盖用户拖拽结果）
     fn migrate_sort_order(&self) -> Result<(), StorageError> {
-        let mut stmt = self.conn.prepare("PRAGMA table_info(todos)")?;
-        let todo_cols: std::collections::HashSet<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect();
-        drop(stmt);
-        let mut stmt = self.conn.prepare("PRAGMA table_info(bubbles)")?;
-        let bubble_cols: std::collections::HashSet<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect();
-        drop(stmt);
+        let todo_cols = self.column_set("todos")?;
+        let bubble_cols = self.column_set("bubbles")?;
         let todo_missing = !todo_cols.contains("sort_order");
         let bubble_missing = !bubble_cols.contains("sort_order");
         if todo_missing {
@@ -174,7 +169,7 @@ impl Storage {
         if bubble_missing {
             self.conn.execute_batch(
                 "UPDATE bubbles SET sort_order = (
-                     SELECT COUNT(*) FROM bubbles b2 WHERE b2.id < bubbles.id
+                     SELECT COUNT(*) FROM bubbles b2 WHERE b2.id > bubbles.id
                  );",
             )?;
         }
@@ -369,7 +364,9 @@ impl Storage {
                 Ok(())
             }
             Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("清单重排事务回滚失败：{rollback}");
+                }
                 Err(err)
             }
         }
@@ -410,7 +407,9 @@ impl Storage {
                 Ok(())
             }
             Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("气泡重排事务回滚失败：{rollback}");
+                }
                 Err(err)
             }
         }

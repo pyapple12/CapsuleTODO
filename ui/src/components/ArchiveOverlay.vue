@@ -31,8 +31,34 @@ const btnLeaving = ref(false);
 const btnEntering = ref(false);
 const btnHidden = ref(false);
 
-let boardRead: { sync: () => void; settle: () => void } | null = null;
-let glassBar: { sync: () => void } | null = null;
+// —— 板内滚动套件（整板阅读 + 玻璃滑杆）：开板 listKey++ 重建 UL（重播勾选动画），
+// 套件必须拆旧挂新随行——旧的一次性挂载守卫（!boardRead）让第二开板起绑在已换下
+// 文档的旧 UL 上，三角/滑杆/整板阅读全失联（FIX003.3，TodoList 同款 destroy 链）
+let boardRead: { sync: () => void; settle: () => void; destroy: () => void } | null = null;
+let glassBar: { sync: () => void; destroy: () => void } | null = null;
+
+/** 拆旧套件（监听/observer/三角/浮钮全清） */
+function unmountScrollKit(): void {
+  boardRead?.destroy();
+  glassBar?.destroy();
+  boardRead = null;
+  glassBar = null;
+}
+
+/** 挂套件到当前 UL（listEl ref 指向 TransitionGroup 组件实例——真实 UL 须经 $el 取） */
+function mountScrollKit(): void {
+  const listDom = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
+  if (!listDom || boardRead) return;
+  boardRead = useBoardRead(listDom, {
+    hintHost: overlay.value?.querySelector(".board-glass") as HTMLElement,
+    layout: true,
+  });
+  glassBar = useGlassBar(listDom, {
+    anchor: overlay.value?.querySelector(".board-glass") as HTMLElement,
+    inset: true,
+    right: 4.5, // 几何缝心 6 左移 0.5（用户定案：微避描边亮线）
+  });
+}
 
 // 帘联动注册：归档滑杆 veil = !boardOpen（板开则显、关板则隐——design 特例）
 bindOverlayState("board", () => isOpen.value);
@@ -114,19 +140,9 @@ async function toggle(): Promise<void> {
       overlay.value.style.setProperty("--origin-x", "6px");
       overlay.value.style.setProperty("--origin-y", `${20 - top}px`);
     }
-    // listEl ref 指向 TransitionGroup 组件实例——真实 UL 须经 $el 取（ref 非元素）
-    const listDom = (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? listEl.value;
-    if (listDom && !boardRead) {
-      boardRead = useBoardRead(listDom, {
-        hintHost: overlay.value?.querySelector(".board-glass") as HTMLElement,
-        layout: true,
-      });
-      glassBar = useGlassBar(listDom, {
-        anchor: overlay.value?.querySelector(".board-glass") as HTMLElement,
-        inset: true,
-        right: 4.5, // 几何缝心 6 左移 0.5（用户定案：微避描边亮线）
-      });
-    }
+    // 开板重建 UL 后拆旧挂新：三角/滑杆/整板阅读绑定当次列表（FIX003.3）
+    unmountScrollKit();
+    mountScrollKit();
     // 揭示动画落定后重算滑杆/三角/收尾带（transform 中间态不取几何——V0.015 实测）
     window.setTimeout(() => {
       boardRead?.settle();
@@ -170,7 +186,9 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.clearTimeout(animTimer);
-  window.clearTimeout(restoreTimer);
+  unmountScrollKit();
+  restoreTimers.forEach((handle) => window.clearTimeout(handle));
+  restoreTimers.clear();
   unregisterRollback?.();
 });
 
@@ -228,27 +246,41 @@ function pinLeaveHeight(el: Element): void {
 
 /** 勾选退回（⑥ = design 归档分支时序 1:1）：invoke 成功后**乐观置位**——勾选框
  * 熄灭 + 删除线摘除（design input.checked=false + 摘 is-done 的立即置位，退回视觉
- * 起播），300ms 主拍播完才塌缩离场 */
-let restoreTimer: number | undefined;
-const restoringId = ref<number | null>(null);
+ * 起播），300ms 主拍播完才塌缩离场。逐行状态 + 逐行拍子（FIX003.5）：单值
+ * restoringId 在快速连点时被第二行抢写（首行退回动画闪回 = 挂假勾行），单句柄
+ * 拍子被 clearTimeout 掐死（TodoList toggleTimer 同根）——改 Set + Map<id, handle> */
+const restoringIds = ref(new Set<number>());
+const restoreTimers = new Map<number, number>();
 async function restore(item: TodoItem): Promise<void> {
   try {
     await invoke("todo_toggle", { id: item.id });
-    restoringId.value = item.id;
-    window.clearTimeout(restoreTimer);
-    restoreTimer = window.setTimeout(() => emit("changed"), 300); // 主拍 300ms（用户定案）
+    restoringIds.value.add(item.id);
+    clearTimeout(restoreTimers.get(item.id));
+    restoreTimers.set(
+      item.id,
+      window.setTimeout(() => {
+        restoreTimers.delete(item.id);
+        // 末拍收口：提前拍的 changed 会全量重拉，截断其他行在飞的主拍
+        if (restoreTimers.size === 0) emit("changed");
+      }, 300), // 主拍 300ms（用户定案）
+    );
   } catch (err) {
     console.error("退回失败", err);
   }
 }
 
-// restoringId 的清空必须等 items 真正更新移除该行之后（flush post）：changed 后
-// refreshArchive 是异步的——同步清会让该行在离场前恢复勾选态（粒子动画重播 +
-// 删除线闪回，真窗口实测 2026-09-28）
+// restoringIds 的清空必须等 items 真正更新移除该行之后（flush post）：changed 后
+// refresh 是异步的——同步清会让该行在离场前恢复勾选态（粒子动画重播 + 删除线闪回，
+// 真窗口实测 2026-09-28）。逐行摘除（FIX003.5）：仅清已从视图消失的 id，交错刷新
+// （如删除重拉）不抢走在飞主拍行的退回视觉
 watch(
   () => props.items,
   () => {
-    if (restoringId.value != null) restoringId.value = null;
+    if (restoringIds.value.size === 0) return;
+    const present = new Set(props.items.map((it) => it.id));
+    for (const id of [...restoringIds.value]) {
+      if (!present.has(id)) restoringIds.value.delete(id);
+    }
   },
   { flush: "post" },
 );
@@ -286,6 +318,7 @@ watch(
         v-else
         tag="ul"
         name="todo"
+        id="archive-list"
         class="board-list board-read"
         :key="listKey"
         :duration="320"
@@ -296,10 +329,10 @@ watch(
                行 click 触发 toggle；删除钮 stop 自有语义） -->
           <div
             class="todo-row"
-            :class="{ 'is-done': restoringId !== item.id }"
+            :class="{ 'is-done': !restoringIds.has(item.id) }"
             @click="restore(item)"
           >
-            <NeonCheckbox :checked="restoringId !== item.id" />
+            <NeonCheckbox :checked="!restoringIds.has(item.id)" />
             <span class="t-text">{{ item.text }}</span>
             <DelButton
               :ref="(el) => setDelRef(item.id, el as InstanceType<typeof DelButton>)"
