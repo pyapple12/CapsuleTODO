@@ -1,11 +1,13 @@
 //! 应用装配：桌面固定（置顶 + 全屏让位）、位置记忆与模块注册。
-//! 玻璃材质定案（2026-09-28 用户定案更新）：窗口恒为纯 alpha 透明 + 前端 30% 纱，
-//! 不挂 DWM Acrylic 背板（聚焦磨砂糊住背后桌面，实测否决）；聚焦仅发 window-focus
-//! 事件驱动前端纱态与交互。
+//! 玻璃材质定案（2026-09-29 用户定案更新）：聚焦联动系统背板——聚焦挂 DWM
+//! SYSTEMBACKDROP 亚克力、失焦切 NONE 回纯透明（glass_backdrop.rs），前端 30%
+//! 分态纱保留（聚焦纱退 0%）；聚焦/失焦均发 window-focus 事件驱动前端纱态与交互。
 
 pub mod bubble;
 pub mod commands;
 pub mod fullscreen;
+#[cfg(target_os = "windows")]
+pub mod glass_backdrop;
 pub mod paths;
 pub mod settings;
 pub mod storage;
@@ -147,6 +149,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 false => default_position(&window)?,
             };
             window.set_position(position)?;
+            // 窗口框架整定（SYSTEMBACKDROP 实验）：深色模式声明（背板基调对齐主题）
+            // + 激活边框隐藏（Win11 活动描边显形修复）
+            #[cfg(target_os = "windows")]
+            {
+                let dark = window
+                    .theme()
+                    .map(|t| t == tauri::Theme::Dark)
+                    .unwrap_or(true);
+                if let Ok(hwnd) = window.hwnd() {
+                    glass_backdrop::apply_frame_style(hwnd.0 as isize, dark);
+                }
+            }
             // 全屏让位监视（PL003，Windows 实机验证平台）
             #[cfg(target_os = "windows")]
             fullscreen::spawn_fullscreen_watcher(app.handle().clone());
@@ -166,9 +180,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]
                 {
-                    // 聚焦雾化取消（用户定案 2026-09-28）：不再切换 DWM 背板（Acrylic
-                    // 磨砂糊掉背后桌面，用户实测否决）——窗口恒为纯 alpha 透明 +
-                    // 前端 30% 纱。仅保留 focus 事件供前端分态纱/交互使用
+                    // 系统背板聚焦联动（SYSTEMBACKDROP 实验）：聚焦挂系统亚克力，
+                    // 失焦回纯透明；失败落日志维持前态（下次焦点事件自愈）
+                    if let Ok(hwnd) = window.hwnd() {
+                        glass_backdrop::set_focused_backdrop(hwnd.0 as isize, *focused);
+                    }
                     // 前端分态纱随事件翻转（.focused class）；发送失败由下次焦点事件纠正
                     if let Err(err) = window.emit("window-focus", focused) {
                         eprintln!("window-focus 事件发送失败：{err}");

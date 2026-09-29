@@ -266,6 +266,15 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
     wake();
   };
   const onMouse = (e: MouseEvent): void => track(e.clientX, e.clientY);
+  // 鼠标从窗口顶边直接滑出时（标题贴窗顶，无窗口内出区路径）mousemove 停发、
+  // track 不再执行，mouse 冻结在标题内坐标 → 粒子散开不回位（2026-09-29 实测）；
+  // 视口 mouseleave 是该场景唯一的离窗信号，补同款弹回
+  const onLeave = (): void => {
+    mouse.x = -9999;
+    mouse.y = -9999;
+    frames = 0;
+    wake();
+  };
   const onTouch = (e: TouchEvent): void => {
     if (e.touches.length) track(e.touches[0].clientX, e.touches[0].clientY);
   };
@@ -281,6 +290,7 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
     zone = { left: cr.left, right: cr.right, top: cr.top, bottom: tr.top };
   };
   window.addEventListener("mousemove", onMouse, { passive: true });
+  document.documentElement.addEventListener("mouseleave", onLeave);
   window.addEventListener("touchmove", onTouch, { passive: true });
   window.addEventListener("resize", onResize);
   window.addEventListener("scroll", onScroll, { passive: true });
@@ -291,6 +301,7 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
   onUnmounted(() => {
     if (raf) cancelAnimationFrame(raf);
     window.removeEventListener("mousemove", onMouse);
+    document.documentElement.removeEventListener("mouseleave", onLeave);
     window.removeEventListener("touchmove", onTouch);
     window.removeEventListener("resize", onResize);
     window.removeEventListener("scroll", onScroll);

@@ -63,3 +63,6 @@ Thumbs.db
 
 ## Git worktrees
 .worktrees/
+
+## 参考仓库（本地研究用，不入库）
+.reference/
