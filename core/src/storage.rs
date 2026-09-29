@@ -177,12 +177,16 @@ impl Storage {
     }
 
     /// 新增待办（文本须先经 todo::validate_text 业务校验），返回含回填 id 的条目；
-    /// created_at = 时间源 now（新建行非 NULL）；sort_order = 现存最大值 + 1（排尾追加）
+    /// created_at = 时间源 now（新建行非 NULL）；sort_order = 未完成段最小值 − 1
+    /// （排头插入——2026-09-30 用户定案：新增置顶，与气泡排头插入语义对齐；
+    /// 限定 done = 0 段取 MIN，不侵完成序）
     pub fn add(&self, text: &str) -> Result<TodoItem, StorageError> {
         let now = (self.now)();
         self.conn.execute(
             "INSERT INTO todos(text, done, created_at, note, sort_order)
-             VALUES (?1, 0, ?2, '', (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM todos))",
+             VALUES (?1, 0, ?2, '', (
+                 SELECT COALESCE(MIN(sort_order), 0) - 1 FROM todos WHERE done = 0
+             ))",
             rusqlite::params![text, now],
         )?;
         Ok(TodoItem {
@@ -540,7 +544,9 @@ mod tests {
             .into_iter()
             .map(|it| it.id)
             .collect();
-        assert_eq!(ids, vec![b.id, a.id, c.id]);
+        // 未完成段先行；完成段按勾选前 sort_order 快照升序——置顶插入后加入序
+        // 倒挂（后加者更小），c 先于 a（2026-09-30 排序语义变更连带）
+        assert_eq!(ids, vec![b.id, c.id, a.id]);
     }
 
     #[test]
@@ -947,19 +953,19 @@ mod tests {
     }
 
     #[test]
-    fn new_rows_get_increasing_sort_order() {
+    fn new_rows_get_topmost_sort_order() {
         let st = storage();
         let a = st.add("甲").expect("写入必须成功");
         let b = st.add("乙").expect("写入必须成功");
         st.reorder_todos(&[b.id, a.id]).expect("重排必须成功");
         let c = st.add("丙").expect("写入必须成功");
-        // 新行 sort_order 排尾：追加不插队（list 末位）
+        // 新行 sort_order 排头：置顶插入不打乱已有排序（list 首位，2026-09-30 用户定案）
         let ids: Vec<i64> = st
             .list()
             .expect("读取必须成功")
             .into_iter()
             .map(|it| it.id)
             .collect();
-        assert_eq!(ids, vec![b.id, a.id, c.id], "新行落排尾");
+        assert_eq!(ids, vec![c.id, b.id, a.id], "新行落排头");
     }
 }

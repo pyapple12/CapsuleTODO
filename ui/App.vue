@@ -14,12 +14,14 @@ import SettingsOverlay from "./src/components/SettingsOverlay.vue";
 import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./src/components/WhiteboardView.vue";
 import { initTitleParticles } from "./src/composables/titleParticles";
+import { useThresholdDrag } from "./src/composables/useThresholdDrag";
 import { useDragReorder } from "./src/composables/useDragReorder";
 import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
 import { syncGlassBars } from "./src/composables/useGlassBar";
 import { syncHints } from "./src/composables/useBoardRead";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
+const topbarEl = ref<HTMLElement | null>(null);
 // 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
 // （shallowRef：volar 对裸 let 的模板收窄会把回调内赋值判成 never，实测 TS2339）
 const titleFX = shallowRef<{ refresh: () => void } | null>(null);
@@ -132,6 +134,13 @@ function onListChanged(): void {
   void refreshBadge();
 }
 
+/** 新增待办收口：统一刷新 + 清单滚动回顶（新行置顶定案的配套——无论滚动在哪，
+ * 新条目必在顶部，拉顶保证立即可见；平滑滚动避免硬跳） */
+function onTodoAdded(): void {
+  onListChanged();
+  document.querySelector("#page-todos .group")?.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 // —— 三板互斥出口（design panels.js：两板互斥 + 详情板三方互斥） ——
 
 /** 归档板开启：收设置板 + 详情板；开合都收口未决删除确认（A2 = design setBoard 首行） */
@@ -199,6 +208,8 @@ onMounted(async () => {
   await refreshMaxBubbles();
   // 标题粒子化（design text-particles.js 移植）：reduced-motion 下不初始化回退静态文字
   if (titleEl.value) titleFX.value = initTitleParticles(titleEl.value);
+  // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗
+  if (topbarEl.value) useThresholdDrag(topbarEl.value);
 });
 
 onUnmounted(() => {
@@ -211,8 +222,8 @@ onUnmounted(() => {
        浮板/滑杆/三角/拖拽重挂全部以它为宿主（useVeils/useGlassBar/useBoardRead 依赖）；
        拖动收敛 topbar：交互区（页签/行/输入）不再依赖白名单排除，误触面归零 -->
   <main id="board" class="glass-card" :class="{ focused: windowFocused }">
-    <header class="topbar" data-tauri-drag-region>
-      <h1 ref="titleEl" class="title" data-tauri-drag-region>
+    <header ref="topbarEl" class="topbar">
+      <h1 ref="titleEl" class="title">
         CapsuleTODO<canvas class="title-canvas" aria-hidden="true"></canvas>
       </h1>
     </header>
@@ -220,7 +231,7 @@ onUnmounted(() => {
       <TabsBar :model-value="activeTab" :tabs="tabDefs" @update:model-value="onTabChange" />
     </nav>
     <div v-if="activeTab === 'todos'" class="page" id="page-todos">
-      <AddBar @changed="onListChanged" />
+      <AddBar @changed="onListChanged" @added="onTodoAdded" />
       <TodoList
         :items="items"
         @changed="onListChanged"

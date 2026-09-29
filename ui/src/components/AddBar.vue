@@ -3,8 +3,9 @@ import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
 // 添加行（PL008.7 重构）：REC 按钮（average-swan-99 直引配方）+ plastic-parrot-88 输入框。
-// 回车/REC 双触发；空文本禁用；失败可见反馈（成功即清空并清除错误，沿 FIX001.5 模式）
-const emit = defineEmits<{ changed: [] }>();
+// 回车/REC 双触发；空文本禁用；失败可见反馈（成功即清空并清除错误，沿 FIX001.5 模式）。
+// added 与 changed 成对发出：前者供视图拉顶（新增置顶定案的配套），后者走统一刷新
+const emit = defineEmits<{ changed: []; added: [] }>();
 const draft = ref("");
 const error = ref("");
 
@@ -18,6 +19,7 @@ async function add(): Promise<void> {
     draft.value = "";
     error.value = "";
     emit("changed");
+    emit("added");
   } catch (err) {
     error.value = `添加失败：${String(err)}`;
   }

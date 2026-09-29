@@ -199,6 +199,30 @@ const delRefs = new Map<number, InstanceType<typeof DelButton>>();
 // 列表重建计数：开板时勾选态粒子/环/描画动画重播（design renderBoard 重建语义）
 const listKey = ref(0);
 
+// 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
+// v-if/v-else 互斥——删末条走分支整体卸载时 leave 无机会播 = 瞬间消失，CDP 实测），
+// 空态文案延至末条 leave 播完（after-leave）出现；无 leave 路径（清空两段式 DOM
+// 直改）由定时器兜底置位
+const showEmpty = ref(props.items.length === 0);
+watch(
+  () => props.items.length,
+  (n, o) => {
+    if (n > 0) {
+      showEmpty.value = false;
+    } else if ((o ?? 0) > 0) {
+      window.setTimeout(() => {
+        if (props.items.length === 0) showEmpty.value = true;
+      }, 420);
+    } else {
+      showEmpty.value = true;
+    }
+  },
+);
+/** 末条 leave 播完：列表真空才亮空态文案 */
+function onAfterLeave(): void {
+  if (props.items.length === 0) showEmpty.value = true;
+}
+
 // 收口总线注册（A2）：板开合/页签切换时批量摘未决确认（归档板自家行也在列——
 // design rollbackDelConfirms 收全局 .del-open）
 let unregisterRollback: (() => void) | null = null;
@@ -312,10 +336,9 @@ watch(
       <p class="board-title title-plate">
         已完成 <span class="archive-count">{{ items.length }}</span>
       </p>
-      <p v-if="items.length === 0" class="empty">暂无已完成，去清单勾一条吧</p>
+      <p v-if="showEmpty" class="empty">暂无已完成，去清单勾一条吧</p>
       <TransitionGroup
         ref="listEl"
-        v-else
         tag="ul"
         name="todo"
         id="archive-list"
@@ -323,6 +346,7 @@ watch(
         :key="listKey"
         :duration="320"
         @before-leave="pinLeaveHeight"
+        @after-leave="onAfterLeave"
       >
         <li v-for="item in items" :key="item.id" class="todo-item">
           <!-- 整行点击驱动勾选退回（design 语义：checkbox pointer-events 关闭，

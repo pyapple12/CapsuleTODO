@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, BubbleSnapshot } from "../../types";
 import DelButton from "./DelButton.vue";
@@ -29,6 +29,30 @@ const items = ref<BubbleItem[]>([]);
 const error = ref("");
 const copied = ref(false); // 占字态：捕获钮禁点 + 换 clipboard-check 图标文案
 const confirmingClear = ref(false);
+
+// 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
+// v-if/v-else 互斥——删末条走分支整体卸载时 leave 无机会播 = 瞬间消失，与归档板
+// 同根；清空集体退场 2026-09-28 的两段式 workaround 即此坑的批量版），空态文案
+// 延至末条 leave 播完（after-leave）出现；清空走 DOM 直改无 leave，定时器兜底置位
+const showEmpty = ref(items.value.length === 0);
+watch(
+  () => items.value.length,
+  (n, o) => {
+    if (n > 0) {
+      showEmpty.value = false;
+    } else if ((o ?? 0) > 0) {
+      window.setTimeout(() => {
+        if (items.value.length === 0) showEmpty.value = true;
+      }, 420);
+    } else {
+      showEmpty.value = true;
+    }
+  },
+);
+/** 末条 leave 播完：列表真空才亮空态文案 */
+function onAfterLeave(): void {
+  if (items.value.length === 0) showEmpty.value = true;
+}
 let copiedTimer = 0;
 let confirmTimer = 0;
 let clearWidthTimer = 0;
@@ -375,9 +399,8 @@ onUnmounted(() => {
       </button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
-    <p v-if="items.length === 0" class="empty">暂无气泡，点上方捕获剪贴板</p>
+    <p v-if="showEmpty" class="empty">暂无气泡，点上方捕获剪贴板</p>
     <TransitionGroup
-      v-else
       ref="listEl"
       tag="ul"
       name="todo"
@@ -387,6 +410,7 @@ onUnmounted(() => {
       :key="listKey"
       :duration="320"
       @before-leave="pinLeaveHeight"
+      @after-leave="onAfterLeave"
     >
       <!-- board-read/glass-scroll 写进静态 class（FIX 目验③）：has-warning 动态切换
            会触发 Vue class patch 以 vdom 重写 class 属性，抹掉套件运行时 add 的类
