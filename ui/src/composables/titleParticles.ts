@@ -61,6 +61,23 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
   const accent = () =>
     (getComputedStyle(document.documentElement).getPropertyValue("--accent") || "#7c3aed").trim();
 
+  /** 主题参数重读：辉光色/落影取自令牌（build 与换色共用；解析失败回退现值） */
+  function readThemeParams(): void {
+    const cs = getComputedStyle(document.documentElement);
+    const raw = cs.getPropertyValue("--panel-shadow");
+    const dims = raw.match(/([\d.]+)px\s+([\d.]+)px\s+([\d.]+)px/);
+    const a = raw.match(/,\s*([\d.]+)\)/);
+    shadow = dims
+      ? {
+          x: Number(dims[1]),
+          y: Number(dims[2]),
+          blur: Number(dims[3]),
+          alpha: a ? Number(a[1]) : 0.35,
+        }
+      : shadow;
+    glowColor = cs.getPropertyValue("--input-focus-glow").trim() || glowColor;
+  }
+
   // 离屏 2x 采样：30px 绘制文字 → alpha>128 网格扫描 → 粒子（home = 字形坐标）
   function build(): void {
     frames = 0;
@@ -78,19 +95,7 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
     sCan.width = canvas.width;
     sCan.height = canvas.height;
     // 落影/辉光参数取自令牌（单一来源，随主题换色自动跟随）；解析失败回退基准值
-    const cs = getComputedStyle(document.documentElement);
-    const raw = cs.getPropertyValue("--panel-shadow");
-    const dims = raw.match(/([\d.]+)px\s+([\d.]+)px\s+([\d.]+)px/);
-    const a = raw.match(/,\s*([\d.]+)\)/);
-    shadow = dims
-      ? {
-          x: Number(dims[1]),
-          y: Number(dims[2]),
-          blur: Number(dims[3]),
-          alpha: a ? Number(a[1]) : 0.35,
-        }
-      : { x: 1.7, y: 1.7, blur: 8, alpha: 0.35 };
-    glowColor = cs.getPropertyValue("--input-focus-glow").trim() || glowColor;
+    readThemeParams();
     // 采样参数取自标题实际样式：加粗/放大自动落到粒子上（用户定案）
     const style = getComputedStyle(h1);
     const cssFont = parseFloat(style.fontSize) || 15;
@@ -309,8 +314,10 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
 
   return {
     refresh() {
-      // 主题换色后重建（accent 随主题）
-      build();
+      // 主题换色（2026-09-30 资源定案）：只重读辉光/落影参数 + 唤醒单帧重绘新色，
+      // 不再 build 重建——重建会全量重播开场汇聚动画（多层画布模糊 × 百余帧，
+      // 切主题资源峰值主因），粒子几何与主题无关无须重建
+      readThemeParams();
       wake();
     },
   };

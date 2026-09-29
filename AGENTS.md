@@ -52,8 +52,9 @@ core/             # Tauri 2 后端（框架文件须与 Cargo.toml 同住）
     whiteboard.rs # 业务纯逻辑：白板内容长度校验
     storage.rs    # SQLite Repository（todos/bubbles/whiteboard 表，参数化 SQL）
     paths.rs      # 运行时数据双落址解析（data/ 与 configs/，目录自建）
-    settings.rs   # 运行时设置持久化（窗口位置 + 气泡提醒上限 max_bubbles，JSON 原子写）
+    settings.rs   # 运行时设置持久化（窗口位置 + 气泡提醒上限 max_bubbles + 气泡热键，JSON 原子写）
     fullscreen.rs # 全屏让位（逐边包含判定纯函数 + user32 轮询线程）
+    hotkey.rs     # 全局气泡热键（PL015：组合键解析纯逻辑 TDD + RegisterHotKey 注册线程，Win32 直连零依赖）
     commands/     # Tauri 命令层（mod.rs 上下文与错误封装 / todo.rs / bubble.rs / whiteboard.rs / settings.rs）
 ui/               # Vue 前端（App.vue 三页签骨架 + src/components/ 十组件 + src/composables/ 组合式 + src/styles/ 样式层 + src/dev/ 冒烟基座；types.ts 镜像 IPC DTO）
 configs/          # 程序读的固定参数与用户参数（config.json 窗口位置，运行时写入，gitignore）
@@ -180,6 +181,8 @@ y.problems.md     # 问题与远期改进备忘录（只增不删、编号递增
 - **窗口位置保存失败不阻断关闭**（PL003.4 登记，2026-09-17）：场景——关闭窗口时读取/保存 config.json 失败；降级行为——错误落日志，关闭照常进行；理由——退出意图优先，位置丢失代价小（可再拖一次），不能因保存失败把用户困在应用里（沿 Pulse"退出前落库失败仍退出"先例）。
 - **设置文件越界 max_bubbles 静默钳制**（FIX003.8 登记，2026-09-28）：场景——config.json 为用户可手改的明文，max_bubbles 字段越界（<1 或 >20）；降级行为——加载点经共享钳制函数（settings::clamp_max_bubbles）静默收敛到 1/20 边界，不报错不崩；理由——配置非法不该崩常驻应用，钳制与设置板步进及命令层写路径同规（读写两路径单一来源）。
 - **关闭时设置锁中毒跳过保存**（FIX003.8 登记，2026-09-28）：场景——CloseRequested 时 AppContext.settings 锁中毒（持锁线程 panic 后遗症）；降级行为——跳过位置与上限保存落日志（锁中毒 Debug 串），关闭照常进行，磁盘现值不动；理由——以默认值透传保存会静默覆盖用户已存 max_bubbles（数据回退），跳过的代价（位置回默认位）小于覆盖真实设置。
+- **config.json 气泡热键非法静默回默认**（PL015.2 登记，2026-09-30）：场景——用户手改 config.json 的 bubble_hotkey 字段为解析器不认的组合；降级行为——加载点 hotkey::parse 失败静默回默认 Ctrl+Alt+C 落日志，不报错不崩；理由——配置非法不该崩常驻应用，与 max_bubbles 越界钳制同规（读写路径同源规范化）。
+- **气泡热键解析/注册失败不阻断启动**（PL015.5 登记，2026-09-30）：场景——启动时热键 parse 失败或 RegisterHotKey 失败（组合被其它程序占用）；降级行为——落日志继续启动，快捷键不可用但其余功能不受影响；设置板改热键重注册失败则回滚旧热键落库并红字提示（可见回退）；理由——热键是增强入口，缺失不伤主流程，占用属环境冲突应显形于设置板而非崩溃。
 
 ## 素材与环境陷阱
 

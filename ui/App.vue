@@ -22,7 +22,8 @@ import { syncHints } from "./src/composables/useBoardRead";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 const topbarEl = ref<HTMLElement | null>(null);
-// 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 重建粒子
+// 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 换色不重建（2026-09-30
+// 资源定案：重建会重播开场汇聚动画 = 切主题资源峰值主因）
 // （shallowRef：volar 对裸 let 的模板收窄会把回调内赋值判成 never，实测 TS2339）
 const titleFX = shallowRef<{ refresh: () => void } | null>(null);
 

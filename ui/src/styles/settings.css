@@ -368,3 +368,44 @@
     transition: none;
   }
 }
+
+/* —— 气泡捕获热键行（PL015.6）：组合显示钮（录制态高亮）+ 失败红字 —— */
+.hotkey-btn {
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.25));
+  border-radius: 8px;
+  padding: 6px 12px;
+  min-width: 96px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px; /* 与设置板行文字同字号（font:inherit 会继承板基础 16px，观感突兀） */
+  line-height: 1; /* 锁行盒：录制态 CJK 文案回退字体的 normal 行高更高，按钮会被撑高 0.8px（stepper-btn 同款惯例） */
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.hotkey-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.hotkey-btn.recording {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: hotkey-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes hotkey-pulse {
+  from {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  to {
+    background: rgba(255, 255, 255, 0.16);
+  }
+}
+
+.hotkey-error {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #e5484d;
+}

@@ -28,6 +28,7 @@ const props = defineProps<{
 const items = ref<BubbleItem[]>([]);
 const error = ref("");
 const copied = ref(false); // 占字态：捕获钮禁点 + 换 clipboard-check 图标文案
+const duplicate = ref(false); // 重复占字态（PL015.5 去重）：换 ✕ 图标 + "重复捕获，无效！"
 const confirmingClear = ref(false);
 
 // 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
@@ -113,16 +114,26 @@ const CLIPBOARD_ICON =
   '<svg class="cap-icon" viewBox="0 0 384 512"><path d="M280 64h40c35.3 0 64 28.7 64 64V448c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128C0 92.7 28.7 64 64 64h40 9.6C121 27.5 153.3 0 192 0s71 27.5 78.4 64H280zM64 112c-8.8 0-16 7.2-16 16V448c0 8.8 7.2 16 16 16H320c8.8 0 16-7.2 16-16V128c0-8.8-7.2-16-16-16H304v24c0 13.3-10.7 24-24 24H192 104c-13.3 0-24-10.7-24-24V112H64zm128-8a24 24 0 1 0 0-48 24 24 0 1 1 0 48z"></path></svg>';
 const CLIPBOARD_CHECK_ICON =
   '<svg class="cap-icon" viewBox="0 0 384 512"><path d="M192 0c-41.8 0-77.4 26.7-90.5 64H64C28.7 64 0 92.7 0 128V448c0 35.3 28.7 64 64 64H320c35.3 0 64-28.7 64-64V128c0-35.3-28.7-64-64-64H282.5C269.4 26.7 233.8 0 192 0zm0 64a32 32 0 1 1 0 64 32 32 0 1 1 0-64zM305 273L177 401c-9.4 9.4-24.6 9.4-33.9 0L79 337c-9.4-9.4-9.4-24.6 0-33.9s24.6-9.4 33.9 0l47 47L271 239c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9z"></path></svg>';
+const CLIPBOARD_X_ICON =
+  '<svg class="cap-icon" viewBox="0 0 384 512"><path d="M192 0c-41.8 0-77.4 26.7-90.5 64H64C28.7 64 0 92.7 0 128V448c0 35.3 28.7 64 64 64H320c35.3 0 64-28.7 64-64V128c0-35.3-28.7-64-64-64H282.5C269.4 26.7 233.8 0 192 0zm0 64a32 32 0 1 1 0 64 32 32 0 1 1 0-64zM143 239c9.4-9.4 24.6-9.4 33.9 0l15 15 15-15c9.4-9.4 24.6-9.4 33.9 0s9.4 24.6 0 33.9l-15 15 15 15c9.4 9.4 9.4 24.6 0 33.9s-24.6 9.4-33.9 0l-15-15-15 15c-9.4 9.4-24.6 9.4-33.9 0s-9.4-24.6 0-33.9l15-15-15-15c-9.4-9.4-9.4-24.6 0-33.9z"></path></svg>';
 
-/** 捕获剪贴板（Rust 真链路 bubble_capture）：成功播占字反馈 */
+/** 捕获剪贴板（Rust 真链路 bubble_capture）：成功播占字反馈；重复内容切
+ * "重复捕获，无效！"占字态（PL015.5 去重，手动与热键两入口同规） */
 async function capture(): Promise<void> {
   cancelClearConfirm();
   try {
-    await invoke("bubble_capture");
+    const outcome = await invoke<{
+      status: "added" | "duplicate";
+      item?: { id: number; text: string };
+    }>("bubble_capture");
     error.value = "";
-    copied.value = true;
+    duplicate.value = outcome.status === "duplicate";
+    copied.value = !duplicate.value;
     window.clearTimeout(copiedTimer);
-    copiedTimer = window.setTimeout(() => (copied.value = false), 1000);
+    copiedTimer = window.setTimeout(() => {
+      copied.value = false;
+      duplicate.value = false;
+    }, 1000);
     await refresh();
   } catch (err) {
     error.value = `捕获失败：${String(err)}`;
@@ -376,13 +387,17 @@ onUnmounted(() => {
 <template>
   <section class="bubbles">
     <div class="actions">
-      <!-- 捕获钮：占字态换 clipboard-check 图标 + "已捕获" + 50% 紫禁点（文案定案 2026-09-28） -->
-      <button class="capture" :disabled="copied" @click="capture">
-        <span v-if="!copied" class="cap-idle">
-          <span class="cap-icon" v-html="CLIPBOARD_ICON"></span>捕获剪贴板
+      <!-- 捕获钮：占字态换 clipboard-check 图标 + "已捕获" + 50% 紫禁点（文案定案 2026-09-28）；
+           重复占字态换 ✕ 图标 + "重复捕获，无效！"（PL015.5 去重定案 2026-09-30） -->
+      <button class="capture" :disabled="copied || duplicate" @click="capture">
+        <span v-if="duplicate" class="cap-idle">
+          <span class="cap-icon" v-html="CLIPBOARD_X_ICON"></span>重复捕获，无效！
+        </span>
+        <span v-else-if="copied" class="cap-idle">
+          <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已捕获
         </span>
         <span v-else class="cap-idle">
-          <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已捕获
+          <span class="cap-icon" v-html="CLIPBOARD_ICON"></span>捕获剪贴板
         </span>
       </button>
       <!-- 一键清空：红染玻璃卡；0 气泡灰染 disabled -->

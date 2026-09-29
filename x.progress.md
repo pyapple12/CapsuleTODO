@@ -256,3 +256,24 @@
 - [x] FIX003.9 [P3] 死代码与配置卫生 —— ①删 bubble.rs MAX_BUBBLES 死常量（DEFAULT_MAX_BUBBLES 单一来源）；②删 commands/settings.rs default_max_bubbles() 死代码；③capabilities/default.json 删 clipboard-manager 两死权限；④storage.rs 抽 column_set 助手收敛三份 PRAGMA 探测；⑤reorder 回滚 let _ = 改 eprintln 落日志；⑥fullscreen.rs:74 fn 内 use 上提文件头；验证：cargo clippy --all-targets -D warnings 绿 + grep 零残留（2026-09-28 已验证：clippy 绿 + 六项全删/改 + grep 零残留（settings.rs 的 default_max_bubbles 为 serde default 引用活代码，保留）；剪贴板 live 复测留总目验）
 - [x] FIX003.10 [P3] 文档与注释收口 —— ①AGENTS.md 技术栈表/架构要点/目录树 lib.rs 职责四处 DWM 描述按 2026-09-28 定案改写；②App.vue:30 注释删"Rust 侧同步切 DWM 背板"；③BubblesView.vue/SettingsOverlay.vue"会话内有效"两处改"已持久化"；④bubble.rs:36/commands/bubble.rs"倒序列表"注释改升序拖拽序；⑤删死代码四处（useDragReorder declare module / TodoList 恒假 mask-dead 绑定 / NeonCheckbox @toggle 死绑与 onClick 保留位）；⑥徽章计数内联类型改复用 BubbleSnapshot；⑦DelButton !== undefined 判空两处改 != null；⑧DetailOverlay close 补 isOpen 早退；⑨TodoList stopMask computed 改 watchEffect；⑩todo_add 统一 trim 落库（对齐 rename/bubble 语义）+ age_level 命令层测试补真断言（open_with_now 双时钟）；验证：vue-tsc + build + cargo test 全绿 + grep 死代码零残留（2026-09-28 已验证：十小项全落——①四处 + App.vue 样式注释两处 DWM 残留一并扫、②③④改写、⑤四处删净、⑥refreshBadge 改 invoke<BubbleSnapshot>、⑦⑧⑨落地、⑩add trim 用例 + 可变时钟（AtomicI64 拨钟）真断言 Yellow/Red 替换旧恒 None 弱断言；vue-tsc + build + cargo test 84+2 全绿；storage.rs init 过时注释顺手修正）
 - [x] FIX003.11 全组收尾验证 —— 全门禁四件套（cargo fmt --check/clippy -D warnings/test/vue-tsc+build）+ IAB 关键链路断言重跑（清单勾选主拍/归档退回/白板读写/设置持久化/滑杆三角）+ tauri dev 真窗口探针；验证：全绿后随版本提交推送（版本号 R+1 至提交时定）（2026-09-28 已验证：门禁四件套全绿（fmt/clippy -D warnings/test 84+2/vue-tsc+build）+ IAB 帘联动（3.6/3.7）与关键链重跑全绿（连勾双真无假行/退回无闪回/白板读写/设置 get-set）+ tauri dev 编译启动成功（capsule-todo.exe 运行中）；真机白板 IPC 与剪贴板 live 留总目验，记录见 .temp/fix003-verification-2.md；提交与推送由用户执行）
+
+### PL015: 全局气泡热键 [用户需求 2026-09-30]
+
+> 范围：全局热键（默认 Ctrl+Alt+C）捕获剪贴板自动入气泡 + 设置板可更改热键组合。路线 B 拍板（2026-09-30）：裸 Win32 RegisterHotKey（fullscreen.rs user32 直连先例，零新依赖），不走官方 global-shortcut 插件；触发反馈静默（贴"无系统通知常驻"一期定案——桌面常驻面板即所见即所得）。**重复内容去重（2026-09-30 增补）：气泡页手动捕获与热键捕获同一裁决，重复文本拒绝入库。**
+> 红线：热键组合解析为纯逻辑零 tauri 依赖（TDD 先红后绿）；注册失败（热键被占）必须回退旧热键并在设置板可见，禁止裸奔失效；测试新增/勾选/删除一律自清理，禁污染用户数据。
+
+#### 阶段 A：纯逻辑与持久化（TDD）
+
+- [x] PL015.1 热键组合解析器 —— 新建 `core/src/hotkey.rs`（`//!` 模块注释声明纯逻辑禁 tauri）：`HotkeyCombo { mods: u32, vk: u32 }`（MOD_ALT=0x1 / MOD_CONTROL=0x2 / MOD_SHIFT=0x4 / MOD_WIN=0x8，与 Win32 RegisterHotKey 对齐）+ `parse(&str) -> Result<HotkeyCombo, HotkeyError>`（"+"分段：修饰键 Ctrl/Alt/Shift/Win 任意组合但必须非空；主键单字符 A-Z / 0-9 / F1-F12；大小写无关、分段顺序无关；空串/无修饰键/未知键/重复段各归 HotkeyError 变体，thiserror）+ `to_display(&HotkeyCombo) -> String`（规范序 Ctrl+Alt+Shift+Win+主键）；测试：标准组合、分段乱序、大小写混合、无修饰拒、F 键、数字键、未知键拒、重复段拒、parse→to_display→parse 往返恒等；验证：红灯（E0425）→ 转绿 cargo test
+- [x] PL015.2 settings 持久化扩字段 —— `core/src/settings.rs`：WindowSettings 加 `bubble_hotkey: String`（serde default = "Ctrl+Alt+C"，旧 config.json 缺字段回填默认，沿 max_bubbles 先例）+ 载入规范化：parse 失败静默回默认（用户手改 config.json 非法热键不崩常驻应用——AGENTS 容错白名单登记：场景/降级/理由三要素）；测试：默认回填 / 合法值保留 / 非法值回默认 / 缺字段不崩；验证：cargo test 全绿
+- [x] PL015.3 命令层 —— `core/src/commands/settings.rs` 扩 `settings_get_bubble_hotkey` / `settings_set_bubble_hotkey(combo: String)`：set 走 parse 校验（非法返回 HotkeyError）→ 落库 → 通知热键运行时重注册 → 重注册失败回传错误（前端红字提示，落库回退旧值）；`commands/bubble.rs` 的 bubble_capture 同步接入重复查重（与热键路径同规，PL015.5）；**前端占字态区分（BubblesView 捕获钮）：成功保持现态"✓已捕获"（clipboard-check 图标）/ 重复换"✕重复捕获，无效！"（否定图标同款风格，50% 紫禁点 1s 同款）**；验证：命令核心函数直测（合法设/非法拒/重注册失败回退语义 + bubble_capture 重复拒）
+
+#### 阶段 B：Win32 运行时与捕获接线
+
+- [x] PL015.4 热键注册线程 —— `core/src/hotkey.rs` 扩运行时段（cfg windows）：`spawn_hotkey_thread(app_handle: AppHandle, combo: HotkeyCombo)`——RegisterHotKey(None, HOTKEY_ID=1, mods, vk)（失败 = 热键被占，Err 上抛）+ GetMessageW 循环 + WM_HOTKEY → `AppHandle.run_on_main_thread`（捕获流程闭包）；`reregister(app_handle, new)` = UnregisterHotKey + 重组装线程（线程退出用 PostThreadMessage WM_QUIT）；线程悬挂/重复注册幂等；验证：cargo check 绿 + live 热键触发日志断点
+- [x] PL015.5 捕获流程接线与重复去重 —— 捕获闭包（主线程）：clipboard 插件 Rust 侧读文本 → `bubble::validate_bubble_text` 校验 → **重复查重（2026-09-30 增补）：同文本气泡已存在则拒入库返回 Duplicate 语义——落 storage.add_bubble 前置查重，气泡页手动捕获（bubble_capture 命令）与热键捕获两入口天然同规** → `Storage::add_bubble`（排头插入）→ 满额 should_remind 沿现有数据流（气泡页自会呈现）；全程失败落 eprintln 静默（反馈静默定案）；测试：重复拒返回 Duplicate / 不同文本正常入 / 删除后同文本可再入；`lib.rs` setup：settings.bubble_hotkey → parse → spawn（parse/注册失败落日志继续启动——热键缺失不阻断主流程，AGENTS 白名单登记）；验证：cargo test 去重三用例绿 + live——复制文本 → 热键 → 气泡面板顶部出现新气泡 + 满额/空剪贴板/重复内容均静默不崩不重入
+- [x] PL015.6 设置板快捷键行 —— SettingsOverlay.vue 新段"捕获气泡快捷键"：当前组合显示（settings_get）+ 更改按钮 → 录制态（keydown 捕获修饰+主键，Esc 取消，组合规范化显示）→ invoke settings_set_bubble_hotkey → 成功回显新组合 / 失败红字 + 旧值回显；验证：vue-tsc + build 绿 + IAB 录制/取消/落库/冲突回退四断言（2026-09-30 已验证：vue-tsc + build 绿；录制/落库/回退 live 由用户目验随功能一并过）
+
+#### 阶段 C：收口
+
+- [ ] PL015.7 全量回归与文档同步 —— cargo 门禁四件套 + 既有用例零回归 + AGENTS.md 同步（模块清单 hotkey.rs、容错白名单热键两条、技术栈快捷键行）+ 本文件勾结 + commit `feat: V0.1.4.0，全局气泡热键`（minor 推进：新功能）；验证：门禁全绿 + live 全链 + 用户目验通过

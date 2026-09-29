@@ -1,5 +1,6 @@
-//! 设置命令（PL014.2）：气泡提醒上限的读取与持久化（config.json 与窗口位置共存）。
-//! 钳制 1~20 与 design stepper 同规；核心抽自由函数直测。
+//! 设置命令（PL014.2 气泡上限 + PL015 气泡热键）：读取与持久化（config.json 与
+//! 窗口位置共存）。上限钳制 1~20 与 design stepper 同规；热键 parse 校验 + 注册
+//! 失败回滚；核心抽自由函数直测。
 
 use tauri::State;
 
@@ -42,6 +43,59 @@ pub fn settings_set_max_bubbles_core(
     settings.max_bubbles = clamped;
     crate::settings::save(path, &settings).map_err(CommandError::from)?;
     Ok(())
+}
+
+/// 读取气泡捕获热键（PL015）
+#[tauri::command]
+pub fn settings_get_bubble_hotkey(ctx: State<'_, AppContext>) -> Result<String, CommandError> {
+    settings_get_bubble_hotkey_core(&ctx)
+}
+
+/// settings_get_bubble_hotkey 核心实现：读运行时设置副本
+pub fn settings_get_bubble_hotkey_core(ctx: &AppContext) -> Result<String, CommandError> {
+    let settings = ctx.lock_settings()?;
+    Ok(settings.bubble_hotkey.clone())
+}
+
+/// 写入气泡捕获热键（PL015）：parse 校验非法拒 → 落库 → 重注册全局热键；
+/// 重注册失败（热键被占等）回滚落库旧热键并上抛——前端红字提示旧值已恢复
+#[tauri::command]
+pub fn settings_set_bubble_hotkey(
+    combo: String,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<String, CommandError> {
+    let path =
+        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    let old = settings_get_bubble_hotkey_core(&ctx)?;
+    let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
+    #[cfg(target_os = "windows")]
+    if let Err(err) = crate::hotkey::reregister(app.clone(), normalized) {
+        // 回滚：恢复旧热键落库 + 重注册（旧热键此前注册成功，二次失败仅落日志）
+        let _ = settings_set_bubble_hotkey_core(&old, &path, &ctx);
+        let rollback = crate::hotkey::parse(&old).expect("旧热键必合法");
+        if let Err(re_err) = crate::hotkey::reregister(app, rollback) {
+            eprintln!("旧热键重注册失败：{re_err}");
+        }
+        return Err(CommandError::Hotkey(format!(
+            "热键注册失败（已回退 {old}）：{err}"
+        )));
+    }
+    Ok(crate::hotkey::to_display(&normalized))
+}
+
+/// settings_set_bubble_hotkey 核心实现：parse 校验 + 规范化落库（不含重注册，
+/// 命令壳负责；直测 = 临时路径内存库，禁触真实用户数据）
+pub fn settings_set_bubble_hotkey_core(
+    combo: &str,
+    path: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<crate::hotkey::HotkeyCombo, CommandError> {
+    let normalized = crate::hotkey::parse(combo)?;
+    let mut settings = ctx.lock_settings()?;
+    settings.bubble_hotkey = crate::hotkey::to_display(&normalized);
+    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    Ok(normalized)
 }
 
 #[cfg(test)]
@@ -100,5 +154,38 @@ mod tests {
             .expect("文件必须存在");
         assert_eq!(loaded.max_bubbles, 12);
         std::fs::remove_file(&tmp).expect("清理必须成功");
+    }
+
+    #[test]
+    fn hotkey_set_normalizes_and_persists() {
+        // PL015.3：热键 set 落库规范化显示串（不含重注册——壳层职责）
+        let tmp =
+            std::env::temp_dir().join(format!("capsule-hotkey-set-{}.json", std::process::id()));
+        let ctx = test_context();
+        let normalized =
+            settings_set_bubble_hotkey_core("alt+ctrl+c", &tmp, &ctx).expect("合法组合必须成功");
+        let settings = ctx.lock_settings().expect("锁必须成功");
+        assert_eq!(settings.bubble_hotkey, "Ctrl+Alt+C", "落库规范化串");
+        assert_eq!(normalized.vk, b'C' as u32);
+        let loaded = crate::settings::load(&tmp)
+            .expect("读取必须成功")
+            .expect("文件必须存在");
+        assert_eq!(loaded.bubble_hotkey, "Ctrl+Alt+C");
+        std::fs::remove_file(&tmp).expect("清理必须成功");
+    }
+
+    #[test]
+    fn hotkey_set_rejects_illegal_combo() {
+        // PL015.3：非法组合 parse 拒绝（HotkeyError 上抛），落库不动
+        let tmp =
+            std::env::temp_dir().join(format!("capsule-hotkey-bad-{}.json", std::process::id()));
+        let ctx = test_context();
+        let err = settings_set_bubble_hotkey_core("Space", &tmp, &ctx).expect_err("未知键必须被拒");
+        assert!(matches!(err, CommandError::Hotkey(_)));
+        assert_eq!(
+            ctx.lock_settings().expect("锁").bubble_hotkey,
+            crate::settings::DEFAULT_BUBBLE_HOTKEY.to_string(),
+            "落库不动"
+        );
     }
 }

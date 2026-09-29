@@ -49,6 +49,8 @@ pub enum CommandError {
     Whiteboard(String),
     /// 设置持久化失败（JSON/IO），承载错误说明
     Settings(String),
+    /// 全局热键解析/注册失败（PL015），承载错误说明
+    Hotkey(String),
     /// 共享锁中毒（持锁线程 panic 后遗症，不可恢复）
     Poisoned,
 }
@@ -62,8 +64,23 @@ impl serde::Serialize for CommandError {
             | CommandError::Storage(msg)
             | CommandError::Clipboard(msg)
             | CommandError::Whiteboard(msg)
-            | CommandError::Settings(msg) => serializer.serialize_str(msg),
+            | CommandError::Settings(msg)
+            | CommandError::Hotkey(msg) => serializer.serialize_str(msg),
             CommandError::Poisoned => serializer.serialize_str("共享锁中毒"),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandError::Todo(msg)
+            | CommandError::Storage(msg)
+            | CommandError::Clipboard(msg)
+            | CommandError::Whiteboard(msg)
+            | CommandError::Settings(msg)
+            | CommandError::Hotkey(msg) => write!(f, "{msg}"),
+            CommandError::Poisoned => write!(f, "共享锁中毒"),
         }
     }
 }
@@ -95,6 +112,12 @@ impl From<WhiteboardError> for CommandError {
 impl From<SettingsError> for CommandError {
     fn from(err: SettingsError) -> Self {
         CommandError::Settings(err.to_string())
+    }
+}
+
+impl From<crate::hotkey::HotkeyError> for CommandError {
+    fn from(err: crate::hotkey::HotkeyError) -> Self {
+        CommandError::Hotkey(err.to_string())
     }
 }
 

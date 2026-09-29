@@ -7,7 +7,8 @@ import { bindOverlayState, syncVeils } from "../composables/useVeils";
 // （跟随系统 + 日夜切换）与气泡提醒数量步进（1~20，PL014.2 起落库持久化）。与归档
 // 板同构：齿轮原点缩放飞出、双出口收板（再点齿轮 / 点板外）、三板互斥（经 opened
 // 上抛父级）、开板保色（.open）。主题三态落 :root[data-theme]（glass.css 双块令牌
-// 接管），换档后上抛 themeChanged 让标题粒子按新 accent 重建 =====
+// 接管），换档后上抛 themeChanged 让标题粒子按新 accent 换色（2026-09-30 资源
+// 定案：换色不重建）=====
 
 const emit = defineEmits<{
   opened: [];
@@ -93,7 +94,7 @@ const daynightDesc = computed(() =>
   themeIdx.value === 0 ? "跟随系统当前深浅自动切换" : "手动选择浅色或暗色",
 );
 
-/** 档位应用与界面同步：data-theme 落根元素（跟随 = 移除），换档后粒子按新 accent 重建 */
+/** 档位应用与界面同步：data-theme 落根元素（跟随 = 移除），换档后粒子按新 accent 换色 */
 function applyTheme(idx: 0 | 1 | 2): void {
   if (themeIdx.value === idx) return;
   themeIdx.value = idx;
@@ -132,12 +133,62 @@ function onSystemChange(): void {
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   systemDark.addEventListener("change", onSystemChange);
+  document.addEventListener("keydown", onHotkeyKeydown, true);
+  void invoke<string>("settings_get_bubble_hotkey")
+    .then((value) => (hotkeyText.value = value))
+    .catch((err) => console.error("热键读取失败", err));
 });
 
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   systemDark.removeEventListener("change", onSystemChange);
+  document.removeEventListener("keydown", onHotkeyKeydown, true);
 });
+
+// —— 气泡捕获热键（PL015.6）：当前组合显示 / 录制态全局按键录入 / 落库重注册 ——
+
+const hotkeyText = ref("");
+const hotkeyRecording = ref(false);
+const hotkeyError = ref("");
+
+/** 进入录制态：全局 capture 阶段拦截下一个组合键（Esc 取消） */
+function startHotkeyRecord(): void {
+  hotkeyError.value = "";
+  hotkeyRecording.value = true;
+}
+
+/** 录制态按键分流：修饰键单独按下继续等待；主键（字母/数字/F1-F12）完成组合；
+ * Esc 取消；无修饰键的主键忽略（与 Rust parse 同规防落库即拒） */
+function onHotkeyKeydown(e: KeyboardEvent): void {
+  if (!hotkeyRecording.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") {
+    hotkeyRecording.value = false;
+    return;
+  }
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.altKey) mods.push("Alt");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.metaKey) mods.push("Win");
+  if (mods.length === 0) return; // 无修饰键：等待修饰键先按下
+  if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return; // 仍在按修饰键
+  const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  if (!/^[A-Z0-9]$/.test(mainKey) && !/^F([1-9]|1[0-2])$/.test(mainKey)) return; // 不支持的主键忽略
+  hotkeyRecording.value = false;
+  void saveHotkey([...mods, mainKey].join("+"));
+}
+
+/** 落库 + 重注册：成功回显规范化组合；失败红字（Rust 已回滚旧热键） */
+async function saveHotkey(combo: string): Promise<void> {
+  try {
+    hotkeyText.value = await invoke<string>("settings_set_bubble_hotkey", { combo });
+    hotkeyError.value = "";
+  } catch (err) {
+    hotkeyError.value = String(err);
+  }
+}
 
 // —— 气泡提醒数量步进（panels.js 同款）：范围 1~20 钳制，步进即落库持久化（PL014.2） ——
 
@@ -251,6 +302,22 @@ async function step(delta: -1 | 1): Promise<void> {
             +
           </button>
         </div>
+      </div>
+      <div class="setting-row inline">
+        <div>
+          <p class="setting-name">气泡捕获热键</p>
+          <p class="setting-desc">
+            {{ hotkeyRecording ? "按下新组合键（Esc 取消）" : "任意应用复制文本后按此键捕获" }}
+          </p>
+          <p v-if="hotkeyError" class="hotkey-error">{{ hotkeyError }}</p>
+        </div>
+        <button
+          class="hotkey-btn"
+          :class="{ recording: hotkeyRecording }"
+          @click="startHotkeyRecord"
+        >
+          {{ hotkeyRecording ? "录制中…" : hotkeyText || "未设置" }}
+        </button>
       </div>
     </div>
   </div>

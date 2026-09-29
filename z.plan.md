@@ -376,3 +376,17 @@
 ### 三、亮点
 
 SQL 全参数化零拼接；迁移逐列幂等可断点续迁；时间源全注入零 sleep；锁序纪律全路径合规无反向；types.ts 与 serde 契约零漂移；mock-invoke 22 条命令语义与 Rust 注册面一致（唯覆盖缺口见 P1）；delConfirmBus 注册注销三处对称。
+
+## 附录 PL015：全局气泡热键（2026-09-30 立项）
+
+> 背景：用户需求——任何应用里复制文本后按全局热键，自动捕获剪贴板入气泡；热键组合可在设置板更改。路线 B 拍板（2026-09-30）：裸 Win32 RegisterHotKey（fullscreen.rs user32 直连先例，零新依赖），不走官方 global-shortcut 插件。
+> 方案要点：
+>
+> - **热键解析器（纯逻辑 TDD）**：`core/src/hotkey.rs`——"Ctrl+Alt+C" ↔ HotkeyCombo{mods, vk}（MOD_* 常量与 Win32 对齐），parse/to_display 往返恒等，非法组合 thiserror 报错
+> - **注册运行时**：RegisterHotKey + GetMessageW 循环线程（fullscreen.rs 先例），WM_HOTKEY → AppHandle.run_on_main_thread 投递捕获流程；reregister = Unregister + 重组装线程（PostThreadMessage WM_QUIT）；注册失败（热键被占）Err 上抛不裸奔
+> - **捕获流程（与气泡页同一条数据通路）**：Rust 侧读剪贴板 → bubble 校验 → add_bubble 排头插入 → 满 5 走现有满额数据流（气泡页自会呈现）；全程失败落日志静默——贴"无系统通知常驻"一期定案，桌面常驻面板即反馈
+> - **重复内容去重（2026-09-30 增补）**：气泡页手动捕获与热键捕获**同一裁决**——内容与现存气泡重复时拒绝入库（数据层查重，两入口天然同规）；返回 Duplicate 语义供前端提示，提示形态定案 = 捕获钮占字态复用（成功"✓已捕获" clipboard-check 图标 / 重复"✕重复捕获，无效！"否定图标同款风格，50% 紫禁点 1s 同款），热键路径天然静默
+> - **设置板快捷键行**：当前组合显示 + 录制态（keydown 捕获修饰+主键，Esc 取消）→ 落 config.json 扩展字段 bubble_hotkey（默认 Ctrl+Alt+C，旧文件回填默认，非法值静默回默认）→ 触发重注册；冲突红字 + 回退旧热键
+>
+> 红线：解析器纯逻辑零 tauri 依赖（TDD 先红后绿）；注册失败必须可见回退禁止裸奔失效；测试数据自清理禁污染用户库；AGENTS 容错白名单登记两条（非法热键回默认 / 热键缺失不阻断启动）。
+> 状态：🚧 已立项未开工（任务组见 x.progress.md PL015，7 条三阶段；完成时 commit `feat: V0.1.4.0，全局气泡热键` minor 推进）

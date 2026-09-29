@@ -11,6 +11,32 @@ use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
 use crate::bubble::BubbleItem;
+
+/// 气泡新增结果（PL015.5 去重裁决）：重复文本拒入库不是错误——手动捕获据此切换
+/// "重复捕获，无效！"占字态，热键路径据此静默；Added 携带回填 id 的新条目
+#[derive(Debug, Clone)]
+pub enum BubbleAddOutcome {
+    /// 新增成功（含回填 id 的条目）
+    Added(BubbleItem),
+    /// 同文本气泡已存在，未入库
+    Duplicate,
+}
+
+impl BubbleAddOutcome {
+    /// 测试与仅关心新增的调用方：取新增条目（Duplicate 时 panic——调用方应先分支）
+    pub fn added_item(self) -> BubbleItem {
+        match self {
+            BubbleAddOutcome::Added(item) => item,
+            BubbleAddOutcome::Duplicate => panic!("气泡新增意外重复"),
+        }
+    }
+
+    /// 是否重复拒入库
+    pub fn is_duplicate(&self) -> bool {
+        matches!(self, BubbleAddOutcome::Duplicate)
+    }
+}
+
 use crate::todo::TodoItem;
 
 /// 存储层错误：SQLite 透传 / IO（目录自建失败）/ 指定条目不存在 / 重排 id 集合不合法
@@ -301,19 +327,28 @@ impl Storage {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验），返回含回填 id 的条目；
+    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验；重复文本拒入库
+    /// 返回 Duplicate——PL015.5 去重裁决，手动捕获与热键捕获两入口天然同规）；
     /// sort_order = 现存最小值 − 1（**排头插入**——design captureBubble unshift 语义：
     /// 新捕获的气泡永远在最上，升序输出即新在前；拖拽重排后取 MIN−1 依然排头）
-    pub fn add_bubble(&self, text: &str) -> Result<BubbleItem, StorageError> {
+    pub fn add_bubble(&self, text: &str) -> Result<BubbleAddOutcome, StorageError> {
+        let dup: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM bubbles WHERE text = ?1",
+            [text],
+            |row| row.get(0),
+        )?;
+        if dup > 0 {
+            return Ok(BubbleAddOutcome::Duplicate);
+        }
         self.conn.execute(
             "INSERT INTO bubbles(text, sort_order)
              VALUES (?1, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM bubbles))",
             [text],
         )?;
-        Ok(BubbleItem {
+        Ok(BubbleAddOutcome::Added(BubbleItem {
             id: self.conn.last_insert_rowid(),
             text: text.to_string(),
-        })
+        }))
     }
 
     /// 气泡列表：按 sort_order 升序（拖拽序；新捕获排头插入 = 展示序与实验场
@@ -565,8 +600,8 @@ mod tests {
     #[test]
     fn bubble_add_list_roundtrip() {
         let st = storage();
-        let a = st.add_bubble("片段一").expect("写入必须成功");
-        let b = st.add_bubble("片段二").expect("写入必须成功");
+        let a = st.add_bubble("片段一").expect("写入必须成功").added_item();
+        let b = st.add_bubble("片段二").expect("写入必须成功").added_item();
         assert_eq!(a.id, 1);
         assert_eq!(b.id, 2);
         let ids: Vec<i64> = st
@@ -593,11 +628,48 @@ mod tests {
     #[test]
     fn bubble_clear_returns_count_and_empties() {
         let st = storage();
-        st.add_bubble("一").expect("写入必须成功");
-        st.add_bubble("二").expect("写入必须成功");
+        st.add_bubble("一").expect("写入必须成功").added_item();
+        st.add_bubble("二").expect("写入必须成功").added_item();
         let removed = st.clear_bubbles().expect("清空必须成功");
         assert_eq!(removed, 2);
         assert_eq!(st.list_bubbles().expect("读取必须成功").len(), 0);
+    }
+
+    #[test]
+    fn bubble_add_duplicate_returns_duplicate_outcome() {
+        // PL015.5 去重裁决：同文本拒入库（手动捕获与热键捕获两入口同规）
+        let st = storage();
+        let first = st.add_bubble("重复片段").expect("写入必须成功");
+        assert!(!first.is_duplicate());
+        let second = st.add_bubble("重复片段").expect("查询必须成功");
+        assert!(second.is_duplicate(), "重复文本必须返回 Duplicate");
+        assert_eq!(
+            st.list_bubbles().expect("读取必须成功").len(),
+            1,
+            "重复不入库"
+        );
+    }
+
+    #[test]
+    fn bubble_add_distinct_text_still_added() {
+        // 去重只拦同文本：不同文本正常新增
+        let st = storage();
+        st.add_bubble("片段一").expect("写入必须成功").added_item();
+        st.add_bubble("片段二").expect("写入必须成功").added_item();
+        assert_eq!(st.list_bubbles().expect("读取必须成功").len(), 2);
+    }
+
+    #[test]
+    fn bubble_add_duplicate_allows_readd_after_removal() {
+        // 删除后同文本可再入（去重按现存集合裁决，非历史黑名单）
+        let st = storage();
+        let item = st
+            .add_bubble("临时片段")
+            .expect("写入必须成功")
+            .added_item();
+        st.remove_bubble(item.id).expect("删除必须成功");
+        let re = st.add_bubble("临时片段").expect("写入必须成功");
+        assert!(!re.is_duplicate(), "删除后可再添加同文本");
     }
 
     #[test]
@@ -922,9 +994,9 @@ mod tests {
     #[test]
     fn reorder_bubbles_persists_new_order() {
         let st = storage();
-        let a = st.add_bubble("泡一").expect("写入必须成功");
-        let b = st.add_bubble("泡二").expect("写入必须成功");
-        let c = st.add_bubble("泡三").expect("写入必须成功");
+        let a = st.add_bubble("泡一").expect("写入必须成功").added_item();
+        let b = st.add_bubble("泡二").expect("写入必须成功").added_item();
+        let c = st.add_bubble("泡三").expect("写入必须成功").added_item();
         // 气泡全量集重排：list_bubbles 输出 = 传入序（前端展示序即存储序）
         st.reorder_bubbles(&[c.id, a.id, b.id])
             .expect("重排必须成功");
@@ -940,8 +1012,8 @@ mod tests {
     #[test]
     fn reorder_bubbles_partial_or_ghost_is_error() {
         let st = storage();
-        let a = st.add_bubble("泡一").expect("写入必须成功");
-        let _b = st.add_bubble("泡二").expect("写入必须成功");
+        let a = st.add_bubble("泡一").expect("写入必须成功").added_item();
+        let _b = st.add_bubble("泡二").expect("写入必须成功").added_item();
         assert!(matches!(
             st.reorder_bubbles(&[a.id]),
             Err(StorageError::ReorderMismatch(_))

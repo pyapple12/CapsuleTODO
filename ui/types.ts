@@ -40,3 +40,6 @@ export interface BubbleSnapshot {
   /** 是否达到提醒阈值 */
   remind: boolean;
 }
+
+/** 气泡捕获结果（镜像 BubbleCaptureOutcome；duplicate = 重复内容未入库，PL015.5） */
+export type BubbleCaptureOutcome = { status: "added"; item: BubbleItem } | { status: "duplicate" };

@@ -8,6 +8,7 @@ pub mod commands;
 pub mod fullscreen;
 #[cfg(target_os = "windows")]
 pub mod glass_backdrop;
+pub mod hotkey;
 pub mod paths;
 pub mod settings;
 pub mod storage;
@@ -59,8 +60,8 @@ fn position_on_monitor(window: &WebviewWindow, x: i32, y: i32) -> bool {
 }
 
 /// 保存窗口位置到 configs/config.json；失败落日志不阻断关闭（容错白名单④，退出意图优先）。
-/// max_bubbles 从运行时设置透传保留（设置与位置共存一份 config.json）
-fn save_window_position(window: &tauri::Window, max_bubbles: u32) {
+/// 运行时设置整体透传保留（位置与 max_bubbles/热键共存一份 config.json）
+fn save_window_position(window: &tauri::Window, runtime: &settings::WindowSettings) {
     let path = match paths::settings_path() {
         Ok(path) => path,
         Err(err) => {
@@ -75,7 +76,8 @@ fn save_window_position(window: &tauri::Window, max_bubbles: u32) {
                 &WindowSettings {
                     x: pos.x,
                     y: pos.y,
-                    max_bubbles,
+                    max_bubbles: runtime.max_bubbles,
+                    bubble_hotkey: runtime.bubble_hotkey.clone(),
                 },
             ) {
                 eprintln!("窗口位置保存失败：{err}");
@@ -132,6 +134,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::whiteboard::whiteboard_save,
             commands::settings::settings_get_max_bubbles,
             commands::settings::settings_set_max_bubbles,
+            commands::settings::settings_get_bubble_hotkey,
+            commands::settings::settings_set_bubble_hotkey,
         ])
         .setup(|app| {
             let window = app
@@ -141,7 +145,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             //（文件不存在回默认 = 白名单③；损坏 JSON 严格报错不在此列）。
             // 设置自 builder 前加载进 AppContext（PL014.2），此处直接读运行时副本
             let saved: settings::WindowSettings = match app.state::<AppContext>().lock_settings() {
-                Ok(guard) => *guard, // WindowSettings: Copy
+                Ok(guard) => guard.clone(), // WindowSettings 含 String 字段（热键），clone 取副本
                 Err(_) => return Err("运行时设置锁中毒".into()),
             };
             let position = match position_on_monitor(&window, saved.x, saved.y) {
@@ -164,6 +168,31 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 全屏让位监视（PL003，Windows 实机验证平台）
             #[cfg(target_os = "windows")]
             fullscreen::spawn_fullscreen_watcher(app.handle().clone());
+            // 气泡热键（PL015）：启动注册全局热键，触发即捕获剪贴板入气泡；
+            // 注册失败落日志不阻断启动（白名单：热键缺失不阻断主流程）
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager as _;
+                let hotkey_text = app
+                    .state::<AppContext>()
+                    .lock_settings()
+                    .map(|s| s.bubble_hotkey.clone())
+                    .unwrap_or_else(|_| settings::DEFAULT_BUBBLE_HOTKEY.to_string());
+                let combo = hotkey::parse(&hotkey_text).unwrap_or_else(|err| {
+                    eprintln!(
+                        "气泡热键解析失败（{err}），回默认 {}",
+                        settings::DEFAULT_BUBBLE_HOTKEY
+                    );
+                    hotkey::parse(settings::DEFAULT_BUBBLE_HOTKEY).expect("默认热键必合法")
+                });
+                let handle = app.handle().clone();
+                hotkey::set_on_hotkey(Box::new(move || {
+                    commands::bubble::bubble_capture_from_clipboard_quiet(&handle);
+                }));
+                if let Err(err) = hotkey::reregister(app.handle().clone(), combo) {
+                    eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -173,7 +202,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // 锁中毒跳过保存落日志（AGENTS 容错白名单登记项）：默认值写盘会静默
                 // 覆盖用户已存设置——位置同弃（下次启动回默认位），磁盘现值不动
                 match window.app_handle().state::<AppContext>().lock_settings() {
-                    Ok(guard) => save_window_position(window, guard.max_bubbles),
+                    Ok(guard) => save_window_position(window, &guard),
                     Err(err) => eprintln!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}"),
                 }
             }
