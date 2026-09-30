@@ -60,7 +60,6 @@ let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
 let emptyTimer = 0; // showEmpty 兜底句柄（卸载清理，FIX004.20）
-let clearFxTimer = 0; // 清空集体退场收尾句柄（卸载清理，FIX004.20）
 let unlistenBubbleChanged: UnlistenFn | undefined; // 热键失焦刷新监听句柄（PL016.1）
 
 const clearBtn = ref<HTMLElement | null>(null);
@@ -218,7 +217,8 @@ async function onClearClick(): Promise<void> {
       void li.offsetHeight; // 强制回流：锁定起步高度
       li.style.height = "0";
     });
-    clearFxTimer = window.setTimeout(async () => {
+    // 收尾句柄故意不存（不可被卸载清理）：见 onUnmounted 注记——用户已确认的清空必须完成
+    window.setTimeout(async () => {
       try {
         await invoke("bubble_clear");
         await refresh();
@@ -389,7 +389,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, emptyTimer, clearFxTimer].forEach((t) =>
+  // clearFxTimer（清空集体退场收尾）豁免清理：用户已点"确认清空"，300ms 收尾
+  // 落库必须完成——切页取消会让"确认"被吞（数据残留 + 退场动画已播 = 状态诡异）。
+  // 收尾回调仅 invoke + refresh，无报错路径（IAB 实测 errs=0），卸载后执行静默无害
+  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, emptyTimer].forEach((t) =>
     window.clearTimeout(t),
   );
   unlistenBubbleChanged?.();

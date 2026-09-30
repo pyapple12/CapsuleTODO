@@ -2,7 +2,7 @@
 //! 窗口位置共存）。上限钳制 1~20 与 design stepper 同规；热键 parse 校验 + 注册
 //! 失败回滚；核心抽自由函数直测。
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use super::{AppContext, CommandError};
 use crate::settings::clamp_max_bubbles;
@@ -99,6 +99,81 @@ pub fn settings_set_bubble_hotkey_core(
     Ok(normalized)
 }
 
+/// 读取窗口置顶开关（PL017）
+#[tauri::command]
+pub fn settings_get_always_on_top(ctx: State<'_, AppContext>) -> Result<bool, CommandError> {
+    settings_get_always_on_top_core(&ctx)
+}
+
+/// settings_get_always_on_top 核心实现：读运行时设置副本
+pub fn settings_get_always_on_top_core(ctx: &AppContext) -> Result<bool, CommandError> {
+    Ok(ctx.lock_settings()?.always_on_top)
+}
+
+/// 写入窗口置顶开关（PL017）：落库 → 主窗 set_always_on_top 即时生效
+#[tauri::command]
+pub fn settings_set_always_on_top(
+    on: bool,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    let path =
+        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    settings_set_always_on_top_core(on, &path, &ctx)?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| CommandError::Settings("主窗口不存在".to_string()))?;
+    window
+        .set_always_on_top(on)
+        .map_err(|err| CommandError::Settings(format!("置顶切换失败：{err}")))?;
+    Ok(())
+}
+
+/// settings_set_always_on_top 核心实现：更新运行时设置 + 原子落盘（窗口操作在
+/// 壳层；直测 = 临时路径内存库，禁触真实用户数据）
+pub fn settings_set_always_on_top_core(
+    on: bool,
+    path: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let mut settings = ctx.lock_settings()?;
+    settings.always_on_top = on;
+    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    Ok(())
+}
+
+/// 读取贴边吸附开关（PL017）
+#[tauri::command]
+pub fn settings_get_snap_to_edge(ctx: State<'_, AppContext>) -> Result<bool, CommandError> {
+    settings_get_snap_to_edge_core(&ctx)
+}
+
+/// settings_get_snap_to_edge 核心实现：读运行时设置副本
+pub fn settings_get_snap_to_edge_core(ctx: &AppContext) -> Result<bool, CommandError> {
+    Ok(ctx.lock_settings()?.snap_to_edge)
+}
+
+/// 写入贴边吸附开关（PL017）：落库即生效（吸附在 Moved 事件层每轮读运行时设置，
+/// 无窗口操作）；直测 = 临时路径内存库，禁触真实用户数据
+#[tauri::command]
+pub fn settings_set_snap_to_edge(on: bool, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+    let path =
+        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    settings_set_snap_to_edge_core(on, &path, &ctx)
+}
+
+/// settings_set_snap_to_edge 核心实现：更新运行时设置 + 原子落盘
+pub fn settings_set_snap_to_edge_core(
+    on: bool,
+    path: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let mut settings = ctx.lock_settings()?;
+    settings.snap_to_edge = on;
+    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -188,5 +263,31 @@ mod tests {
             crate::settings::DEFAULT_BUBBLE_HOTKEY.to_string(),
             "落库不动"
         );
+    }
+
+    #[test]
+    fn window_prefs_set_and_get_roundtrip() {
+        // PL017.3：置顶/吸附开关 core 直测——set 落库 + get 回读一致（临时路径）
+        let tmp =
+            std::env::temp_dir().join(format!("capsule-prefs-cmd-{}.json", std::process::id()));
+        let ctx = test_context();
+        assert!(
+            settings_get_always_on_top_core(&ctx).expect("读必须成功"),
+            "默认置顶开"
+        );
+        assert!(
+            settings_get_snap_to_edge_core(&ctx).expect("读必须成功"),
+            "默认吸附开"
+        );
+        settings_set_always_on_top_core(false, &tmp, &ctx).expect("写必须成功");
+        settings_set_snap_to_edge_core(false, &tmp, &ctx).expect("写必须成功");
+        assert!(!settings_get_always_on_top_core(&ctx).expect("读必须成功"));
+        assert!(!settings_get_snap_to_edge_core(&ctx).expect("读必须成功"));
+        // 落盘重读确认持久化
+        let loaded = crate::settings::load(&tmp)
+            .expect("读取必须成功")
+            .expect("文件必须存在");
+        assert!(!loaded.always_on_top && !loaded.snap_to_edge);
+        std::fs::remove_file(&tmp).expect("清理必须成功");
     }
 }

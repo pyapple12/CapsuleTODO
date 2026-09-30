@@ -163,6 +163,9 @@ function onSettingsOpened(): void {
 
 // 气泡提醒数量（PL014.2 持久化）：启动自 config.json 加载，设置板步进落库
 const maxBubbles = ref(5);
+// 窗口偏好（PL017 持久化）：置顶与贴边吸附开关，设置板 toggle 落库
+const alwaysOnTop = ref(true);
+const snapToEdge = ref(true);
 
 /** 拉取气泡提醒上限（启动时初始化；失败保持默认 5） */
 async function refreshMaxBubbles(): Promise<void> {
@@ -170,6 +173,16 @@ async function refreshMaxBubbles(): Promise<void> {
     maxBubbles.value = await invoke<number>("settings_get_max_bubbles");
   } catch (err) {
     console.error("settings_get_max_bubbles 拉取失败", err);
+  }
+}
+
+/** 拉取窗口偏好开关（PL017：置顶/贴边吸附；失败保持默认 true） */
+async function refreshWindowPrefs(): Promise<void> {
+  try {
+    alwaysOnTop.value = await invoke<boolean>("settings_get_always_on_top");
+    snapToEdge.value = await invoke<boolean>("settings_get_snap_to_edge");
+  } catch (err) {
+    console.error("窗口偏好拉取失败", err);
   }
 }
 
@@ -228,6 +241,7 @@ onMounted(async () => {
   await refreshBadge();
   await refreshArchive();
   await refreshMaxBubbles();
+  await refreshWindowPrefs();
   // 标题粒子化（design text-particles.js 移植）：reduced-motion 下不初始化回退静态文字
   if (titleEl.value) titleFX.value = initTitleParticles(titleEl.value);
   // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗
@@ -282,6 +296,8 @@ onUnmounted(() => {
     <SettingsOverlay
       ref="settingsRef"
       v-model:max-bubbles="maxBubbles"
+      v-model:always-on-top="alwaysOnTop"
+      v-model:snap-to-edge="snapToEdge"
       @opened="onSettingsOpened"
       @theme-changed="titleFX?.refresh()"
     />

@@ -14,11 +14,17 @@ const emit = defineEmits<{
   opened: [];
   themeChanged: [];
   "update:maxBubbles": [value: number];
+  "update:alwaysOnTop": [value: boolean];
+  "update:snapToEdge": [value: boolean];
 }>();
 
 const props = defineProps<{
   /** 气泡提醒数量（父级持有，BubblesView 警告阈值同源） */
   maxBubbles: number;
+  /** 窗口置顶开关（PL017，父级持有落库） */
+  alwaysOnTop: boolean;
+  /** 贴边吸附开关（PL017，父级持有落库） */
+  snapToEdge: boolean;
 }>();
 
 const overlay = ref<HTMLElement | null>(null);
@@ -230,6 +236,30 @@ async function step(delta: -1 | 1): Promise<void> {
     settingBusy = false;
   }
 }
+
+/** 置顶开关（PL017）：invoke 落库（Rust 侧即时 set_always_on_top），失败可见不改观感 */
+async function toggleAlwaysOnTop(e: Event): Promise<void> {
+  const on = (e.target as HTMLInputElement).checked;
+  try {
+    await invoke("settings_set_always_on_top", { on });
+    emit("update:alwaysOnTop", on);
+  } catch (err) {
+    console.error("保存置顶开关失败", err);
+    (e.target as HTMLInputElement).checked = !on;
+  }
+}
+
+/** 贴边吸附开关（PL017）：invoke 落库，失败可见不改观感 */
+async function toggleSnapToEdge(e: Event): Promise<void> {
+  const on = (e.target as HTMLInputElement).checked;
+  try {
+    await invoke("settings_set_snap_to_edge", { on });
+    emit("update:snapToEdge", on);
+  } catch (err) {
+    console.error("保存贴边吸附开关失败", err);
+    (e.target as HTMLInputElement).checked = !on;
+  }
+}
 </script>
 
 <template>
@@ -295,6 +325,30 @@ async function step(delta: -1 | 1): Promise<void> {
                 </div>
               </div>
             </div>
+          </label>
+        </div>
+      </div>
+      <div class="setting-row inline">
+        <div>
+          <p class="setting-name">窗口置顶</p>
+          <p class="setting-desc">关闭后板子允许被其他窗口遮挡</p>
+        </div>
+        <div class="setting-control">
+          <label class="switch">
+            <input type="checkbox" :checked="alwaysOnTop" @change="toggleAlwaysOnTop" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="setting-row inline">
+        <div>
+          <p class="setting-name">贴边吸附</p>
+          <p class="setting-desc">拖到屏幕边缘 50px 内自动贴边停驻</p>
+        </div>
+        <div class="setting-control">
+          <label class="switch">
+            <input type="checkbox" :checked="snapToEdge" @change="toggleSnapToEdge" />
+            <span class="slider"></span>
           </label>
         </div>
       </div>

@@ -12,17 +12,112 @@ pub mod glass_backdrop;
 pub mod hotkey;
 pub mod paths;
 pub mod settings;
+pub mod snap;
 pub mod storage;
 pub mod todo;
 pub mod whiteboard;
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{Emitter, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 
 use commands::AppContext;
 use settings::WindowSettings;
 use storage::Storage;
+
+// —— 贴边吸附状态机（PL017.4，A 案松手吸附）——
+// 松手判定（用户实测三轮修正）：**左键状态为准，Moved 静默为辅**——鼠标悬停/
+// 慢速拖动都会造成 Moved 静默 >150ms，仅凭静默会在拖动中误吸（"还没松手就吸
+// 走又回到手里"）；左键按住 = 必在拖动，绝不吸附。启动恢复的单次程序性 Moved
+// 左键未按 → 不置位 → 默认落位 40px 不被吸
+static LAST_MOVED_MS: AtomicU64 = AtomicU64::new(0);
+static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DRAG_SNAP_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+mod win_input {
+    /// 鼠标左键是否按下（GetAsyncKeyState 高位 = 物理/合成按下中）
+    pub fn left_down() -> bool {
+        const VK_LBUTTON: i32 = 0x01;
+        const PRESSED: u16 = 0x8000;
+        unsafe { (GetAsyncKeyState(VK_LBUTTON) as u16) & PRESSED != 0 }
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+    }
+}
+
+/// 当前系统毫秒时刻（吸附防抖时间源；回拨由 saturating_sub 兜底）
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 贴边吸附判定与落位（PL017.4）：读开关（锁失败跳过——吸附是体验增强层，
+/// 容错白名单候选）→ 取所在显示器 → snap_position 算修正位 → 与当前位不同
+/// 才 set_position（幂等防环：吸附位仍在阈值内，不判等会 Moved→snap 死循环）。
+/// 坐标基准 = **视觉（client）矩形**：Windows 无边框窗口带不可见 resize 边
+/// （左右 ~8px、顶 0——用户截图像素实测右吸附落位 13px = 5+8），outer 矩形
+/// 直接判定会视觉偏移；用 inner_position/inner_size 取视觉矩形参与判定，
+/// 落位换算回 outer 坐标（偏移 = inner − outer 自动吸收缩放与隐形边）
+fn snap_if_needed(window: &tauri::Window) {
+    let snap_on = window
+        .app_handle()
+        .state::<AppContext>()
+        .lock_settings()
+        .map(|s| s.snap_to_edge)
+        .unwrap_or_else(|err| {
+            eprintln!("贴边吸附：设置锁读取失败，跳过吸附：{err:?}");
+            false
+        });
+    if !snap_on {
+        return;
+    }
+    let Ok(monitor) = window.current_monitor() else {
+        return;
+    };
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let Ok(outer) = window.outer_position() else {
+        return;
+    };
+    let Ok(inner) = window.inner_position() else {
+        return;
+    };
+    let Ok(vsize) = window.inner_size() else {
+        return;
+    };
+    let mp = monitor.position();
+    let ms = monitor.size();
+    let (sx, sy) = snap::snap_position(
+        snap::RectI32 {
+            x: inner.x,
+            y: inner.y,
+            w: vsize.width as i32,
+            h: vsize.height as i32,
+        },
+        snap::RectI32 {
+            x: mp.x,
+            y: mp.y,
+            w: ms.width as i32,
+            h: ms.height as i32,
+        },
+    );
+    // 视觉目标 → outer 目标（隐形边偏移 = inner − outer）
+    let (tx, ty) = (sx - (inner.x - outer.x), sy - (inner.y - outer.y));
+    if (tx, ty) != (outer.x, outer.y) {
+        if let Err(err) = window.set_position(PhysicalPosition::new(tx, ty)) {
+            eprintln!("贴边吸附落位失败：{err}");
+        }
+    }
+}
 
 /// 默认落位：主屏右下距边 40px（窗口物理尺寸按当前缩放比换算）
 fn default_position(
@@ -79,6 +174,8 @@ fn save_window_position(window: &tauri::Window, runtime: &settings::WindowSettin
                     y: pos.y,
                     max_bubbles: runtime.max_bubbles,
                     bubble_hotkey: runtime.bubble_hotkey.clone(),
+                    always_on_top: runtime.always_on_top,
+                    snap_to_edge: runtime.snap_to_edge,
                 },
             ) {
                 eprintln!("窗口位置保存失败：{err}");
@@ -136,6 +233,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_max_bubbles,
             commands::settings::settings_get_bubble_hotkey,
             commands::settings::settings_set_bubble_hotkey,
+            commands::settings::settings_get_always_on_top,
+            commands::settings::settings_set_always_on_top,
+            commands::settings::settings_get_snap_to_edge,
+            commands::settings::settings_set_snap_to_edge,
         ])
         .setup(|app| {
             let window = app
@@ -153,6 +254,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 false => default_position(&window)?,
             };
             window.set_position(position)?;
+            // 置顶开关（PL017.1）：conf 静态 true 仅初值，按 config.json 校正生效
+            window.set_always_on_top(saved.always_on_top)?;
             // 窗口框架整定（SYSTEMBACKDROP 实验）：深色模式声明（背板基调对齐主题）
             // + 激活边框隐藏（Win11 活动描边显形修复）
             #[cfg(target_os = "windows")]
@@ -218,6 +321,37 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}");
                     }
                 });
+            }
+            if let WindowEvent::Moved(_) = event {
+                // 贴边吸附状态机（PL017.4）：Moved 更新时间戳；左键按住（真拖动，
+                // 含悬停/慢速——静默判定会误吸）或间隔 ≤150ms 置 DRAG_ACTIVE；
+                // pending 单线程守到"左键已松 + 静默 ≥150ms"→ 吸附一次
+                let now = now_ms();
+                let last = LAST_MOVED_MS.swap(now, Ordering::Relaxed);
+                let dragging = now.saturating_sub(last) <= 150;
+                #[cfg(target_os = "windows")]
+                let dragging = dragging || win_input::left_down();
+                if dragging {
+                    DRAG_ACTIVE.store(true, Ordering::Relaxed);
+                }
+                if !DRAG_SNAP_PENDING.swap(true, Ordering::Relaxed) {
+                    let win = window.clone();
+                    std::thread::spawn(move || loop {
+                        std::thread::sleep(Duration::from_millis(100));
+                        #[cfg(target_os = "windows")]
+                        if win_input::left_down() {
+                            continue; // 左键仍按住 = 还在拖（悬停/慢速不误吸）
+                        }
+                        if now_ms().saturating_sub(LAST_MOVED_MS.load(Ordering::Relaxed)) < 150 {
+                            continue; // 刚松手还在惯性/最后移动
+                        }
+                        DRAG_SNAP_PENDING.store(false, Ordering::Relaxed);
+                        if DRAG_ACTIVE.swap(false, Ordering::Relaxed) {
+                            snap_if_needed(&win);
+                        }
+                        break;
+                    });
+                }
             }
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]

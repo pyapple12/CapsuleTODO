@@ -92,6 +92,22 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
         let mut polling = true;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(WATCH_INTERVAL_MS));
+            // 置顶开关休眠（PL017.5）：置顶关 = 普通窗口，全屏画面自然盖住，
+            // 无让位可做——跳过本轮（锁失败按白名单②维持前态单次落日志）
+            let always_on_top = app
+                .state::<crate::commands::AppContext>()
+                .lock_settings()
+                .map(|s| s.always_on_top)
+                .unwrap_or_else(|err| {
+                    if polling {
+                        eprintln!("全屏监视设置锁失败（维持当前置顶态）：{err:?}");
+                        polling = false;
+                    }
+                    true
+                });
+            if !always_on_top {
+                continue;
+            }
             let win_rect = unsafe {
                 let foreground = win32::GetForegroundWindow();
                 if foreground == 0 {

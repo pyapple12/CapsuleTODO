@@ -472,3 +472,19 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 >
 > 红线：合成按键向系统发真实 Ctrl+C，live 验证须用户明示授权或亲自配合（实测矩阵：Windows Terminal 有选区 / cmd conhost / 管理员提权前台窗 UIPI 拒绝→静默自愈 / 无选区静默 / 剪贴板占用重试 3×10ms）；剪贴板恢复失败落日志不阻断（容错白名单登记候选）；测试零污染用户库；热键线程编排延续 PL015.4 直调实现注记。
 > 状态：✅ 已完工（2026-09-30，V0.1.5.0 minor 推进；实施记录与 live 实测定案见 x.progress.md PL016 组——圈选直达两段式 + 修饰键残留合成 keyup 清理 + 终端守卫 + 失焦实时刷新；live 矩阵 B/C 场景过、A 场景根因（修饰键残留）定位修复后用户回执通过）
+
+## 附录 PL017：置顶开关与贴边吸附（2026-09-30 立项）
+
+> 背景：用户需求两开关——①**窗口置顶**：当前置顶为硬编码（tauri.conf.json alwaysOnTop + fullscreen.rs 让位线程每秒挂回），需可开关（设置板日夜切换下方）；②**贴边吸附**：拖动到屏幕边缘 ≤50px 内松手自动贴边停驻（落位距边 5px），开关在置顶下方。
+> 用户定案三点（2026-09-30）：`snap_to_edge` **默认开**；吸附时机 = **A 松手吸附**（Moved 事件 300ms 防抖，连发停止即松手后吸附一次，不碰系统拖动循环零抖动风险）；置顶关闭 → **让位线程直接休眠**（板子已是普通窗口，全屏自然盖住，不再每秒挂回置顶）。
+> 方案要点：
+>
+> - **settings.rs**：WindowSettings 加 `always_on_top: bool`（serde default = default_always_on_top() → true，现状即置顶老配置零迁移）+ `snap_to_edge: bool`（default → true）+ Default impl 同步 + 缺字段回填测试；常量 SNAP_THRESHOLD_PX = 50 / SNAP_GAP_PX = 5（吸附参数单一来源）
+> - **snap.rs（新）**：纯函数 `snap_position(win_x, win_y, win_w, win_h, mon_x, mon_y, mon_w, mon_h) -> (i32, i32)`——四边距离 ≤ 阈值判定（角落组合吸附、未命中原样返回、已在吸附位幂等返回同值）；TDD 七用例（左/右/上/下/角落组合/51px 不动/幂等）
+> - **commands/settings.rs**：`settings_get/set_always_on_top`（set = 锁 ctx 更新 → 落盘 → 主窗 set_always_on_top 即时生效；核心抽 *_core 直测临时路径）+ `settings_get/set_snap_to_edge`（纯落盘，生效在事件层每轮读 ctx 天然即时）；mock-invoke.ts 四 handler 双注册
+> - **lib.rs 接线**：setup 启动按 config 应用置顶；`WindowEvent::Moved` 吸附状态机——LAST_MOVED 时间戳 + DRAG_ACTIVE/DRAG_SNAP_PENDING 原子标志：Moved 更新时间戳（间隔 ≤300ms 置拖动中）+ pending 防重 spawn 单次检查线程（350ms 后确认连发停了才吸附）；do_snap = current_monitor 取屏矩形 → snap_position → 与当前位不同才 set_position（**幂等防环**：吸附位 5px 仍在阈值内，不判等会死循环）；启动恢复的单次 Moved 不构成连发 → 默认落位 40px 天然不被吸（无 boot 标志）
+> - **fullscreen.rs**：让位线程每轮开头读 ctx.always_on_top——false 即 continue 休眠本轮（锁失败按白名单②维持前态落日志）；置顶开 = 行为不变
+> - **SettingsOverlay.vue + App.vue + settings.css**：日夜切换行下依次插"窗口置顶"（desc：关闭后板子允许被其他窗口遮挡）与"贴边吸附"（desc：拖到屏幕边缘 50px 内自动贴边停驻）两行——通用 .toggle-switch（轨道+圆钮 accent 令牌，与 theme-switch 日月组件区分）；沿 maxBubbles 同构（App.vue 持 ref 启动拉取传 prop，组件内 toggle invoke 落库失败可见）
+>
+> 红线：吸附事件层读设置锁失败跳过吸附落日志（容错白名单候选，登记待实施时定）；吸附必须幂等防 Moved→snap→Moved 死循环；启动默认落位 40px 不被吸附侵蚀；watcher 休眠不得影响全屏让位恢复（置顶开时行为零变化）；测试零污染用户库。
+> 状态：✅ 已完工（2026-09-30，V0.1.6.0 minor 推进；live 四轮迭代定案：±阈值过冲窗口、视觉矩形校准（像素实测隐形边 8px）、左键松手判定（悬停/慢速拖不误吸）、150/100ms 防抖；实施记录见 x.progress.md PL017 组）

@@ -52,6 +52,8 @@ interface MockBubbleSnapshot {
 
 /** 气泡提醒阈值（PL014 接配置前的硬编码对齐值） */
 let MAX_BUBBLES = 5;
+let MOCK_ALWAYS_ON_TOP = true; // PL017 设置板置顶开关 mock 态
+let MOCK_SNAP_TO_EDGE = true; // PL017 设置板贴边吸附开关 mock 态
 let MOCK_BUBBLE_HOTKEY = "Ctrl+Alt+C"; // PL015 mock 内存态；busy 标志模拟占用失败
 let mockBubbleHotkeyBusy = false;
 
@@ -285,6 +287,17 @@ const handlers: Record<string, CommandHandler> = {
     MAX_BUBBLES = Math.min(20, Math.max(1, Number(args.value) || 5));
     return null;
   },
+  // 窗口偏好（PL017）：置顶与贴边吸附开关（内存态，设置板 toggle 断言用）
+  settings_get_always_on_top: () => MOCK_ALWAYS_ON_TOP,
+  settings_set_always_on_top: (args) => {
+    MOCK_ALWAYS_ON_TOP = Boolean(args.on);
+    return null;
+  },
+  settings_get_snap_to_edge: () => MOCK_SNAP_TO_EDGE,
+  settings_set_snap_to_edge: (args) => {
+    MOCK_SNAP_TO_EDGE = Boolean(args.on);
+    return null;
+  },
   // 气泡热键（PL015，FIX004.5）：读取/写入组合键（内存态 + parse 同规校验；
   // mock.bubbleHotkeyBusy = true 可模拟"热键被占用"失败态供 IAB 断言回退）
   settings_get_bubble_hotkey: () => MOCK_BUBBLE_HOTKEY,
@@ -307,7 +320,14 @@ const handlers: Record<string, CommandHandler> = {
       .join("+");
     return MOCK_BUBBLE_HOTKEY;
   },
-  whiteboard_load: () => state.whiteboard,
+  whiteboard_load: () => {
+    // FIX004.19 IAB 断言开关：localStorage['mock-wb-fail']='1' 模拟载入失败
+    //（dev-only 模块，生产构建被 vite 静态消除）
+    if (localStorage.getItem("mock-wb-fail") === "1") {
+      throw new Error("mock 模拟：白板载入失败");
+    }
+    return state.whiteboard;
+  },
   whiteboard_save: (args) => {
     state.whiteboard = String(args.content ?? "");
     return null;

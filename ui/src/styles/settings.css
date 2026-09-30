@@ -5,7 +5,7 @@
 /* 设置板行布局：大控件（日夜开关）纵排——名称/描述在上、控件在下；
    小控件行（跟随系统/步进）用 .inline 横排省高度 */
 .setting-row {
-  padding: 10px 0;
+  padding: 6px 0; /* PL017 加两行后压缩：设置板六行不出滚动条（board-glass overflow-y auto） */
 }
 
 .setting-row + .setting-row {

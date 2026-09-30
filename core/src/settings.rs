@@ -29,6 +29,24 @@ fn default_bubble_hotkey() -> String {
     DEFAULT_BUBBLE_HOTKEY.to_string()
 }
 
+/// serde default 挂钩：旧 config.json 缺 always_on_top 字段时回填 true（PL017——
+/// 现状即置顶，老配置零迁移）
+fn default_always_on_top() -> bool {
+    true
+}
+
+/// serde default 挂钩：旧 config.json 缺 snap_to_edge 字段时回填 true（PL017——
+/// 新功能默认开，开箱即用）
+fn default_snap_to_edge() -> bool {
+    true
+}
+
+/// 贴边吸附触发阈值（窗口边距屏幕边 ≤ 此值即吸附，px）
+pub const SNAP_THRESHOLD_PX: i32 = 50;
+
+/// 贴边吸附落位与屏幕边的间距（px，用户定案 5px）
+pub const SNAP_GAP_PX: i32 = 5;
+
 /// 运行时设置（窗口位置 + 气泡提醒上限 + 气泡热键；serde default 容忍手改缺字段）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WindowSettings {
@@ -44,6 +62,12 @@ pub struct WindowSettings {
     /// 气泡捕获全局热键（PL015；旧 config.json 缺字段回填 Ctrl+Alt+C）
     #[serde(default = "default_bubble_hotkey")]
     pub bubble_hotkey: String,
+    /// 窗口置顶开关（PL017；旧 config.json 缺字段回填 true——现状即置顶）
+    #[serde(default = "default_always_on_top")]
+    pub always_on_top: bool,
+    /// 贴边吸附开关（PL017；旧 config.json 缺字段回填 true——新功能默认开）
+    #[serde(default = "default_snap_to_edge")]
+    pub snap_to_edge: bool,
 }
 
 impl Default for WindowSettings {
@@ -53,6 +77,8 @@ impl Default for WindowSettings {
             y: 0,
             max_bubbles: DEFAULT_MAX_BUBBLES,
             bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
+            always_on_top: default_always_on_top(),
+            snap_to_edge: default_snap_to_edge(),
         }
     }
 }
@@ -135,6 +161,8 @@ mod tests {
                 y: -40,
                 max_bubbles: 5,
                 bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
+                always_on_top: true,
+                snap_to_edge: true,
             },
         )
         .expect("保存必须成功");
@@ -165,6 +193,8 @@ mod tests {
                 y: 2,
                 max_bubbles: 5,
                 bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
+                always_on_top: true,
+                snap_to_edge: true,
             },
         )
         .expect("保存必须成功（父目录自建）");
@@ -235,6 +265,29 @@ mod tests {
         std::fs::write(&path, r#"{"bubble_hotkey": "Space+鼠标中键"}"#).expect("写入必须成功");
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
         assert_eq!(loaded.bubble_hotkey, DEFAULT_BUBBLE_HOTKEY);
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn window_prefs_missing_fields_backfill_defaults() {
+        // PL017.1：旧 config.json 缺 always_on_top/snap_to_edge → serde default 回填
+        let path = temp_path("prefs-missing.json");
+        std::fs::write(&path, r#"{"x": 1, "y": 2}"#).expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert!(loaded.always_on_top, "置顶缺字段回填 true");
+        assert!(loaded.snap_to_edge, "吸附缺字段回填 true");
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn window_prefs_explicit_false_preserved() {
+        // PL017.1：显式 false 原样保留（用户关掉的开关不得被回填翻转）
+        let path = temp_path("prefs-off.json");
+        std::fs::write(&path, r#"{"always_on_top": false, "snap_to_edge": false}"#)
+            .expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert!(!loaded.always_on_top);
+        assert!(!loaded.snap_to_edge);
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 }
