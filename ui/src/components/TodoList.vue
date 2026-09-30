@@ -135,6 +135,21 @@ function pinLeaveHeight(el: Element): void {
 
 let clickTimer: number | undefined;
 function onRowClick(item: TodoItem, e: MouseEvent): void {
+  // 编辑态点击抑制（用户定案）：编辑中点任何位置都只是结束编辑，绝不开详情——
+  // 点自己行 = 光标聚焦回输入框（换输入位置）；点其他行 = 提交后离开。
+  // 判据含 pendingExit（已提交待切回）态：rename IPC 极快，blur 提交后主窗 refresh
+  // 可在 click 事件前清掉 editingId（用户实测 bug 复发根因）
+  if (editingId.value !== null || pendingExitId.value !== null) {
+    const editingNow = editingId.value ?? pendingExitId.value;
+    if (editingNow === item.id) {
+      editEl.value?.focus();
+    } else if (editingId.value !== null) {
+      // 仍有未提交编辑（pendingExit 态则 rename 已落库，无需二次提交）
+      const editing = props.items.find((t) => t.id === editingId.value);
+      if (editing) commitEdit(editing);
+    }
+    return;
+  }
   // 勾选框坐标分流（A10 = design todos.js 行 click 分支 1:1）：点中勾选框范围 =
   // 勾选入档（不受拖拽落点抑制约束——design suppress 只拦开详情）；点正文 = 开详情
   const row = e.currentTarget as HTMLElement;
@@ -174,23 +189,49 @@ const editEl = ref<HTMLInputElement | null>(null);
 function startInlineEdit(item: TodoItem): void {
   editingId.value = item.id;
   editDraft.value = item.text;
-  // focus + 全选（design startInlineEdit 同款）：无焦点则无光标无高亮，
-  // 且文字基线视觉断裂（真窗口报"文字往右移动"的主因）
-  void nextTick(() => {
-    editEl.value?.focus();
-    editEl.value?.select();
-  });
+  startEditFocusFlow(); // 挂载聚焦 + 80ms 重申（光标行尾）
 }
+
+// 编辑框挂载即聚焦 + 光标行尾（PL018 光标不显示根治）：DOM 直查——v-for 内
+// 模板 ref 被 Vue 收集为数组，`.focus()` 调用抛 TypeError 静默死亡（CDP 实测
+// focus 从未被调用，"全选也从未出现过"同根因）；挂载后 80ms 重申兜底
+//（CDP 实测挂载瞬间有一次性焦点重置回 BODY，重申在其后必然生效）
+function focusEditEnd(): void {
+  const inp = document.querySelector<HTMLInputElement>(".t-edit");
+  if (!inp) return;
+  inp.focus();
+  const len = inp.value.length;
+  inp.setSelectionRange(len, len);
+}
+
+function startEditFocusFlow(): void {
+  void nextTick(focusEditEnd);
+  window.setTimeout(focusEditEnd, 80);
+}
+
+/** 提交后待退出编辑的条目 id：editingId 保持到 refresh 数据到达（该条 text 变新值）
+ * 才切回文本元素——消除"切回瞬间显示旧文本 → 刷新跳新文本"的闪帧（用户实测）；
+ * 1.5s 超时兜底防 refresh 失败卡编辑态 */
+const pendingExitId = ref<number | null>(null);
 
 async function commitEdit(item: TodoItem): Promise<void> {
   const text = editDraft.value.trim();
-  editingId.value = null;
-  if (!text || text === item.text) return;
+  if (!text || text === item.text) {
+    editingId.value = null;
+    return;
+  }
   try {
     await invoke("todo_rename", { id: item.id, text });
     emit("changed");
+    pendingExitId.value = item.id; // 退出编辑延到数据到达（watch props.items 兜底超时）
+    window.setTimeout(() => {
+      if (pendingExitId.value === item.id) {
+        pendingExitId.value = null;
+        editingId.value = null;
+      }
+    }, 1500);
   } catch (err) {
-    console.error("改名失败", err);
+    console.error("改名失败", err); // input 保留：失败可就地重试
   }
 }
 
@@ -252,6 +293,21 @@ watch(
   () => {
     void nextTick(mountScrollKit);
   },
+);
+
+// 行内编辑退出时机（用户实测闪帧修复）：refresh 数据到达且该条文本已更新为新值
+// 时才退出编辑态——文本元素直接以新文本首现，无"旧文本→新文本"中间帧
+watch(
+  () => props.items,
+  (list) => {
+    if (pendingExitId.value === null) return;
+    const it = list.find((t) => t.id === pendingExitId.value);
+    if (it && it.text === editDraft.value.trim()) {
+      pendingExitId.value = null;
+      editingId.value = null;
+    }
+  },
+  { deep: true },
 );
 
 // —— 空态显隐（FIX004.6，与归档/气泡同款共存渲染）：TransitionGroup 恒挂载

@@ -76,6 +76,10 @@
   outline: none;
   background: transparent;
   color: var(--ink);
+  caret-color: var(
+    --ink
+  ); /* 光标显式着色：主窗 user-select:none 祖先下 Chromium caret 不渲染（用户实测光标不出现） */
+  user-select: text; /* 覆盖祖先 none：输入框必须可选中，否则光标/全选均失效 */
   font: inherit;
   font-size: 13.5px;
   line-height: 1.35;

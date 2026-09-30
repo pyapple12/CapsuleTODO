@@ -28,6 +28,15 @@ const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 #[cfg(target_os = "windows")]
 const DWMWA_BORDER_COLOR: u32 = 34;
 
+/// DWMWA_WINDOW_CORNER_PREFERENCE：窗口圆角偏好属性（Win11；系统切角，
+/// 托盘预览小窗直角暗角根治——CSS 圆角外的窗口直角区由 DWM 切圆）
+#[cfg(target_os = "windows")]
+const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+
+/// DWMWCP_ROUND：系统标准圆角（半径随系统主题）
+#[cfg(target_os = "windows")]
+const DWMWCP_ROUND: u32 = 2;
+
 /// DWMWA_COLOR_NONE：隐藏边框（激活态不再画强调色描边）
 #[cfg(target_os = "windows")]
 const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
@@ -69,5 +78,17 @@ pub fn apply_frame_style(hwnd: isize, dark: bool) {
     let hr_border = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border_none, 4) };
     if hr_border != 0 {
         eprintln!("边框隐藏失败 hr={hr_border:#x}");
+    }
+}
+
+/// 窗口系统圆角（PL018，托盘预览小窗）：DWMWA_WINDOW_CORNER_PREFERENCE = ROUND——
+/// DWM 直接把窗口矩形切圆，CSS 圆角外的直角暗角根治（Win11 原生浮窗同款）；
+/// Win10 无此属性调用失败无害（忽略返回值）
+#[cfg(target_os = "windows")]
+pub fn apply_round_corners(hwnd: isize) {
+    let pref = DWMWCP_ROUND;
+    let hr = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, 4) };
+    if hr != 0 {
+        eprintln!("窗口圆角设置失败 hr={hr:#x}（Win10 无此属性，可忽略）");
     }
 }

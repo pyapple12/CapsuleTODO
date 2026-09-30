@@ -488,3 +488,17 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 >
 > 红线：吸附事件层读设置锁失败跳过吸附落日志（容错白名单候选，登记待实施时定）；吸附必须幂等防 Moved→snap→Moved 死循环；启动默认落位 40px 不被吸附侵蚀；watcher 休眠不得影响全屏让位恢复（置顶开时行为零变化）；测试零污染用户库。
 > 状态：✅ 已完工（2026-09-30，V0.1.6.0 minor 推进；live 四轮迭代定案：±阈值过冲窗口、视觉矩形校准（像素实测隐形边 8px）、左键松手判定（悬停/慢速拖不误吸）、150/100ms 防抖；实施记录见 x.progress.md PL017 组）
+
+## 附录 PL018：托盘图标与悬浮预览（2026-09-30 立项）
+
+> 背景：用户需求——主窗不占任务栏，启动后仅托盘小图标；**左键**收起/展示主窗；**右键**菜单列设置项（贴边吸附/窗口置顶，带勾选态）；**hover 托盘**出现悬浮列表显示前五条 todo（带打勾，可直接勾选落库）。
+> 用户定案（2026-09-30）：主窗无边框无 X、**无退出方式且不需要**（托盘菜单不加退出项；未来若有关闭入口也是隐藏语义）；预览窗 = **透明玻璃小窗**（与主窗同风格）；**hover 技术验证不过则继续讨论，不设兜底**（不做左键弹出退化路线）。
+> 方案要点：
+>
+> - **主窗托盘化（低风险）**：tauri Cargo features 加 `tray-icon`；主窗 `skipTaskbar: true`；setup 建 `TrayIconBuilder`（图标 = 现有 app icon 占位，后续会换）——左键事件 toggle 主窗（show + set_focus / hide）；右键菜单 = Menu：显示主窗 + CheckMenuItem"贴边吸附"/"窗口置顶"（**无退出项**，用户定案）；菜单勾选态初始从 AppContext 读
+> - **开关三入口同步**：settings 两 set 命令（PL017 已有）成功后 `emit("prefs-changed", { always_on_top, snap_to_edge })`；托盘菜单 CheckMenuItem 监听事件刷新勾选态（set_checked），菜单勾选变化 → 复用 settings 命令核心落库 + 即时生效（与设置板三入口同源，单一事实源 = ctx + config.json）
+> - **hover 预览窗（中风险，先 spike）**：`WebviewWindowBuilder` 建 label `tray-preview` 第二窗（透明 / 无边框 / skipTaskbar / 不抢焦点 show）；前端按窗口 label 分流（App.vue 挂载时 `getCurrentWindow().label` 判断，preview 窗渲染 TrayPreview 组件：`todo_list` 前 5 条 + NeonCheckbox 打勾 → `todo_toggle` 落库 → `emit("todo-changed")` 驱动主窗刷新链）；托盘 `TrayIconEvent::Enter` 拿托盘 rect → 预览窗定位托盘上方（越界翻转到下方）→ show；**显隐宽限逻辑** = 托盘 Leave 后延迟隐藏 + 预览窗 mouseenter 取消 / mouseleave 延迟（经典悬浮窗竞态处理）
+> - **spike 条目（先行）**：Windows 托盘 Enter/Move/Leave 事件可靠性验证（muda 事件在真机是否稳定触发、rect/position 是否可用）——**结论不过则停止实施回讨论**（用户定案不设兜底）
+>
+> 红线：主窗 hide 后热键捕获/气泡入库等后台链路不受影响（show 时数据自刷新）；预览窗打勾与主窗数据单向同步（emit 驱动，禁止双写）；托盘菜单勾选态以 ctx 为唯一事实源；预览窗不抢焦点（show 不 steal focus，打勾点击才聚焦）；测试零污染用户库。
+> 状态：✅ 已完工（2026-10-01，V0.1.7.0 minor 推进；live 多轮迭代定案：DWM 系统圆角、视觉矩形、左键松手判定、代际计数+光标守卫防误隐、挂载 80ms 重申聚焦；spike 报告 .temp/tray-spike-report.md；实施记录见 x.progress.md PL018 组）

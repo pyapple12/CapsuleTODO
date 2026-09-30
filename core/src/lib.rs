@@ -15,6 +15,7 @@ pub mod settings;
 pub mod snap;
 pub mod storage;
 pub mod todo;
+pub mod tray;
 pub mod whiteboard;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -237,6 +238,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_always_on_top,
             commands::settings::settings_get_snap_to_edge,
             commands::settings::settings_set_snap_to_edge,
+            commands::tray_preview::tray_preview_hover,
+            commands::tray_preview::tray_preview_resize,
         ])
         .setup(|app| {
             let window = app
@@ -293,6 +296,155 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }));
                 if let Err(err) = hotkey::reregister(combo) {
                     eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
+                }
+            }
+            // 托盘（PL018.2）：主窗 skipTaskbar 后的常驻入口——左键显隐主窗，
+            // 右键菜单（显示主窗 + 贴边/置顶勾选项；无退出项，用户定案）。
+            // 勾选态唯一事实源 = AppContext；句柄存 TrayMenuItems state 供事件翻转
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::{
+                    menu::{CheckMenuItem, Menu, MenuItem},
+                    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+                    Listener,
+                };
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .expect("默认图标必须存在（打包期替换正式图标）");
+                let (snap_on, top_on) = app
+                    .state::<AppContext>()
+                    .lock_settings()
+                    .map(|s| (s.snap_to_edge, s.always_on_top))
+                    .unwrap_or_else(|err| {
+                        eprintln!("托盘勾选态读取失败（按默认开）：{err:?}");
+                        (true, true)
+                    });
+                let show_item =
+                    MenuItem::with_id(app, "tray-show", "显示主窗", true, None::<&str>)?;
+                let snap_item = CheckMenuItem::with_id(
+                    app,
+                    "tray-snap",
+                    "贴边吸附",
+                    true,
+                    snap_on,
+                    None::<&str>,
+                )?;
+                let top_item = CheckMenuItem::with_id(
+                    app,
+                    "tray-top",
+                    "窗口置顶",
+                    true,
+                    top_on,
+                    None::<&str>,
+                )?;
+                app.manage(crate::tray::TrayMenuItems {
+                    snap: snap_item.clone(),
+                    top: top_item.clone(),
+                });
+                let menu = Menu::with_items(app, &[&show_item, &snap_item, &top_item])?;
+                TrayIconBuilder::with_id("main-tray")
+                    .icon(icon)
+                    .menu(&menu)
+                    .show_menu_on_left_click(false) // 左键给显隐，右键才出菜单
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "tray-show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                        "tray-snap" | "tray-top" => {
+                            crate::tray::on_pref_menu(app, event.id.as_ref());
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| match event {
+                        // 左键单击完成（Up 态）= 显隐切换；Down 忽略防按住中间态误触
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            let app = tray.app_handle();
+                            if let Some(w) = app.get_webview_window("main") {
+                                match w.is_visible() {
+                                    Ok(true) => {
+                                        let _ = w.hide();
+                                    }
+                                    Ok(false) => {
+                                        let _ = w.show();
+                                        let _ = w.set_focus();
+                                    }
+                                    Err(err) => eprintln!("托盘显隐切换失败：{err}"),
+                                }
+                            }
+                        }
+                        // hover 预览（PL018.5）：Enter 定位显示 / Leave 延迟隐藏
+                        TrayIconEvent::Enter { rect, .. } => {
+                            if let (tauri::Position::Physical(p), tauri::Size::Physical(s)) =
+                                (rect.position, rect.size)
+                            {
+                                crate::tray::on_tray_enter(
+                                    tray.app_handle(),
+                                    p.x,
+                                    p.y,
+                                    s.width as i32,
+                                    s.height as i32,
+                                );
+                            }
+                        }
+                        TrayIconEvent::Leave { .. } => {
+                            crate::tray::on_tray_leave(tray.app_handle());
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
+                // prefs-changed 监听（PL018.3）：设置板改开关 → 托盘勾选态同步
+                let handle = app.handle().clone();
+                app.listen("prefs-changed", move |event| {
+                    let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload())
+                    else {
+                        return;
+                    };
+                    let items = handle.state::<crate::tray::TrayMenuItems>();
+                    if let Some(on) = payload.get("always_on_top").and_then(|v| v.as_bool()) {
+                        let _ = items.top.set_checked(on);
+                    }
+                    if let Some(on) = payload.get("snap_to_edge").and_then(|v| v.as_bool()) {
+                        let _ = items.snap.set_checked(on);
+                    }
+                });
+                // 预览窗（PL018.4）：托盘 hover 的 todo 前五列表——透明玻璃小窗。
+                // alwaysOnTop = 悬浮层语义（诊断实测：非置顶 show 被活动窗盖住）。
+                // 首绘方案（二轮修正）：屏外坐标创建 + visible(true) 让 webview 创建
+                // 即完成首绘，build 后立即 hide——废弃"隐藏创建+show 预热"方案
+                //（其屏幕外 show 被 Windows clamp 回可见区 = 左上残留窗 + "hover 出
+                // 现两个"的根源；隐藏创建则首 hover 空窗）
+                let preview = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "tray-preview",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("CapsuleTODO 预览")
+                .position(-2000.0, -2000.0)
+                .inner_size(crate::tray::PREVIEW_WIDTH, 180.0)
+                .transparent(true)
+                .decorations(false)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(true)
+                .focused(false)
+                .always_on_top(true)
+                .shadow(false) // 双下巴根因：无边框窗默认 DWM 投影，底部下沉似第二层
+                .build()?;
+                // DWM 系统圆角（PL018，用户问诊直角暗角）：DWM 切掉 CSS 圆角外的
+                // 窗口直角区——预览窗视觉与内容圆角统一（Win11 原生浮窗同款）
+                if let Ok(hwnd) = preview.hwnd() {
+                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
+                }
+                if let Err(err) = preview.hide() {
+                    eprintln!("预览窗首绘后隐藏失败：{err}");
                 }
             }
             Ok(())

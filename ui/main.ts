@@ -1,5 +1,7 @@
 import { createApp } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App.vue";
+import TrayPreview from "./src/components/TrayPreview.vue";
 import "./style.css";
 import "./src/styles/board-read.css";
 import "./src/styles/archive.css";
@@ -33,5 +35,18 @@ if (import.meta.env.DEV) {
 }
 installWebViewGuards();
 
-// 应用入口：挂载 Vue 根组件（展示层骨架，业务逻辑零含量）
-createApp(App).mount("#app");
+// 应用入口：按窗口 label 分流（PL018.4）——tray-preview 窗挂悬浮预览组件，
+// 主窗挂三页签骨架；纯浏览器（IAB/无 Tauri runtime）走主窗分支（mock 基座）
+function currentWindowLabel(): string {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return "main";
+  }
+}
+
+if (currentWindowLabel() === "tray-preview") {
+  createApp(TrayPreview).mount("#app");
+} else {
+  createApp(App).mount("#app");
+}

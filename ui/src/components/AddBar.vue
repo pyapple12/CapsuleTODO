@@ -33,6 +33,7 @@ async function add(): Promise<void> {
         v-model="draft"
         class="input"
         type="text"
+        maxlength="12"
         placeholder="添加一条待办…"
         @keydown.enter="add"
       />

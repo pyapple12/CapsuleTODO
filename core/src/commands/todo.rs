@@ -1,15 +1,29 @@
 //! Todo 命令：清单增删勾查改（操作即落库，单一事实源 = db；核心抽自由函数直测）。
 //! PL010 扩容：todo_rename/todo_set_note 新命令 + todo_list 附龄期裁决（业务在 Rust）。
 
-use tauri::State;
+use tauri::{Emitter, State};
 
 use super::{AppContext, CommandError};
 use crate::todo::{age_level, validate_note, validate_text, AgeLevel, TodoItem};
 
-/// 添加待办（文本校验 + 落库；拒绝经 CommandError 跨进程可见）
+/// 变更广播（PL018.6 问题一修复）：清单数据任何变更后由命令层发 todo-changed，
+/// 托盘预览窗与主窗刷新链同源监听（单一事实源 = db，事件只做通知）
+fn emit_todo_changed(app: &tauri::AppHandle) {
+    if let Err(err) = app.emit("todo-changed", ()) {
+        eprintln!("todo-changed 广播失败：{err}");
+    }
+}
+
+/// 添加待办（文本校验 + 落库；拒绝经 CommandError 跨进程可见）→ 广播变更
 #[tauri::command]
-pub fn todo_add(text: String, ctx: State<'_, AppContext>) -> Result<TodoItem, CommandError> {
-    todo_add_core(&text, &ctx)
+pub fn todo_add(
+    text: String,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<TodoItem, CommandError> {
+    let item = todo_add_core(&text, &ctx)?;
+    emit_todo_changed(&app);
+    Ok(item)
 }
 
 /// todo_add 核心实现：业务校验 + trim 落库（与 rename/bubble 同规——首尾空白不入库）
@@ -19,10 +33,16 @@ pub fn todo_add_core(text: &str, ctx: &AppContext) -> Result<TodoItem, CommandEr
     Ok(storage.add(text.trim())?)
 }
 
-/// 勾选翻转（不存在经 NotFound 严格报错）
+/// 勾选翻转（不存在经 NotFound 严格报错）→ 广播变更
 #[tauri::command]
-pub fn todo_toggle(id: i64, ctx: State<'_, AppContext>) -> Result<TodoItem, CommandError> {
-    todo_toggle_core(id, &ctx)
+pub fn todo_toggle(
+    id: i64,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<TodoItem, CommandError> {
+    let item = todo_toggle_core(id, &ctx)?;
+    emit_todo_changed(&app);
+    Ok(item)
 }
 
 /// todo_toggle 核心实现：翻转完成态（done_at 随语义落库：勾选置 now、退回清 NULL）
@@ -31,14 +51,17 @@ pub fn todo_toggle_core(id: i64, ctx: &AppContext) -> Result<TodoItem, CommandEr
     Ok(storage.toggle(id)?)
 }
 
-/// 改标题（清单行内编辑/详情板标题共用；文本校验同 add）
+/// 改标题（清单行内编辑/详情板标题共用；文本校验同 add）→ 广播变更（预览窗同步）
 #[tauri::command]
 pub fn todo_rename(
     id: i64,
     text: String,
+    app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<TodoItem, CommandError> {
-    todo_rename_core(id, &text, &ctx)
+    let item = todo_rename_core(id, &text, &ctx)?;
+    emit_todo_changed(&app);
+    Ok(item)
 }
 
 /// todo_rename 核心实现：文本校验 + 更新
@@ -48,14 +71,17 @@ pub fn todo_rename_core(id: i64, text: &str, ctx: &AppContext) -> Result<TodoIte
     Ok(storage.rename(id, text.trim())?)
 }
 
-/// 写笔记（全文覆盖；详情板防抖 300ms 后调用）
+/// 写笔记（全文覆盖；详情板防抖 300ms 后调用）→ 广播变更（一致性：清单数据变更必广播）
 #[tauri::command]
 pub fn todo_set_note(
     id: i64,
     note: String,
+    app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
-    todo_set_note_core(id, &note, &ctx)
+    todo_set_note_core(id, &note, &ctx)?;
+    emit_todo_changed(&app);
+    Ok(())
 }
 
 /// todo_set_note 核心实现：笔记校验 + 更新
@@ -65,10 +91,16 @@ pub fn todo_set_note_core(id: i64, note: &str, ctx: &AppContext) -> Result<(), C
     Ok(storage.set_note(id, note)?)
 }
 
-/// 删除待办（不存在严格报错）
+/// 删除待办（不存在严格报错）→ 广播变更
 #[tauri::command]
-pub fn todo_remove(id: i64, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
-    todo_remove_core(id, &ctx)
+pub fn todo_remove(
+    id: i64,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    todo_remove_core(id, &ctx)?;
+    emit_todo_changed(&app);
+    Ok(())
 }
 
 /// todo_remove 核心实现：删除条目

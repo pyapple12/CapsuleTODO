@@ -110,7 +110,8 @@ pub fn settings_get_always_on_top_core(ctx: &AppContext) -> Result<bool, Command
     Ok(ctx.lock_settings()?.always_on_top)
 }
 
-/// 写入窗口置顶开关（PL017）：落库 → 主窗 set_always_on_top 即时生效
+/// 写入窗口置顶开关（PL017）：落库 → 主窗 set_always_on_top 即时生效 →
+/// 广播 prefs-changed（托盘菜单勾选态同步，PL018.3）
 #[tauri::command]
 pub fn settings_set_always_on_top(
     on: bool,
@@ -126,6 +127,7 @@ pub fn settings_set_always_on_top(
     window
         .set_always_on_top(on)
         .map_err(|err| CommandError::Settings(format!("置顶切换失败：{err}")))?;
+    emit_prefs_changed(&app, &ctx);
     Ok(())
 }
 
@@ -154,12 +156,36 @@ pub fn settings_get_snap_to_edge_core(ctx: &AppContext) -> Result<bool, CommandE
 }
 
 /// 写入贴边吸附开关（PL017）：落库即生效（吸附在 Moved 事件层每轮读运行时设置，
-/// 无窗口操作）；直测 = 临时路径内存库，禁触真实用户数据
+/// 无窗口操作）→ 广播 prefs-changed（托盘菜单勾选态同步，PL018.3）
 #[tauri::command]
-pub fn settings_set_snap_to_edge(on: bool, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+pub fn settings_set_snap_to_edge(
+    on: bool,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
     let path =
         crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
-    settings_set_snap_to_edge_core(on, &path, &ctx)
+    settings_set_snap_to_edge_core(on, &path, &ctx)?;
+    emit_prefs_changed(&app, &ctx);
+    Ok(())
+}
+
+/// 全量广播窗口偏好（PL018.3）：设置板/托盘菜单切换后各入口同步勾选态与回显
+fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
+    use tauri::Emitter;
+    let (snap, top) = match ctx.lock_settings() {
+        Ok(s) => (s.snap_to_edge, s.always_on_top),
+        Err(err) => {
+            eprintln!("prefs-changed 读取失败（跳过广播）：{err:?}");
+            return;
+        }
+    };
+    if let Err(err) = app.emit(
+        "prefs-changed",
+        serde_json::json!({ "always_on_top": top, "snap_to_edge": snap }),
+    ) {
+        eprintln!("prefs-changed 广播失败：{err}");
+    }
 }
 
 /// settings_set_snap_to_edge 核心实现：更新运行时设置 + 原子落盘

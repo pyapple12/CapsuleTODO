@@ -4,8 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-/// 单条待办文本长度上限（按字符数；300px 小板可读性考量，可调）
-pub const MAX_TEXT_LEN: usize = 100;
+/// 单条待办文本长度上限（按字符数；前端 UI 约束 12 字的 2 倍兼容余量——
+/// 用户定案放宽 1 倍，后端兜底防线，可调）
+pub const MAX_TEXT_LEN: usize = 24;
 
 /// 笔记长度上限（详情板自由文本；10K 足够防失控，可调）
 pub const MAX_NOTE_LEN: usize = 10_000;

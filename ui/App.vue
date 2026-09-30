@@ -39,6 +39,8 @@ let unlistenFocus: UnlistenFn | undefined;
 let unlistenClose: UnlistenFn | undefined;
 // 热键失焦刷新句柄（PL016.1）：徽章随 bubble-changed 事件实时 +1
 let unlistenBubbleChanged: UnlistenFn | undefined;
+// 托盘预览打勾同步句柄（PL018.6）：主窗随 todo-changed 刷新
+let unlistenTodoChanged: UnlistenFn | undefined;
 const whiteboardRef = ref<InstanceType<typeof WhiteboardView> | null>(null);
 
 // 二期三页签（PL004）：清单（一期功能）/ 气泡（临时剪贴板）/ 白板（临时草稿）
@@ -218,6 +220,10 @@ onMounted(async () => {
   unlistenBubbleChanged = await listen("bubble-changed", () => {
     void refreshBadge();
   });
+  // 托盘预览打勾同步（PL018.6）：tray-preview 窗勾选落库后广播 → 主窗刷新链
+  unlistenTodoChanged = await listen("todo-changed", () => {
+    onListChanged();
+  });
   getCurrentWindow()
     .isFocused()
     .then((focused) => {
@@ -252,6 +258,7 @@ onUnmounted(() => {
   unlistenFocus?.();
   unlistenClose?.();
   unlistenBubbleChanged?.();
+  unlistenTodoChanged?.();
 });
 </script>
 

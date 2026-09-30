@@ -3,6 +3,7 @@
 pub mod bubble;
 pub mod settings;
 pub mod todo;
+pub mod tray_preview;
 pub mod whiteboard;
 use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
 
