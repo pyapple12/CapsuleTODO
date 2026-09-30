@@ -48,3 +48,27 @@
   font-size: 12px;
   color: var(--danger);
 }
+
+/* 载入失败重试钮（FIX004.19）：error 行内嵌小钮，瞬态失败（库锁等）可自愈 */
+.retry-btn {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.4;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* 载入失败禁编辑：板体降透明示意不可写（防空白覆盖旧草稿） */
+.board:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -1,5 +1,6 @@
-//! 气泡纯逻辑：DTO、满额提醒判定与捕获文本校验（禁 import tauri，业务纯逻辑约束）。
-//! 单一事实源 = db：气泡存取由 storage.rs 承载，本模块只剩契约、阈值与校验。
+//! 气泡纯逻辑：DTO 与捕获文本校验（禁 import tauri，业务纯逻辑约束）。
+//! 单一事实源 = db：气泡存取由 storage.rs 承载，本模块只剩契约与校验；
+//! 满额提醒显隐由前端本地阈值裁决（FIX004.23：Rust 侧 should_remind/remind 死值已删）。
 
 use serde::Serialize;
 use thiserror::Error;
@@ -27,19 +28,11 @@ pub struct BubbleItem {
     pub text: String,
 }
 
-/// 气泡页快照 DTO：列表 + 满额提醒标记（提醒阈值裁决在 Rust 侧，前端零业务）
+/// 气泡页快照 DTO：列表（满额提醒显隐由前端本地阈值裁决，FIX004.23 删 Rust 侧死值）
 #[derive(Debug, Clone, Serialize)]
 pub struct BubbleSnapshot {
     /// 气泡列表（sort_order 升序 = 拖拽序，PL013 起）
     pub items: Vec<BubbleItem>,
-    /// 是否达到提醒阈值（count >= max_bubbles，PL014.2 配置化）
-    pub remind: bool,
-}
-
-/// 满额提醒判定：条数达到上限即触发横幅（软提醒，不自动删——用户定案）。
-/// max 来自设置（PL014.2 config.json 持久化，默认 5）
-pub fn should_remind(count: usize, max: usize) -> bool {
-    count >= max
 }
 
 /// 捕获文本校验：trim 后非空且不超过 MAX_BUBBLE_TEXT_LEN（按字符计）
@@ -56,16 +49,6 @@ pub fn validate_bubble_text(text: &str) -> Result<(), BubbleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remind_at_and_above_threshold() {
-        assert!(!should_remind(4, 5));
-        assert!(should_remind(5, 5));
-        assert!(should_remind(6, 5));
-        // PL014.2 阈值参数化：随设置变化
-        assert!(!should_remind(6, 10));
-        assert!(should_remind(2, 2));
-    }
 
     #[test]
     fn blank_bubble_text_rejected() {

@@ -6,10 +6,12 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::{AppContext, CommandError};
-use crate::bubble::{should_remind, validate_bubble_text, BubbleItem, BubbleSnapshot};
+use crate::bubble::{validate_bubble_text, BubbleItem, BubbleSnapshot};
 use crate::storage::BubbleAddOutcome;
 
-/// 热键触发路径（PL015.5）：主线程执行——读剪贴板 → 校验 → 去重 → 入库，
+/// 热键触发路径（PL015.5）：热键线程直调（实现注记：未走 run_on_main_thread——
+/// 捕获流程仅读剪贴板 + 入库，AppContext 有锁保护、剪贴板插件跨线程安全，
+/// 行为等价，沿 PL003.3 先例）——读剪贴板 → 校验 → 去重 → 入库，
 /// 全程失败落日志静默（反馈静默定案：桌面常驻面板即所见）
 pub fn bubble_capture_from_clipboard_quiet(app: &AppHandle) {
     let text = match app.clipboard().read_text() {
@@ -37,7 +39,8 @@ pub enum BubbleCaptureOutcome {
 }
 
 impl BubbleCaptureOutcome {
-    /// 测试辅助：取新增条目（Duplicate panic——调用方应先分支）
+    /// 测试辅助：取新增条目（Duplicate panic——调用方应先分支；生产路径一律 match）
+    #[cfg(test)]
     pub fn added_item(self) -> BubbleItem {
         match self {
             BubbleCaptureOutcome::Added { item } => item,
@@ -79,14 +82,12 @@ pub fn bubble_list(ctx: State<'_, AppContext>) -> Result<BubbleSnapshot, Command
     bubble_list_core(&ctx)
 }
 
-/// bubble_list 核心实现：出快照（升序拖拽序 + 满额提醒标记——阈值裁决在 Rust 侧，
-/// 上限来自设置 PL014.2，前端零业务）
+/// bubble_list 核心实现：出快照（升序拖拽序；满额提醒显隐由前端本地阈值裁决，
+/// FIX004.23 删 Rust 侧 remind 死值）
 pub fn bubble_list_core(ctx: &AppContext) -> Result<BubbleSnapshot, CommandError> {
     let storage = ctx.lock_storage()?;
-    let max = ctx.lock_settings()?.max_bubbles as usize;
     let items = storage.list_bubbles()?;
-    let remind = should_remind(items.len(), max);
-    Ok(BubbleSnapshot { items, remind })
+    Ok(BubbleSnapshot { items })
 }
 
 /// 复制气泡内容回剪贴板（捕获→粘贴走→清理闭环的回程）
@@ -170,7 +171,6 @@ mod tests {
         assert_eq!(snapshot.items.len(), 1);
         assert_eq!(snapshot.items[0].id, item.id);
         assert_eq!(snapshot.items[0].text, "复制的内容");
-        assert!(!snapshot.remind);
     }
 
     #[test]
@@ -226,7 +226,6 @@ mod tests {
         assert_eq!(cleared, 1);
         let snapshot = bubble_list_core(&ctx).expect("读命令必须成功");
         assert!(snapshot.items.is_empty());
-        assert!(!snapshot.remind);
     }
 
     // —— PL013.2 重排命令 ——

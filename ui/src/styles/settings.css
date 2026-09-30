@@ -407,5 +407,5 @@
 .hotkey-error {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #e5484d;
+  color: var(--danger);
 }

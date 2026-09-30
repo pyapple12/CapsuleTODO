@@ -1,9 +1,9 @@
 //! 全局气泡热键：组合键字符串解析/规范化 + Win32 注册运行时（PL015）。
 //! 纯逻辑段（parse/to_display）禁 tauri 依赖，cargo test 直测；运行时段
-//! （cfg windows）RegisterHotKey + GetMessageW 循环线程，WM_HOTKEY 经
-//! AppHandle.run_on_main_thread 投递主线程。设置变更经 reregister 热替换。
+//! （cfg windows）RegisterHotKey + GetMessageW 循环线程，WM_HOTKEY 在热键线程
+//! 直调捕获回调（未走 run_on_main_thread，行为等价——见运行时段实现注记）。
+//! 设置变更经 reregister 热替换。
 
-use serde::Serialize;
 use thiserror::Error;
 
 /// Win32 RegisterHotKey 修饰键位（对齐 winuser.h）
@@ -12,8 +12,8 @@ pub const MOD_CONTROL: u32 = 0x2;
 pub const MOD_SHIFT: u32 = 0x4;
 pub const MOD_WIN: u32 = 0x8;
 
-/// 热键错误（Serialize 供跨 IPC 回传前端展示）
-#[derive(Debug, Error, Serialize)]
+/// 热键错误（跨 IPC：经 `From<HotkeyError>` 转 CommandError 承载可读串，本类型不直接序列化）
+#[derive(Debug, Error)]
 pub enum HotkeyError {
     #[error("热键组合为空")]
     Empty,
@@ -28,7 +28,7 @@ pub enum HotkeyError {
 }
 
 /// 组合键：Win32 修饰位掩码 + 主键虚拟键码
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotkeyCombo {
     /// 修饰键位掩码（MOD_* 位或）
     pub mods: u32,
@@ -129,7 +129,9 @@ fn vk_name(vk: u32) -> String {
 
 // —— Win32 注册运行时（PL015.4，仅 Windows）——
 // 线程模型：专用线程 RegisterHotKey（hwnd=NULL=线程热键）+ GetMessageW 循环；
-// WM_HOTKEY → 存储的回调（经 AppHandle 投主线程执行捕获）；换档 = PostThreadMessage
+// WM_HOTKEY → 存储的回调在热键线程直调执行捕获（实现注记：未走 run_on_main_thread
+// ——捕获流程仅读剪贴板 + 入库，AppContext 有锁保护、剪贴板插件跨线程安全，行为
+// 等价，沿 PL003.3 先例）；换档 = PostThreadMessage
 // WM_QUIT 杀旧线程 + JoinHandle 同步等待退出 → 新线程注册（mpsc 回传注册结果，
 // 命令层同步得知成功/失败——失败由命令层回滚落库旧值）。
 
@@ -142,7 +144,7 @@ const WM_QUIT: u32 = 0x0012;
 #[cfg(target_os = "windows")]
 static THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// 热键触发回调（捕获流程，主线程执行）；spawn 时设置，reregister 复用
+/// 热键触发回调（捕获流程，热键线程直调——线程模型见运行时段实现注记）；spawn 时设置，reregister 复用
 #[cfg(target_os = "windows")]
 static ON_HOTKEY: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> = std::sync::Mutex::new(None);
 
@@ -174,6 +176,7 @@ mod win {
         }
     }
 
+    #[link(name = "user32")]
     extern "system" {
         pub fn RegisterHotKey(hwnd: isize, id: i32, mods: u32, vk: u32) -> i32;
         pub fn UnregisterHotKey(hwnd: isize, id: i32) -> i32;
@@ -195,11 +198,10 @@ pub fn set_on_hotkey(callback: Box<dyn Fn() + Send>) {
 /// FIX004.7 四点加固：tid 先落位再回传 / PostThreadMessageW 检查返回值 / 超时报错
 /// 不带病推进 / 退出清零用 CAS 只在自己仍是登记者时清
 #[cfg(target_os = "windows")]
-pub fn reregister(app: tauri::AppHandle, combo: HotkeyCombo) -> Result<(), String> {
+pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::Duration;
-    let _ = app; // 预留：捕获流程经 ON_HOTKEY 闭包捕获句柄，此处暂不需 app
 
     // 1. 杀旧线程（无旧线程则跳过）并轮询等待退出——旧线程退出循环时 Unregister
     //    热键，保证新注册不被自己占位

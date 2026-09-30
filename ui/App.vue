@@ -35,6 +35,9 @@ useDragReorder();
 // 此后随 Rust 的 window-focus 事件翻转（窗口恒纯 alpha 透明，2026-09-28 定案）
 const windowFocused = ref(false);
 let unlistenFocus: UnlistenFn | undefined;
+// 关窗 T 腿句柄（FIX004.19 T+R3 双腿）：白板组件引用供关窗前强制落库
+let unlistenClose: UnlistenFn | undefined;
+const whiteboardRef = ref<InstanceType<typeof WhiteboardView> | null>(null);
 
 // 二期三页签（PL004）：清单（一期功能）/ 气泡（临时剪贴板）/ 白板（临时草稿）
 type TabKey = "todos" | "bubbles" | "whiteboard";
@@ -201,8 +204,19 @@ onMounted(async () => {
       windowFocused.value = focused;
     })
     .catch((err) => console.error("isFocused 查询失败（纱态保持透明态默认）", err));
+  // 关窗 T 腿（FIX004.19 T+R3 双腿，探针实测推翻 V0.1.1.1"关闭挂起"旧结论——健康
+  // webview + 正确用法不挂，实测记录 .temp/close-probe/）：关窗请求先过白板 flush
+  // （组件暴露的强制落库），完成即自动销毁（正常态秒关）；webview 卡死时 Rust R3 腿
+  // 600ms 超时强关兜底（lib.rs）。注册失败落日志——纯浏览器冒烟环境无窗口事件，
+  // 关窗链路仍由 R3 腿保证
+  try {
+    unlistenClose = await getCurrentWindow().onCloseRequested(async () => {
+      await whiteboardRef.value?.flush();
+    });
+  } catch (err) {
+    console.error("onCloseRequested 注册失败（关窗依赖 Rust 600ms 兜底腿）", err);
+  }
   // 白板数据安全 = 800ms 防抖自动保存（组件常驻挂载，计时器切页不中断）；
-  // 不挂 JS onCloseRequested——实测该 API 会把关闭权移交 webview destroy 路径导致关闭挂起
   await refresh();
   await refreshBadge();
   await refreshArchive();
@@ -215,6 +229,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenFocus?.();
+  unlistenClose?.();
 });
 </script>
 
@@ -232,7 +247,7 @@ onUnmounted(() => {
       <TabsBar :model-value="activeTab" :tabs="tabDefs" @update:model-value="onTabChange" />
     </nav>
     <div v-if="activeTab === 'todos'" class="page" id="page-todos">
-      <AddBar @changed="onListChanged" @added="onTodoAdded" />
+      <AddBar @added="onTodoAdded" />
       <TodoList
         :items="items"
         @changed="onListChanged"
@@ -245,7 +260,7 @@ onUnmounted(() => {
     </div>
     <!-- 白板页常驻挂载（v-show）：组件内草稿状态不因切页丢失 -->
     <div v-show="activeTab === 'whiteboard'" class="page" id="page-whiteboard">
-      <WhiteboardView />
+      <WhiteboardView ref="whiteboardRef" />
     </div>
     <!-- 归档板（PL011）：按钮常驻清单页左上角（切页由 archive-fx 出入场动画编排，
          非清单页塌缩隐藏）；v-if 会销毁按钮出入场状态，故常驻挂载 -->

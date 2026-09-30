@@ -159,5 +159,13 @@ mod tests {
                 .expect("序列化必须成功"),
             "\"config.json 保存失败\""
         );
+        // A004 补：PL015 新增 Hotkey 变体一并纳入契约锁死
+        assert_eq!(
+            serde_json::to_string(&CommandError::Hotkey(
+                "热键注册失败（已回退 Ctrl+Alt+C）".into()
+            ))
+            .expect("序列化必须成功"),
+            "\"热键注册失败（已回退 Ctrl+Alt+C）\""
+        );
     }
 }

@@ -62,7 +62,6 @@ pub fn settings_get_bubble_hotkey_core(ctx: &AppContext) -> Result<String, Comma
 #[tauri::command]
 pub fn settings_set_bubble_hotkey(
     combo: String,
-    app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<String, CommandError> {
     let path =
@@ -70,11 +69,13 @@ pub fn settings_set_bubble_hotkey(
     let old = settings_get_bubble_hotkey_core(&ctx)?;
     let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
     #[cfg(target_os = "windows")]
-    if let Err(err) = crate::hotkey::reregister(app.clone(), normalized) {
+    if let Err(err) = crate::hotkey::reregister(normalized) {
         // 回滚：恢复旧热键落库 + 重注册（旧热键此前注册成功，二次失败仅落日志）
-        let _ = settings_set_bubble_hotkey_core(&old, &path, &ctx);
+        if let Err(rollback_err) = settings_set_bubble_hotkey_core(&old, &path, &ctx) {
+            eprintln!("热键回滚落库失败：{rollback_err}");
+        }
         let rollback = crate::hotkey::parse(&old).expect("旧热键必合法");
-        if let Err(re_err) = crate::hotkey::reregister(app, rollback) {
+        if let Err(re_err) = crate::hotkey::reregister(rollback) {
             eprintln!("旧热键重注册失败：{re_err}");
         }
         return Err(CommandError::Hotkey(format!(

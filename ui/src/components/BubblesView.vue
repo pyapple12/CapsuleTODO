@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { BubbleItem, BubbleSnapshot } from "../../types";
+import type { BubbleCaptureOutcome, BubbleItem, BubbleSnapshot } from "../../types";
 import DelButton from "./DelButton.vue";
 import { rowMaskDead } from "../composables/useMaskDead";
 import { syncVeils } from "../composables/useVeils";
@@ -42,7 +42,7 @@ watch(
     if (n > 0) {
       showEmpty.value = false;
     } else if ((o ?? 0) > 0) {
-      window.setTimeout(() => {
+      emptyTimer = window.setTimeout(() => {
         if (items.value.length === 0) showEmpty.value = true;
       }, 420);
     } else {
@@ -58,13 +58,15 @@ let copiedTimer = 0;
 let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
+let emptyTimer = 0; // showEmpty 兜底句柄（卸载清理，FIX004.20）
+let clearFxTimer = 0; // 清空集体退场收尾句柄（卸载清理，FIX004.20）
 
 const clearBtn = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
 /** 满 maxBubbles 警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
- * 阈值由设置板步进（已持久化，PL014.2 落库）。snapshot.remind（Rust 满额裁决）不再
- * 消费，前端以本地阈值比较显隐 */
+ * 阈值由设置板步进（已持久化，PL014.2 落库）即时生效。满额裁决收敛前端本地
+ * （FIX004.23：Rust 侧 snapshot.remind 死值已删，契约只剩 items） */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
 
 /** 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里） */
@@ -122,10 +124,7 @@ const CLIPBOARD_X_ICON =
 async function capture(): Promise<void> {
   cancelClearConfirm();
   try {
-    const outcome = await invoke<{
-      status: "added" | "duplicate";
-      item?: { id: number; text: string };
-    }>("bubble_capture");
+    const outcome = await invoke<BubbleCaptureOutcome>("bubble_capture");
     error.value = "";
     duplicate.value = outcome.status === "duplicate";
     copied.value = !duplicate.value;
@@ -217,7 +216,7 @@ async function onClearClick(): Promise<void> {
       void li.offsetHeight; // 强制回流：锁定起步高度
       li.style.height = "0";
     });
-    window.setTimeout(async () => {
+    clearFxTimer = window.setTimeout(async () => {
       try {
         await invoke("bubble_clear");
         await refresh();
@@ -381,7 +380,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
+  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, emptyTimer, clearFxTimer].forEach((t) =>
+    window.clearTimeout(t),
+  );
   rebuildObserver?.disconnect();
   unmountScrollKit();
   unregisterRollback?.();

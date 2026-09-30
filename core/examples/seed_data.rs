@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use capsule_todo::paths;
-use capsule_todo::storage::Storage;
+use capsule_todo::storage::{BubbleAddOutcome, Storage};
 
 const HOUR: i64 = 3600 * 1000;
 const DAY: i64 = 24 * HOUR;
@@ -144,10 +144,20 @@ fn main() {
         storage.toggle(item.id).expect("勾选归档必须成功");
     }
 
-    // —— 气泡：短/中/超长轮转 ——
+    // —— 气泡：短/中/超长轮转（PL015.5 去重生效：池内文本命中库内已有则跳过计数，
+    // 摘要如实报告——不再静默丢弃 Duplicate）——
+    let mut bubbled = 0usize;
+    let mut bubble_dups = 0usize;
     for i in 0..bubble_count {
         let text = BUBBLE_POOL[i % BUBBLE_POOL.len()];
-        storage.add_bubble(text).expect("注入气泡必须成功");
+        match storage.add_bubble(text) {
+            Ok(BubbleAddOutcome::Added(_)) => bubbled += 1,
+            Ok(BubbleAddOutcome::Duplicate) => bubble_dups += 1,
+            Err(err) => {
+                eprintln!("注入气泡失败（APP 可能正在运行占用库）：{err}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // —— 白板：追加一段检查文本（不覆盖既有草稿）——
@@ -162,12 +172,19 @@ fn main() {
     let todos = storage.list().expect("复读清单必须成功");
     let bubbles = storage.list_bubbles().expect("复读气泡必须成功");
     println!(
-        "注入完成：本轮 +{todo_count} 待办 +{done_count} 归档 +{bubble_count} 气泡；\n\
+        "注入完成：本轮 +{todo_count} 待办 +{done_count} 归档 +{bubbled} 气泡；\n\
          当前库内：未完成 {} 条 / 归档 {} 条 / 气泡 {} 条。\n\
-         白板已追加检查段落。打开 APP 即可目测；再次运行本命令可继续追加。",
+         白板已追加检查段落。打开 APP 即可目测；再次运行本命令可继续追加。{}",
         todos.iter().filter(|t| !t.done).count(),
         todos.iter().filter(|t| t.done).count(),
         bubbles.len(),
+        if bubble_dups > 0 {
+            format!(
+                "\n去重跳过 {bubble_dups} 条气泡（文本池轮转命中库内已有文本，按 PL015.5 去重不入库）。"
+            )
+        } else {
+            String::new()
+        },
     );
 }
 

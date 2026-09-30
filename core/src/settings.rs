@@ -19,10 +19,12 @@ pub fn clamp_max_bubbles(value: u32) -> u32 {
     value.clamp(1, 20)
 }
 
+/// serde default 挂钩：旧 config.json 缺 max_bubbles 字段时回填 5（PL014.2）
 fn default_max_bubbles() -> u32 {
     DEFAULT_MAX_BUBBLES
 }
 
+/// serde default 挂钩：旧 config.json 缺 bubble_hotkey 字段时回填 Ctrl+Alt+C（PL015）
 fn default_bubble_hotkey() -> String {
     DEFAULT_BUBBLE_HOTKEY.to_string()
 }
@@ -74,7 +76,10 @@ pub fn load(path: &Path) -> Result<Option<WindowSettings>, SettingsError> {
         Err(err) => return Err(SettingsError::Io(err)),
     };
     let mut settings: WindowSettings = serde_json::from_str(&text)?;
-    // 热键规范化（PL015 白名单⑥）：用户手改 config.json 非法热键静默回默认，
+    // 载入规范化单点（FIX004.17）：上限钳制与热键回默认同段——config.json 载入即合法，
+    // 调用方无需二次钳制（钳制函数为读写两路径单一来源，白名单⑤）
+    settings.max_bubbles = clamp_max_bubbles(settings.max_bubbles);
+    // 热键规范化（PL015 白名单⑦）：用户手改 config.json 非法热键静默回默认，
     // 不崩常驻应用（与 max_bubbles 越界钳制同款纪律）
     if crate::hotkey::parse(&settings.bubble_hotkey).is_err() {
         eprintln!(
@@ -194,12 +199,12 @@ mod tests {
 
     #[test]
     fn out_of_range_config_field_clamps_on_load() {
-        // FIX003.8 读路径闭环：手改 config.json max_bubbles:0 → 加载点钳 1（模拟
-        // lib.rs 装配调用方式：load 后经共享钳制函数再入运行时副本）
+        // FIX003.8 读路径闭环（FIX004.17 收敛单点）：手改 config.json max_bubbles:0
+        // → load 内钳 1，载入即合法（调用方无需再钳）
         let path = temp_path("oob-max.json");
         std::fs::write(&path, r#"{"x": 3, "y": 4, "max_bubbles": 0}"#).expect("写入必须成功");
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
-        assert_eq!(clamp_max_bubbles(loaded.max_bubbles), 1);
+        assert_eq!(loaded.max_bubbles, 1);
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 
@@ -225,7 +230,7 @@ mod tests {
 
     #[test]
     fn bubble_hotkey_invalid_falls_back_to_default() {
-        // PL015.2 白名单⑥：手改非法热键 → 加载点静默回默认，不崩不报错
+        // PL015.2 白名单⑦：手改非法热键 → 加载点静默回默认，不崩不报错
         let path = temp_path("hotkey-invalid.json");
         std::fs::write(&path, r#"{"bubble_hotkey": "Space+鼠标中键"}"#).expect("写入必须成功");
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");

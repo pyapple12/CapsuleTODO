@@ -33,12 +33,10 @@ export interface BubbleItem {
   text: string;
 }
 
-/** 气泡页快照（镜像 BubbleSnapshot；满 5 提醒标记由 Rust 侧裁决，前端零业务） */
+/** 气泡页快照（镜像 BubbleSnapshot；满额提醒显隐由前端本地阈值裁决，FIX004.23） */
 export interface BubbleSnapshot {
   /** 气泡列表（sort_order 升序 = 拖拽序，PL013 起） */
   items: BubbleItem[];
-  /** 是否达到提醒阈值 */
-  remind: boolean;
 }
 
 /** 气泡捕获结果（镜像 BubbleCaptureOutcome；duplicate = 重复内容未入库，PL015.5） */

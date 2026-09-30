@@ -45,10 +45,9 @@ interface MockBubble {
   sort_order?: number;
 }
 
-/** 气泡页快照（镜像 BubbleSnapshot；满 5 提醒裁决在 mock 侧对齐 Rust 语义） */
+/** 气泡页快照（镜像 BubbleSnapshot；满额提醒显隐由前端本地阈值裁决，FIX004.23） */
 interface MockBubbleSnapshot {
   items: MockBubble[];
-  remind: boolean;
 }
 
 /** 气泡提醒阈值（PL014 接配置前的硬编码对齐值） */
@@ -218,7 +217,6 @@ const handlers: Record<string, CommandHandler> = {
     items: [...state.bubbles].sort(
       (a, b) => (a.sort_order ?? a.id) - (b.sort_order ?? b.id) || a.id - b.id,
     ),
-    remind: state.bubbles.length >= MAX_BUBBLES,
   }),
   // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验+去重链路，
   // FIX004.5：返回 BubbleCaptureOutcome 形状与真机同构——重复返回 duplicate 不入库）。
@@ -281,7 +279,7 @@ const handlers: Record<string, CommandHandler> = {
     });
     return null;
   },
-  // 设置（PL014.2）：读取/写入气泡提醒上限（内存态；同步 remind 阈值）
+  // 设置（PL014.2）：读取/写入气泡提醒上限（内存态，设置板步进回显用）
   settings_get_max_bubbles: () => MAX_BUBBLES,
   settings_set_max_bubbles: (args) => {
     MAX_BUBBLES = Math.min(20, Math.max(1, Number(args.value) || 5));

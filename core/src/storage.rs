@@ -1,4 +1,5 @@
-//! SQLite 清单存储：todos 表增删勾查（全参数化绑定，禁 SQL 拼接）。
+//! SQLite 存储层：todos/bubbles/whiteboard 三表增删改查（全参数化绑定，禁 SQL 拼接），
+//! 含气泡去重裁决（add_bubble 重复文本返回 Duplicate 不入库，PL015.5）。
 //! 单一事实源 = db（PL002 定案）：操作即落库，list 排序 = 未完成在前按 id 升序。
 //! PL010 扩容：todos 三列迁移（created_at/done_at/note，幂等 ALTER）+ 时间源注入
 //! （NowFn 默认系统时钟，测试注入固定值零真实等待）+ rename/set_note。
@@ -11,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
 use crate::bubble::BubbleItem;
+use crate::todo::TodoItem;
 
 /// 气泡新增结果（PL015.5 去重裁决）：重复文本拒入库不是错误——手动捕获据此切换
 /// "重复捕获，无效！"占字态，热键路径据此静默；Added 携带回填 id 的新条目
@@ -23,7 +25,8 @@ pub enum BubbleAddOutcome {
 }
 
 impl BubbleAddOutcome {
-    /// 测试与仅关心新增的调用方：取新增条目（Duplicate 时 panic——调用方应先分支）
+    /// 测试辅助：取新增条目（Duplicate 时 panic——调用方应先分支；生产路径一律 match）
+    #[cfg(test)]
     pub fn added_item(self) -> BubbleItem {
         match self {
             BubbleAddOutcome::Added(item) => item,
@@ -36,8 +39,6 @@ impl BubbleAddOutcome {
         matches!(self, BubbleAddOutcome::Duplicate)
     }
 }
-
-use crate::todo::TodoItem;
 
 /// 存储层错误：SQLite 透传 / IO（目录自建失败）/ 指定条目不存在 / 重排 id 集合不合法
 #[derive(Debug, Error)]

@@ -4,8 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 
 // 添加行（PL008.7 重构）：REC 按钮（average-swan-99 直引配方）+ plastic-parrot-88 输入框。
 // 回车/REC 双触发；空文本禁用；失败可见反馈（成功即清空并清除错误，沿 FIX001.5 模式）。
-// added 与 changed 成对发出：前者供视图拉顶（新增置顶定案的配套），后者走统一刷新
-const emit = defineEmits<{ changed: []; added: [] }>();
+// added 单一事件（FIX004.21 收敛）：消费端 onTodoAdded 统一刷新 + 拉顶——
+// 原 changed/added 双发使刷新链双跑（同一新增 6 个 invoke，其中 3 个纯重复）
+const emit = defineEmits<{ added: [] }>();
 const draft = ref("");
 const error = ref("");
 
@@ -18,7 +19,6 @@ async function add(): Promise<void> {
     await invoke("todo_add", { text });
     draft.value = "";
     error.value = "";
-    emit("changed");
     emit("added");
   } catch (err) {
     error.value = `添加失败：${String(err)}`;

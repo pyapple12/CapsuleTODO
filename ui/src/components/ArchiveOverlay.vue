@@ -186,6 +186,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.clearTimeout(animTimer);
+  window.clearTimeout(emptyTimer);
   unmountScrollKit();
   restoreTimers.forEach((handle) => window.clearTimeout(handle));
   restoreTimers.clear();
@@ -204,13 +205,14 @@ const listKey = ref(0);
 // 空态文案延至末条 leave 播完（after-leave）出现；无 leave 路径（清空两段式 DOM
 // 直改）由定时器兜底置位
 const showEmpty = ref(props.items.length === 0);
+let emptyTimer = 0; // showEmpty 兜底句柄（卸载清理，FIX004.20）
 watch(
   () => props.items.length,
   (n, o) => {
     if (n > 0) {
       showEmpty.value = false;
     } else if ((o ?? 0) > 0) {
-      window.setTimeout(() => {
+      emptyTimer = window.setTimeout(() => {
         if (props.items.length === 0) showEmpty.value = true;
       }, 420);
     } else {

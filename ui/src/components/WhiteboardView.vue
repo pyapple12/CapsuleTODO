@@ -16,20 +16,30 @@ const DEBOUNCE_MS = 800; // 防抖自动保存间隔（design whiteboard.js 同�
 const content = ref("");
 const savedContent = ref(""); // 最近一次成功保存的内容（脏判定基准）
 const error = ref("");
+const loadFailed = ref(false); // 载入失败态：禁编辑防"空白覆盖旧草稿"（FIX004.19）
 const boardEl = ref<HTMLTextAreaElement | null>(null);
 let debounceTimer = 0;
 let glassBar: { sync: () => void; destroy: () => void } | null = null;
 let boardRead: { sync: () => void; settle: () => void; destroy: () => void } | null = null;
 
-/** 拉取白板内容（首启空串） */
+/** 拉取白板内容（首启空串）：失败置错误行 + 禁编辑（防空白覆盖旧草稿），重试钮可再拉 */
 async function load(): Promise<void> {
   try {
     const text = await invoke<string>("whiteboard_load");
     content.value = text;
     savedContent.value = text;
+    loadFailed.value = false;
+    error.value = "";
   } catch (err) {
+    loadFailed.value = true;
+    error.value = `白板加载失败：${String(err)}`;
     console.error("whiteboard_load 拉取失败", err);
   }
+}
+
+/** 重试载入（错误行入口）：成功解除禁编辑并恢复内容 */
+function retryLoad(): void {
+  void load();
 }
 
 /** 立即保存脏数据；成功返回 true（供切页/关窗 flush 判定） */
@@ -94,10 +104,14 @@ onUnmounted(() => {
         class="board"
         placeholder="随手记点什么…"
         spellcheck="false"
+        :disabled="loadFailed"
         @input="onInput"
       ></textarea>
     </div>
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error">
+      {{ error }}
+      <button v-if="loadFailed" class="retry-btn" @click="retryLoad">重试</button>
+    </p>
   </section>
 </template>
 

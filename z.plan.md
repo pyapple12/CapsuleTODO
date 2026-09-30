@@ -383,7 +383,7 @@ SQL 全参数化零拼接；迁移逐列幂等可断点续迁；时间源全注�
 > 方案要点：
 >
 > - **热键解析器（纯逻辑 TDD）**：`core/src/hotkey.rs`——"Ctrl+Alt+C" ↔ HotkeyCombo{mods, vk}（MOD_* 常量与 Win32 对齐），parse/to_display 往返恒等，非法组合 thiserror 报错
-> - **注册运行时**：RegisterHotKey + GetMessageW 循环线程（fullscreen.rs 先例），WM_HOTKEY → AppHandle.run_on_main_thread 投递捕获流程；reregister = Unregister + 重组装线程（PostThreadMessage WM_QUIT）；注册失败（热键被占）Err 上抛不裸奔
+> - **注册运行时**：RegisterHotKey + GetMessageW 循环线程（fullscreen.rs 先例），WM_HOTKEY → AppHandle.run_on_main_thread 投递捕获流程；reregister = Unregister + 重组装线程（PostThreadMessage WM_QUIT）；注册失败（热键被占）Err 上抛不裸奔（**实现注记（FIX004.9 补）**：实际未走 run_on_main_thread——捕获流程仅读剪贴板 + 入库，AppContext 有锁保护、剪贴板插件跨线程安全，WM_HOTKEY 在热键线程直调行为等价，沿 PL003.3 先例）
 > - **捕获流程（与气泡页同一条数据通路）**：Rust 侧读剪贴板 → bubble 校验 → add_bubble 排头插入 → 满 5 走现有满额数据流（气泡页自会呈现）；全程失败落日志静默——贴"无系统通知常驻"一期定案，桌面常驻面板即反馈
 > - **重复内容去重（2026-09-30 增补）**：气泡页手动捕获与热键捕获**同一裁决**——内容与现存气泡重复时拒绝入库（数据层查重，两入口天然同规）；返回 Duplicate 语义供前端提示，提示形态定案 = 捕获钮占字态复用（成功"✓已捕获" clipboard-check 图标 / 重复"✕重复捕获，无效！"否定图标同款风格，50% 紫禁点 1s 同款），热键路径天然静默
 > - **设置板快捷键行**：当前组合显示 + 录制态（keydown 捕获修饰+主键，Esc 取消）→ 落 config.json 扩展字段 bubble_hotkey（默认 Ctrl+Alt+C，旧文件回填默认，非法值静默回默认）→ 触发重注册；冲突红字 + 回退旧热键
@@ -459,3 +459,16 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 ### 三、亮点
 
 三路交叉确认：SQL 全参数化、时间源注入、锁序纪律无反向、types.ts↔serde 主契约零漂移；FIX003 十八项修复十六项完好在位（两项漏派如实列出）；PL015 解析器往返恒等 10 用例、去重三裁决用例、热键回滚回退设计（失败回滚旧热键落库+重注册）结构正确；归档/气泡删末条动画修复的 CSS 链路经假行模拟证实健康。
+
+## 附录 PL016：热键捕获两改进（2026-09-30 立项）
+
+> 背景：PL015 全局热键落地的两个余量改进（用户 2026-09-30 拍板立项）：①**失焦进气泡实时刷新**——热键入库后 app 失焦、气泡页可见时不切页即现新泡；②**圈选直达**——任意应用选中文字按热键直接捕获（无需先 Ctrl+C），实现 = 模拟 Ctrl+C 两段式（快照 → 合成 → 等变化 → 读新 → 恢复）。
+> 用户定案两边界：无选区/复制失败（300ms 剪贴板无变化）= **静默**（不回退捕获旧剪贴板——换了剪贴板内容的场景语义模糊）；**不设设置板开关**（默认常开，行为确定性优先）。
+> 方案要点：
+>
+> - **失焦刷新（小）**：`commands/bubble.rs` quiet 路径入库 Added 后 `app.emit("bubble-changed", ())`（emit 失败落日志，热键反馈静默定案不变；Duplicate/Err 不发）；`ui/App.vue` onMounted listen → refreshBadge（徽章实时）+ `BubblesView.vue` onMounted 同款 listen → refresh（组件 v-if 挂载 = 仅气泡页激活时刷新），两处 onUnmounted 清；ACL 零改动（listen 权限经 window-focus 实证 core:default 覆盖）
+> - **圈选直达（大）**：新 `core/src/capture.rs`（cfg windows）——`snapshot_text() -> Option<String>` / `restore_text()`（复用 clipboard 插件读写，不裸 Win32；恢复失败落日志不阻断）+ `synthesize_ctrl_c()`（user32 keybd_event 直连：VK_CONTROL down → 'C' down/up → CONTROL up，键间 10ms；extern 补 #[link(name="user32")] 对齐 fullscreen/hotkey 先例）+ `wait_clipboard_change(before, timeout, now, read)` 纯逻辑状态机（10ms 步进轮询、注入时间源与读函数 TDD：立即命中/超时静默/变化后命中/空文本忽略）；`commands/bubble.rs` 热键路径编排：快照 → 合成 → 等 300ms → 命中 = bubble_capture_core 入库（校验/去重同规）+ 恢复原剪贴板 + emit bubble-changed（与①同出口）；未命中 = 静默（原剪贴板未变无需恢复）
+> - **终端边界（条件条目）**：cmd/conhost 无选区时 Ctrl+C = 中断信号风险，实测若实证成立则 capture.rs 加前台控制台守卫（GetForegroundWindow + GetClassName 分治 ConsoleWindowClass 与 Windows Terminal CASCADIA_HOSTING_WINDOW_CLASS）——命中控制台 = 跳过合成直接静默；实测无风险则记豁免
+>
+> 红线：合成按键向系统发真实 Ctrl+C，live 验证须用户明示授权或亲自配合（实测矩阵：Windows Terminal 有选区 / cmd conhost / 管理员提权前台窗 UIPI 拒绝→静默自愈 / 无选区静默 / 剪贴板占用重试 3×10ms）；剪贴板恢复失败落日志不阻断（容错白名单登记候选）；测试零污染用户库；热键线程编排延续 PL015.4 直调实现注记。
+> 状态：🚧 已立项未开工（任务组见 x.progress.md PL016，5 条；完成时版本号用户拍板——建议合计推 minor V0.1.5.0 或逐条 feat V0.1.4.3 起）

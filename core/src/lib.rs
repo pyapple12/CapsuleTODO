@@ -93,9 +93,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let db = paths::db_path()?;
     let storage = Storage::open(&db).map_err(|err| format!("清单库打开失败（{db:?}）：{err}"))?;
     // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
-    // max_bubbles 读路径钳制闭环（白名单⑤——手改文件越界静默收敛边界，与写路径同规）
-    let mut app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
-    app_settings.max_bubbles = settings::clamp_max_bubbles(app_settings.max_bubbles);
+    // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
+    let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
 
     tauri::Builder::default()
         // 单实例（PL003）：builder 首位注册；二次启动唤起已运行实例的主窗口
@@ -172,7 +171,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 注册失败落日志不阻断启动（白名单：热键缺失不阻断主流程）
             #[cfg(target_os = "windows")]
             {
-                use tauri::Manager as _;
                 let hotkey_text = app
                     .state::<AppContext>()
                     .lock_settings()
@@ -189,7 +187,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hotkey::set_on_hotkey(Box::new(move || {
                     commands::bubble::bubble_capture_from_clipboard_quiet(&handle);
                 }));
-                if let Err(err) = hotkey::reregister(app.handle().clone(), combo) {
+                if let Err(err) = hotkey::reregister(combo) {
                     eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
                 }
             }
@@ -198,13 +196,27 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .on_window_event(|window, event| {
             // 位置记忆：关闭时保存（拖动中不写盘）。max_bubbles 从运行时设置透传，
             // 与位置共存一份 config.json（PL014.2）
-            if let WindowEvent::CloseRequested { .. } = event {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 // 锁中毒跳过保存落日志（AGENTS 容错白名单登记项）：默认值写盘会静默
                 // 覆盖用户已存设置——位置同弃（下次启动回默认位），磁盘现值不动
                 match window.app_handle().state::<AppContext>().lock_settings() {
                     Ok(guard) => save_window_position(window, &guard),
                     Err(err) => eprintln!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}"),
                 }
+                // R3 兜底腿（FIX004.19 T+R3 双腿）：拦默认关，600ms 后无条件销毁——
+                // T 腿（前端 onCloseRequested flush 白板后自动销毁）健康时先到即秒关、
+                // 进程随之退出本计时器不再触发；webview 卡死时 T 腿事件不可达，本腿
+                // 保证任意状态 ≤600ms 必关（探针实测 .temp/close-probe/ 五场景）。
+                // destroy 派发走 Rust 事件循环不依赖 webview 线程；先到腿销毁后的
+                // 迟到 destroy 报错属预期竞态，落日志即止
+                api.prevent_close();
+                let win = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    if let Err(err) = win.destroy() {
+                        eprintln!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}");
+                    }
+                });
             }
             if let WindowEvent::Focused(focused) = event {
                 #[cfg(target_os = "windows")]

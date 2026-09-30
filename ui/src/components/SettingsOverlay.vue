@@ -301,7 +301,7 @@ async function step(delta: -1 | 1): Promise<void> {
       <div class="setting-row inline">
         <div>
           <p class="setting-name">气泡提醒数量</p>
-          <p class="setting-desc">气泡达到该数量时横幅提醒清理</p>
+          <p class="setting-desc">超过该数量时显示清理提醒</p>
         </div>
         <div class="setting-control stepper">
           <button
