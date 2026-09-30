@@ -277,3 +277,38 @@
 #### 阶段 C：收口
 
 - [ ] PL015.7 全量回归与文档同步 —— cargo 门禁四件套 + 既有用例零回归 + AGENTS.md 同步（模块清单 hotkey.rs、容错白名单热键两条、技术栈快捷键行）+ 本文件勾结 + commit `feat: V0.1.4.0，全局气泡热键`（minor 推进：新功能）；验证：门禁全绿 + live 全链 + 用户目验通过
+
+### FIX004: 第4轮审计修复 [audit#A004]
+
+> 范围：A004 报告 P2×7 + P3×14 合并清单（PL015 新增代码引入面为主 + 两条 FIX003 漏派遗留）。P2 先修（含一条"需验证"先行 IAB 复现），P3 按条目平铺；每条改完即跑对应验证。
+> 红线：只修清单内条目；修复引入新缺陷 = 未完成；IAB 断言补齐随 mock 修复一并落（新命令 mock/真机双注册纪律）。
+
+#### P2
+
+- [x] FIX004.1 [P2] 详情板防抖"改回原文"残留 —— ui/src/components/DetailOverlay.vue:141-174：watch 相等分支（text === todo.text 直接 return）补清 renamePending=null + clearTimeout(renameTimer)，noteDraft 段（:161-174）同构；验证：IAB 新用例"输入-退格回原文-310ms 断言库值为原文"（2026-09-30 待验证）
+- [x] FIX004.2 [P2] 录制态遗留吞键盘 —— ui/src/components/SettingsOverlay.vue：close() 首行与 toggle(false) 分支补 hotkeyRecording.value = false（收板/切页签退出录制态，解除 document keydown capture 拦截）；验证：IAB"录制中点板外→按 Enter 正常输入"断言（待验证）
+- [x] FIX004.3 [P2] duplicate 占字永久卡死 —— ui/src/components/BubblesView.vue:312 复制占字回调补 duplicate.value = false（或 copied/duplicate 收敛单占字状态机：captured/duplicate/idle 三态互斥）；验证：IAB"重复捕获→双击复制→1s 后按钮恢复可点"断言（待验证）
+- [x] FIX004.4 [P2] 单行拖拽还原缺 forceRemount（需验证）—— ui/src/composables/useDragReorder.ts:279-286：rows.length < 2 还原路径 ctx.li.remove() 后补 hookBag.forceRemount?.()；验证：IAB"单行清单长按 0.25s 松手→行仍在"断言（先行复现确认存在再修；不存在则记豁免勾结）
+- [x] FIX004.5 [P2] mock 注册面同步 —— ui/src/dev/mock-invoke.ts：①补 settings_get_bubble_hotkey（回默认串）/settings_set_bubble_hotkey（落 mock 设置 + 可模拟占用失败态）两 handler；②bubble_capture 返回改 BubbleCaptureOutcome 形状 {status:"added",item}/{status:"duplicate"} + mock 内存查重；验证：IAB 热键行读取/录制落库/重复占字三断言走 mock 通道全绿
+- [x] FIX004.6 [P2] 清单页删末条无动画（空态互斥漏网）—— ui/src/components/TodoList.vue:290-292：与归档/气泡同款共存渲染改造（空态文案延后 after-leave 出现，TransitionGroup 恒挂载）；验证：IAB"删至最后一条待办→塌缩动画播完→空态文案出现"断言 + 用户目验
+- [x] FIX004.7 [P2] 热键线程握手竞态 —— core/src/hotkey.rs:204-243：①THREAD_ID.store(tid) 提到 tx.send(Ok) 之前；②PostThreadMessageW 返回值检查失败短重试；③线程退出清零改 compare_exchange(tid, 0) 只在自己仍是登记者时清；④500ms 超时改返回 Err 不带病 spawn 新线程；验证：cargo test 全绿 + live 快速连续改热键 10 次后旧组合不再触发捕获（新组合正常）（2026-09-30 已验证：P2 七条修复落地——1/2/3/6 用户目验过，4 复现确认后终版交互=单行照常拖拽松手回原位（用户确认），5 mock 同步待下轮 IAB 复核，7 静态加固待 live 复核；P3 十四条未修留档）
+
+#### P3
+
+- [ ] FIX004.8 [P3] 热键回滚落库吞错 —— core/src/commands/settings.rs:75：let _ = settings_set_bubble_hotkey_core(...) 改 if let Err(e) = ... { eprintln!("热键回滚落库失败：{e}"); }；验证：cargo clippy -D warnings 绿
+- [ ] FIX004.9 [P3] 线程模型文档失实 —— core/src/hotkey.rs:4 注释与 commands/bubble.rs:12-13 改实情（"hotkey 线程直调捕获，AppContext 有锁、剪贴板插件跨线程安全"）+ 消 hotkey.rs reregister 的 let _ = app 死参；x.progress PL015.4/PL015.5 与 z.plan PL015 表述按 PL003.3 先例补"实现注记：未走 run_on_main_thread，行为等价"；验证：cargo doc --no-deps 绿
+- [ ] FIX004.10 [P3] 契约测试补 Hotkey 断言 —— core/src/commands/mod.rs 契约测试补 CommandError::Hotkey("…") 序列化为 "\"…\"" 断言；验证：cargo test mod 契约用例绿
+- [ ] FIX004.11 [P3] hotkey.rs 死代码与链接 —— core/src/hotkey.rs:16-17/31 删 Serialize 派生（HotkeyError 注释改"经 From<HotkeyError> 转 CommandError 跨 IPC"）+ :177-183 extern 块补 #[link(name = "user32")] 对齐 fullscreen.rs 先例；验证：cargo check 绿 + 独立编译（注释 fullscreen 模块）链接仍成功（验证后还原）
+- [ ] FIX004.12 [P3] lib.rs 冗余 fn 内 use —— core/src/lib.rs:175 删 use tauri::Manager as _（文件头已全局导入）；验证：cargo clippy -D warnings 绿
+- [ ] FIX004.13 [P3] AGENTS 三处失实 —— AGENTS.md:5 状态头推进 V0.1.4.0（版本线补 V0.1.3.x/V0.1.4.0）、:47-58 目录树 src/ 补 glass_backdrop.rs 行、core/src/settings.rs:77 注释"白名单⑥"改"白名单⑦"；验证：三处 grep 核对
+- [ ] FIX004.14 [P3] seed_data 去重漏接 —— core/examples/seed_data.rs:148-165：match add_bubble 返回 Duplicate 计数，摘要行分行报"去重跳过 N 条"；或 BUBBLE_POOL 扩至 ≥ 默认注入数；验证：cargo run --example seed_data 摘要行与库内真实数一致
+- [ ] FIX004.15 [P3] storage 规范两处 —— core/src/storage.rs:40 TodoItem use 上提与 :13 相邻（消夹置）+ :1 模块头补全"todos/bubbles/whiteboard 三表与去重裁决"职责；验证：cargo clippy -D warnings 绿 + 头部核对
+- [ ] FIX004.16 [P3] added_item 可见性收敛 —— core/src/storage.rs:27-37 与 commands/bubble.rs:41-46 两处 added_item 加 #[cfg(test)]（测试辅助定案，生产路径全部 match 分支）；验证：cargo test 全绿 + cargo clippy -D warnings 绿
+- [ ] FIX004.17 [P3] 载入规范化收敛单点 —— core/src/settings.rs load 内补 max_bubbles 钳制（clamp_max_bubbles 调用挪入，与热键规范化同段）+ lib.rs:97-98 删装配点钳制；settings.rs:196-204 测试改直断 loaded.max_bubbles == 1；验证：cargo test settings 绿
+- [ ] FIX004.18 [P3] serde default 补注释 —— core/src/settings.rs:22-28 两私有函数各补一行 /// 文档注释；验证：cargo doc --no-deps 绿
+- [ ] FIX004.19 [P3] Whiteboard flush 接线与 load 错误呈现 —— ui/src/components/WhiteboardView.vue：load 失败置 error 行（与 save 失败一致）+ 考虑失败禁编辑；App.vue 持 whiteboardRef 并在 Rust CloseRequested 前兜底 flush（或 beforeunload 方案二选一）；验证：IAB"load 失败置 error 行"断言 + 关窗不丢字（待验证）
+- [ ] FIX004.20 [P3] 定时器清理补全 —— ui/src/components/BubblesView.vue:220 清空集体退场句柄与 :45 showEmpty 兜底句柄、ArchiveOverlay.vue:213 同款句柄——全部收进组件 onUnmounted 清理清单；验证：vue-tsc 绿 + 快速切页无孤儿回调报错
+- [ ] FIX004.21 [P3] 新增双跑收敛 —— ui/src/components/AddBar.vue 只发 added（去 changed）或 ui/App.vue onTodoAdded 不调 onListChanged（改为 refresh 链一次）；验证：IAB 新增时 invoke 计数减半断言（或 dev 日志核对）
+- [ ] FIX004.22 [P3] 单源复用两处 —— ui/src/styles/settings.css:410 hotkey-error 改 var(--danger)；ui/src/components/BubblesView.vue:125-128 invoke 泛型改 BubbleCaptureOutcome（types.ts 镜像复用）；验证：vue-tsc 绿 + 重复占字态目验不变
+- [ ] FIX004.23 [P3] 设置板文案漂移 —— ui/src/components/SettingsOverlay.vue:284 描述改"超过该数量时显示清理提醒"（与 hasWarning > 语义一致）；验证：目验
+- [ ] FIX004.24 验证收尾 —— 全门禁四件套（cargo fmt --check/clippy -D warnings/test/vue-tsc+build）+ IAB 全交互走查重跑（含 FIX004.1-6 新断言）+ 用户目验问题清单过 + 提交 `fix: V0.1.4.1，第4轮审计修复`（R 递增）；验证：门禁全绿 + IAB 全绿 + 用户回执

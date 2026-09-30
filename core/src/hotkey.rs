@@ -191,7 +191,9 @@ pub fn set_on_hotkey(callback: Box<dyn Fn() + Send>) {
 }
 
 /// 启动（或替换）全局热键线程：注册结果经 mpsc 同步回传（命令层可同步失败回滚）。
-/// 旧线程经 WM_QUIT 优雅退出并轮询等待；新线程注册失败立即报错（热键被占等）
+/// 旧线程经 WM_QUIT 优雅退出并轮询等待；新线程注册失败立即报错（热键被占等）。
+/// FIX004.7 四点加固：tid 先落位再回传 / PostThreadMessageW 检查返回值 / 超时报错
+/// 不带病推进 / 退出清零用 CAS 只在自己仍是登记者时清
 #[cfg(target_os = "windows")]
 pub fn reregister(app: tauri::AppHandle, combo: HotkeyCombo) -> Result<(), String> {
     use std::sync::atomic::Ordering;
@@ -203,16 +205,25 @@ pub fn reregister(app: tauri::AppHandle, combo: HotkeyCombo) -> Result<(), Strin
     //    热键，保证新注册不被自己占位
     let old = THREAD_ID.swap(0, Ordering::SeqCst);
     if old != 0 {
-        unsafe {
-            win::PostThreadMessageW(old, WM_QUIT, 0, 0);
+        // 投递失败短重试（目标线程消息队列未建时投递会失败，FIX004.7-②）
+        for _ in 0..10 {
+            let sent = unsafe { win::PostThreadMessageW(old, WM_QUIT, 0, 0) };
+            if sent != 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
         while THREAD_ID.load(Ordering::SeqCst) == old && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
+        if THREAD_ID.load(Ordering::SeqCst) == old {
+            return Err("旧热键线程退出等待超时，放弃替换以防热键残留".to_string());
+        }
     }
 
-    // 2. 新线程：注册 → 回传结果 → 消息循环（WM_HOTKEY → 回调）
+    // 2. 新线程：注册 → tid 落位 → 回传结果（FIX004.7-①：tid 先登记再回传，防
+    //    "成功已返回而 tid 未登记"窗口被并发 reregister 击穿）→ 消息循环
     let (tx, rx) = mpsc::channel::<Result<(), String>>();
     std::thread::Builder::new()
         .name("bubble-hotkey".to_string())
@@ -224,8 +235,8 @@ pub fn reregister(app: tauri::AppHandle, combo: HotkeyCombo) -> Result<(), Strin
                     ));
                     return;
                 }
-                let _ = tx.send(Ok(()));
                 THREAD_ID.store(win::GetCurrentThreadId(), Ordering::SeqCst);
+                let _ = tx.send(Ok(()));
                 let mut msg = win::Msg::zeroed();
                 // >0 = 收到消息；0 = WM_QUIT；<0 = 错误（错误时退出兜底防死循环）
                 while win::GetMessageW(&mut msg, 0, 0, 0) > 0 {
@@ -237,12 +248,18 @@ pub fn reregister(app: tauri::AppHandle, combo: HotkeyCombo) -> Result<(), Strin
                     }
                 }
                 let _ = win::UnregisterHotKey(0, HOTKEY_ID);
-                THREAD_ID.store(0, Ordering::SeqCst);
+                // FIX004.7-③：CAS 清零——只在登记仍是自己时清，防迟到退出覆盖新线程登记
+                let _ = THREAD_ID.compare_exchange(
+                    win::GetCurrentThreadId(),
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
             }
         })
         .map_err(|err| format!("热键线程启动失败：{err}"))?;
 
-    // 3. 同步等注册结果（命令层据此回滚/成功）
+    // 3. 同步等注册结果（FIX004.7-④：超时返回 Err，不带病推进）
     rx.recv_timeout(Duration::from_millis(500))
         .map_err(|_| "热键注册结果等待超时".to_string())?
 }

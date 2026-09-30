@@ -390,3 +390,72 @@ SQL 全参数化零拼接；迁移逐列幂等可断点续迁；时间源全注�
 >
 > 红线：解析器纯逻辑零 tauri 依赖（TDD 先红后绿）；注册失败必须可见回退禁止裸奔失效；测试数据自清理禁污染用户库；AGENTS 容错白名单登记两条（非法热键回默认 / 热键缺失不阻断启动）。
 > 状态：🚧 已立项未开工（任务组见 x.progress.md PL015，7 条三阶段；完成时 commit `feat: V0.1.4.0，全局气泡热键` minor 推进）
+
+## 附录 A004：全量代码审计报告（第4轮，2026-09-30）
+
+> 范围：core/ 全部 .rs + Cargo.toml + tauri.conf.json + capabilities + ui/ 全部 .ts/.vue/.css + package.json + vite.config.ts。方式：三路并行只读通读（Rust 业务组 / Tauri 集成组 / 前端组）+ A003/FIX003 修复项回归复核（grep 批量 + 子代理 git diff 补盲）。基线 commit 4c0ae72（V0.1.4.0）。
+> 状态：📌 待修复（FIX004 任务清单见 x.progress.md）
+
+### 零、上轮（A003/FIX003）修复复核清单
+
+| A003 条目                                                                                                                                                                                                                   | 现状                       | 说明                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------- |
+| FIX003 全部 18 项修复（whiteboard 注册 / 迁移方向 / column_set / 归档滑杆重建 / 详情闭包捕获 / per-item 定时器 / archive-list id / load 钳制 / 锁中毒跳过 / Capabilities 卫生 / todo_add trim / 契约测试 Settings 断言 等） | ✅ 16 项完好在位           | 批量 grep + 三路子代理 git diff 双重复核                                   |
+| BubblesView 清空嵌套 setTimeout 入卸载清理                                                                                                                                                                                  | ❌ 遗留未修（FIX003 漏派） | BubblesView.vue:220 句柄丢弃；危害面补充 = 页签徽章不归零                  |
+| WhiteboardView flush 接线                                                                                                                                                                                                   | ❌ 遗留未修（FIX003 漏派） | App 零调用，关窗防抖窗口输入必丢                                           |
+| 本轮新增代码复现已修模式                                                                                                                                                                                                    | ⚠️ 2 处                    | settings.rs:75 回滚 `let _` 吞错、lib.rs:175 fn 内 use（均在 FIX004 清单） |
+
+### 一、P0-P3 修复清单
+
+#### P2（高）
+
+| 文件:行号                                     | 类型       | 描述                                                                                                                                                                              | 建议                                                  | 性质 | 影响面          |
+| --------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---- | --------------- |
+| ui/src/components/DetailOverlay.vue:141-174   | 1 正确性   | 防抖"改回原文"残留：watch 相等分支直接 return 不清 pending/Timer——300ms 内改回原文，到点仍把中间草稿写库（UI 原文 / DB 中间值分叉）                                               | 相等分支同时清 renamePending/renameTimer（note 同构） | 新增 | 详情板编辑链路  |
+| ui/src/components/SettingsOverlay.vue:155-158 | 1 正确性   | 录制态遗留吞键盘：录制中收板/切页签不复位 recording——document keydown capture 持续吞一切按键                                                                                      | close/toggle 分支补 hotkeyRecording=false             | 新增 | 设置板/全局键盘 |
+| ui/src/components/BubblesView.vue:130-136,312 | 1/8 正确性 | duplicate 占字永久卡死：复制占字回调只复位 copied 不复位 duplicate——捕获钮永久禁用                                                                                                | 复制回调同复位 duplicate（或收敛单占字状态机）        | 新增 | 气泡捕获钮      |
+| ui/src/composables/useDragReorder.ts:279-286  | 1 正确性   | 单行拖拽还原缺 forceRemount（需验证）：单行长按松手后行从 DOM 消失（收场路径已补、还原路径漏挂），数据无损切页自愈                                                                | 还原路径补 forceRemount                               | 新增 | 拖拽排序        |
+| ui/src/dev/mock-invoke.ts:222-289             | 10/11      | mock 注册面落后真机：热键两命令缺（IAB 恒读取失败）、bubble_capture 未返回去重后 {status,item} 形状——PL015 前端分支冒烟零覆盖（A003 whiteboard 教训反向同构）                     | mock 补两命令 + capture 改 BubbleCaptureOutcome 形状  | 新增 | IAB 冒烟通道    |
+| ui/src/components/TodoList.vue:290-292        | 1 正确性   | 删末条待办无动画：清单页仍 v-if/v-else 空态互斥——与归档/气泡同根修复的漏网处（ TransitionGroup 卸载 leave 跳过）                                                                  | 同款共存渲染改造（空态延后 after-leave）              | 新增 | 清单页          |
+| core/src/hotkey.rs:204-243                    | 8 并发     | 热键线程握手竞态（微秒级窗口非确定性）：tid 落位晚于结果回传 / PostThreadMessageW 返回值未检 / 500ms 超时带病推进 / 退出清零无条件覆盖——最坏旧热键残留生效 + 僵尸线程（重启自愈） | tid 提前落位 / 检查返回值 / CAS 清零 / 超时报错不推进 | 新增 | 设置板换热键    |
+
+#### P3（清理/规范/防御，合并后 14 条）
+
+| #   | 文件:行号                                                                  | 类型 | 描述与建议                                                                                                                                       |
+| --- | -------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | core/src/commands/settings.rs:75                                           | 13   | 热键回滚落库 `let _ =` 吞错且注释自称"仅落日志"实无日志（FIX003 同款重现）——改 eprintln                                                          |
+| 2   | core/src/hotkey.rs:4 等 + x.progress/z.plan 表述                           | 6    | 线程模型三处文档失实：注释称"主线程执行/run_on_main_thread"实为热键线程直调（含 `let _ = app` 死参）——按 PL003.3 先例补实现注记或改实现          |
+| 3   | core/src/commands/mod.rs:128-162                                           | 10   | 契约测试缺 Hotkey 变体断言（A003 同款缺口在新变体复现）——补断言                                                                                  |
+| 4   | core/src/hotkey.rs:16-31,177-183                                           | 5/12 | HotkeyError/HotkeyCombo 的 Serialize 派生死代码（实际走 From→String）+ extern 块缺 `#[link(name="user32")]`（需验证）——删派生 + 补 link 对齐先例 |
+| 5   | core/src/lib.rs:175                                                        | 4    | cfg 块内冗余 `use tauri::Manager as _`（文件头已全局导入）——删                                                                                   |
+| 6   | AGENTS.md:5,47-58 + core/src/settings.rs:77                                | 6    | AGENTS 三处失实：状态头停 V0.1.2.3、目录树缺 glass_backdrop.rs、settings.rs 注释"白名单⑥"编号漂移——状态头推进/目录树补行/注释改⑦                 |
+| 7   | core/examples/seed_data.rs:148-165                                         | 4/13 | 去重漏接：种子池 3 条轮转注入 6 条必产 3 次 Duplicate 静默丢弃、摘要行失真（默认参数 100% 复现，仅开发工具）——match Duplicate 计数或扩池         |
+| 8   | core/src/storage.rs:13,40 + :1                                             | 6    | use 夹置（TodoItem 导入被 BubbleAddOutcome 块隔开）+ 模块头仍只写 todos 表——上提相邻 + 头部补全三表职责                                          |
+| 9   | core/src/storage.rs:27-37 + commands/bubble.rs:41-46                       | 5    | 两枚举 `added_item()`（Duplicate panic）常驻 pub 零生产调用——收敛 `#[cfg(test)]`（两组件统一定夺）                                               |
+| 10  | core/src/settings.rs:76-86 vs lib.rs:97-98                                 | 4    | 载入规范化不对称：热键回默认在 load 内、max_bubbles 钳制在装配点（无现行错值）——钳制挪入 load 收敛单点                                           |
+| 11  | core/src/settings.rs:22-28                                                 | 6    | 两个 serde default 私有函数缺 `///` 文档注释——各补一行                                                                                           |
+| 12  | ui/src/components/WhiteboardView.vue:64 + App.vue                          | 1/5  | （零节遗留）flush 接线缺失：关窗防抖窗口输入必丢——App 持 ref 关窗兜底或 Rust CloseRequested 联合方案                                             |
+| 13  | ui/src/components/BubblesView.vue:220,45 + ArchiveOverlay.vue:213          | 8    | 清空嵌套 setTimeout 未入卸载清理（遗留，徽章不归零危害面）+ showEmpty 420ms 兜底定时器同纪律缺口（新增）——句柄入 onUnmounted                     |
+| 14  | ui/src/components/AddBar.vue:21 + ui/App.vue:132-143                       | 4/9  | added/changed 成对 emit 使新增双跑刷新（6 invoke 幂等但翻倍）——onTodoAdded 不调 onListChanged 或 AddBar 只发 added                               |
+| 15  | ui/src/styles/settings.css:410 + ui/src/components/BubblesView.vue:125-128 | 3/11 | 单源复用两处：hotkey-error 硬编码 #e5484d 改 var(--danger)；capture 内联 invoke 泛型改 BubbleCaptureOutcome（types.ts 镜像已在）                 |
+
+#### 性质说明
+
+P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前端状态机/录制态边界/mock 漂移——新功能引入面典型形态）；两条为 **A003/FIX003 漏派遗留**；其余为规范/文档卫生。
+
+### 二、参考级观察项（豁免，含回落理由；完整版见三路子代理原始输出）
+
+1. 假行 leave 模拟证归档/气泡动画 CSS 链路健康——两个已修 bug 的机制层无恙。
+2. useThresholdDrag 的 mousedown preventDefault 对 titleParticles mousemove 无影响——理论缺口经实测排除。
+3. types.ts ↔ serde tagged 契约（BubbleCaptureOutcome）零漂移——真实链路健康，漂移仅在 mock 与内联用法。
+4. 录制态按旧热键组合会同时触发一次捕获（系统 RegisterHotKey 先于 webview）——系统级固有，行为怪但无害。
+5. 热键线程/500ms 等待常量/单次使用模块常量——有注释依据或单次使用，豁免。
+6. glass_backdrop Win10 pre-22H2 聚焦翻转日志刷屏——平台基线 Win11 定案，失败维持前态即白名单①行为。
+7. ON_HOTKEY 锁中毒静默恢复 / 启动读设置锁中毒回默认热键——装配期不可达理论缺口（需验证）。
+8. TodoList 删末条若定案"清单保留原行为"请落注释豁免——否则按 P2 修复（见清单）。
+9. BubblesView/ArchiveOverlay 快速双击归档钮 450ms settle 提前取中间态几何（≤中，需验证）。
+10. 热键 reregister 命令同步阻塞 ≤1s——设置动作低频可接受。
+
+### 三、亮点
+
+三路交叉确认：SQL 全参数化、时间源注入、锁序纪律无反向、types.ts↔serde 主契约零漂移；FIX003 十八项修复十六项完好在位（两项漏派如实列出）；PL015 解析器往返恒等 10 用例、去重三裁决用例、热键回滚回退设计（失败回滚旧热键落库+重注册）结构正确；归档/气泡删末条动画修复的 CSS 链路经假行模拟证实健康。

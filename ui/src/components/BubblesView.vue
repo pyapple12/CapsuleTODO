@@ -308,8 +308,12 @@ async function onRowDblClick(item: BubbleItem): Promise<void> {
   try {
     await invoke("bubble_copy", { id: item.id });
     copied.value = true;
+    duplicate.value = false; // FIX004.3：复制占字复位须同清 duplicate，否则重复捕获后双击复制=钮永久卡死
     window.clearTimeout(copiedTimer);
-    copiedTimer = window.setTimeout(() => (copied.value = false), 1000);
+    copiedTimer = window.setTimeout(() => {
+      copied.value = false;
+      duplicate.value = false;
+    }, 1000);
   } catch (err) {
     console.error("复制失败", err);
   }

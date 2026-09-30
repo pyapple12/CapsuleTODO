@@ -270,20 +270,14 @@ export function useDragReorder(): void {
     ctx.li.style.top = `${selfRect.top - ctx.cardRect.top}px`;
     ctx.li.style.width = `${selfRect.width}px`;
     ctx.cardEl.appendChild(ctx.li);
-    // 列表快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）
+    // 列表快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）。
+    // 单行也照常进入拖拽循环（FIX004.4 终版交互：长按浮起跟手，松手回原位——
+    // 无可让位行只是排序无变化，不能因此剥夺拖拽体验；收场 forceRemount 防断链）
     ctx.listEl = document.getElementById(ctx.t.scopeId) as HTMLElement;
     ctx.rows = [...ctx.listEl.querySelectorAll(ctx.t.itemSel)].map((el) => {
       const r = (el as HTMLElement).getBoundingClientRect();
       return { el: el as HTMLElement, top: r.top, mid: r.top + r.height / 2, height: r.height };
     });
-    if (ctx.rows.length < 2) {
-      // 单行无可排序：现场还原
-      dragCtx = null;
-      ctx.ghost.remove();
-      ctx.li.remove();
-      ctx.t.rerender();
-      return;
-    }
     ctx.fromIdx = ctx.rows.findIndex((x) => x.el === ctx.ghost);
     ctx.toIdx = ctx.fromIdx; // 未移动即松手 = 原位（toIdx 缺省 0 会把行误排到顶）
     ctx.rows.forEach((r, i) => {

@@ -246,13 +246,36 @@ function unmountScrollKit(): void {
   delete document.getElementById("todo-active")?.dataset.mounted;
 }
 
-// items 到达/清空 → 渲染完成后挂载（覆盖首挂与 v-else 重建两种时机）
+// items 到达/清空 → 渲染完成后挂载（覆盖首挂与重建两种时机）
 watch(
   () => props.items.length,
   () => {
     void nextTick(mountScrollKit);
   },
 );
+
+// —— 空态显隐（FIX004.6，与归档/气泡同款共存渲染）：TransitionGroup 恒挂载
+// （v-if/v-else 互斥时删末条走分支整体卸载，leave 塌缩动画无机会播 = 瞬间消失），
+// 空态文案延至末条 leave 播完（after-leave）出现 ——
+const showEmpty = ref(props.items.length === 0);
+watch(
+  () => props.items.length,
+  (n, o) => {
+    if (n > 0) {
+      showEmpty.value = false;
+    } else if ((o ?? 0) > 0) {
+      window.setTimeout(() => {
+        if (props.items.length === 0) showEmpty.value = true;
+      }, 420);
+    } else {
+      showEmpty.value = true;
+    }
+  },
+);
+/** 末条 leave 播完：列表真空才亮空态文案 */
+function onAfterLeave(): void {
+  if (props.items.length === 0) showEmpty.value = true;
+}
 
 // v-else 切换重建 ul 兜底（items 长度不变但 ul 换元素的场景）：观测 section.list
 // 子树替换即重挂
@@ -287,9 +310,8 @@ onUnmounted(() => {
 
 <template>
   <section class="list">
-    <p v-if="items.length === 0" class="empty">暂无待办，添加一条吧</p>
+    <p v-if="showEmpty" class="empty">暂无待办，添加一条吧</p>
     <TransitionGroup
-      v-else
       ref="listEl"
       tag="ul"
       name="todo"
@@ -298,6 +320,7 @@ onUnmounted(() => {
       :key="listKey"
       :duration="320"
       @before-leave="pinLeaveHeight"
+      @after-leave="onAfterLeave"
     >
       <li v-for="item in active" :key="item.id" class="todo-item">
         <div

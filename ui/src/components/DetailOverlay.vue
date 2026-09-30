@@ -140,7 +140,13 @@ let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
 watch(titleDraft, (text) => {
   const todo = props.todo;
-  if (todo == null || text === todo.text) return;
+  // FIX004.1：相等分支必须清未决快照——只 return 会残留上一变更的定时器，
+  // 300ms 内改回原文时到点仍把中间草稿写库（UI 原文 / DB 草稿分叉）
+  if (todo == null || text === todo.text) {
+    clearTimeout(renameTimer);
+    renamePending = null;
+    return;
+  }
   clearTimeout(renameTimer);
   renamePending = { id: todo.id, text };
   renameTimer = window.setTimeout(() => {
@@ -160,7 +166,12 @@ let notePending: { id: number; note: string } | null = null;
 let noteTimer: number | undefined;
 watch(noteDraft, (note) => {
   const todo = props.todo;
-  if (todo == null || note === todo.note) return;
+  // FIX004.1 同构：相等分支清未决快照（同"改回原文"残留）
+  if (todo == null || note === todo.note) {
+    clearTimeout(noteTimer);
+    notePending = null;
+    return;
+  }
   clearTimeout(noteTimer);
   notePending = { id: todo.id, note };
   noteTimer = window.setTimeout(() => {

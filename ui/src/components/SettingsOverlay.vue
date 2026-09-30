@@ -50,6 +50,7 @@ async function toggle(): Promise<void> {
     }
   } else {
     isOpen.value = false;
+    stopHotkeyRecord(); // FIX004.2：收板必须退出录制态，否则 keydown 拦截吞一切按键
     syncVeils();
   }
 }
@@ -58,6 +59,7 @@ async function toggle(): Promise<void> {
 function close(): void {
   if (!isOpen.value) return;
   isOpen.value = false;
+  stopHotkeyRecord(); // FIX004.2 同款：收板退出录制态
   syncVeils();
 }
 
@@ -143,6 +145,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   systemDark.removeEventListener("change", onSystemChange);
   document.removeEventListener("keydown", onHotkeyKeydown, true);
+  window.clearTimeout(hotkeyRecordTimer);
 });
 
 // —— 气泡捕获热键（PL015.6）：当前组合显示 / 录制态全局按键录入 / 落库重注册 ——
@@ -150,21 +153,38 @@ onUnmounted(() => {
 const hotkeyText = ref("");
 const hotkeyRecording = ref(false);
 const hotkeyError = ref("");
+let hotkeyRecordTimer = 0;
 
-/** 进入录制态：全局 capture 阶段拦截下一个组合键（Esc 取消） */
+/** 退出录制态并清计时器（FIX004.2：收板/切页签必须复位，否则 keydown capture
+ * 持续吞一切按键 = 全应用键盘失灵） */
+function stopHotkeyRecord(): void {
+  hotkeyRecording.value = false;
+  window.clearTimeout(hotkeyRecordTimer);
+}
+
+/** 录制 3s 无操作自动结束（用户定案 2026-09-30）：任何按键都算操作，重置计时 */
+function armHotkeyRecordTimer(): void {
+  window.clearTimeout(hotkeyRecordTimer);
+  hotkeyRecordTimer = window.setTimeout(stopHotkeyRecord, 3000);
+}
+
+/** 进入录制态：全局 capture 阶段拦截下一个组合键（Esc 取消；3s 无操作自动结束） */
 function startHotkeyRecord(): void {
   hotkeyError.value = "";
   hotkeyRecording.value = true;
+  armHotkeyRecordTimer();
 }
 
 /** 录制态按键分流：修饰键单独按下继续等待；主键（字母/数字/F1-F12）完成组合；
- * Esc 取消；无修饰键的主键忽略（与 Rust parse 同规防落库即拒） */
+ * Esc 取消；无修饰键的主键忽略（与 Rust parse 同规防落库即拒）。
+ * FIX004.2：任何按键（含修饰键）都重置 3s 无操作计时 */
 function onHotkeyKeydown(e: KeyboardEvent): void {
   if (!hotkeyRecording.value) return;
   e.preventDefault();
   e.stopPropagation();
+  armHotkeyRecordTimer();
   if (e.key === "Escape") {
-    hotkeyRecording.value = false;
+    stopHotkeyRecord();
     return;
   }
   const mods: string[] = [];
@@ -176,7 +196,7 @@ function onHotkeyKeydown(e: KeyboardEvent): void {
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return; // 仍在按修饰键
   const mainKey = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   if (!/^[A-Z0-9]$/.test(mainKey) && !/^F([1-9]|1[0-2])$/.test(mainKey)) return; // 不支持的主键忽略
-  hotkeyRecording.value = false;
+  stopHotkeyRecord();
   void saveHotkey([...mods, mainKey].join("+"));
 }
 

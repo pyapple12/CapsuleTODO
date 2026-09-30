@@ -53,6 +53,8 @@ interface MockBubbleSnapshot {
 
 /** 气泡提醒阈值（PL014 接配置前的硬编码对齐值） */
 let MAX_BUBBLES = 5;
+let MOCK_BUBBLE_HOTKEY = "Ctrl+Alt+C"; // PL015 mock 内存态；busy 标志模拟占用失败
+let mockBubbleHotkeyBusy = false;
 
 const HOUR = 3600 * 1000;
 const WEEK_NOTE = `本周完成事项：
@@ -218,16 +220,20 @@ const handlers: Record<string, CommandHandler> = {
     ),
     remind: state.bubbles.length >= MAX_BUBBLES,
   }),
-  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验入库链路）。
+  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验+去重链路，
+  // FIX004.5：返回 BubbleCaptureOutcome 形状与真机同构——重复返回 duplicate 不入库）。
   // sort_order = 现存最小值 − 1（排头插入，对齐 Rust add_bubble 的 unshift 语义）
   bubble_capture: () => {
     const text = `[mock 捕获] ${new Date().toLocaleTimeString()} 的剪贴板内容`;
     const err = text.trim() ? null : "气泡文本不能为空";
     if (err) throw err;
+    if (state.bubbles.some((b) => b.text === text)) {
+      return { status: "duplicate" };
+    }
     const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
     const item: MockBubble = { id: ++state.bubbleSeq, text, sort_order: min - 1 };
     state.bubbles.push(item);
-    return item;
+    return { status: "added", item };
   },
   // 复制回（Rust = 写真剪贴板；mock 环境写不进去，记录最近复制内容供断言）
   bubble_copy: (args) => {
@@ -280,6 +286,28 @@ const handlers: Record<string, CommandHandler> = {
   settings_set_max_bubbles: (args) => {
     MAX_BUBBLES = Math.min(20, Math.max(1, Number(args.value) || 5));
     return null;
+  },
+  // 气泡热键（PL015，FIX004.5）：读取/写入组合键（内存态 + parse 同规校验；
+  // mock.bubbleHotkeyBusy = true 可模拟"热键被占用"失败态供 IAB 断言回退）
+  settings_get_bubble_hotkey: () => MOCK_BUBBLE_HOTKEY,
+  settings_set_bubble_hotkey: (args) => {
+    const combo = String(args.combo ?? "");
+    const mods = ["CTRL", "ALT", "SHIFT", "WIN"];
+    const parts = combo
+      .toUpperCase()
+      .split("+")
+      .map((p) => p.trim());
+    const modOk = parts.filter((p) => mods.includes(p)).length >= 1;
+    const main = parts.filter((p) => !mods.includes(p));
+    const mainOk =
+      main.length === 1 && (/^[A-Z0-9]$/.test(main[0]) || /^F([1-9]|1[0-2])$/.test(main[0]));
+    if (!modOk || !mainOk) throw `热键组合不合法：${combo}`;
+    if (mockBubbleHotkeyBusy) throw "热键注册失败（热键可能被其它程序占用）";
+    MOCK_BUBBLE_HOTKEY = parts
+      .sort((a, b) => mods.indexOf(b) - mods.indexOf(a) || (a < b ? -1 : 1))
+      .map((p) => (p === "CTRL" ? "Ctrl" : p.charAt(0) + p.slice(1).toLowerCase()))
+      .join("+");
+    return MOCK_BUBBLE_HOTKEY;
   },
   whiteboard_load: () => state.whiteboard,
   whiteboard_save: (args) => {
