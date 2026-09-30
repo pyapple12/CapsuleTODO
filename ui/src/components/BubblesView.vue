@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { BubbleCaptureOutcome, BubbleItem, BubbleSnapshot } from "../../types";
 import DelButton from "./DelButton.vue";
 import { rowMaskDead } from "../composables/useMaskDead";
@@ -60,6 +61,7 @@ let clearWidthTimer = 0;
 let clickTimer: number | undefined;
 let emptyTimer = 0; // showEmpty 兜底句柄（卸载清理，FIX004.20）
 let clearFxTimer = 0; // 清空集体退场收尾句柄（卸载清理，FIX004.20）
+let unlistenBubbleChanged: UnlistenFn | undefined; // 热键失焦刷新监听句柄（PL016.1）
 
 const clearBtn = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
@@ -377,12 +379,20 @@ onMounted(() => {
     });
     rebuildObserver.observe(host, { childList: true });
   }
+  // 热键失焦刷新（PL016.1）：本组件 v-if 挂载 = 仅气泡页激活时存在——热键在
+  // 别处入库时此监听把新泡拉进当前视图（无监听则要切页才见）
+  void listen("bubble-changed", () => {
+    void refresh();
+  }).then((unlisten) => {
+    unlistenBubbleChanged = unlisten;
+  });
 });
 
 onUnmounted(() => {
   [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, emptyTimer, clearFxTimer].forEach((t) =>
     window.clearTimeout(t),
   );
+  unlistenBubbleChanged?.();
   rebuildObserver?.disconnect();
   unmountScrollKit();
   unregisterRollback?.();

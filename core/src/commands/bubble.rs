@@ -2,7 +2,7 @@
 //! clipboard 读写留命令薄壳（不可注入直测），文本链路核心抽自由函数直测内存库。
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::{AppContext, CommandError};
@@ -11,20 +11,74 @@ use crate::storage::BubbleAddOutcome;
 
 /// 热键触发路径（PL015.5）：热键线程直调（实现注记：未走 run_on_main_thread——
 /// 捕获流程仅读剪贴板 + 入库，AppContext 有锁保护、剪贴板插件跨线程安全，
-/// 行为等价，沿 PL003.3 先例）——读剪贴板 → 校验 → 去重 → 入库，
-/// 全程失败落日志静默（反馈静默定案：桌面常驻面板即所见）
+/// 行为等价，沿 PL003.3 先例）。Windows 走圈选直达编排（PL016.3），其余平台
+/// 直读剪贴板；全程失败落日志静默（反馈静默定案：桌面常驻面板即所见）
 pub fn bubble_capture_from_clipboard_quiet(app: &AppHandle) {
-    let text = match app.clipboard().read_text() {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("热键捕获：剪贴板读取失败（{err}）");
-            return;
-        }
+    #[cfg(target_os = "windows")]
+    {
+        capture_quiet_windows(app);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        capture_quiet_direct(app);
+    }
+}
+
+/// Windows 圈选直达编排（PL016.3）：终端守卫 → 快照原剪贴板 → 合成 Ctrl+C →
+/// 轮询等变化（≤300ms）→ 命中 = 恢复原剪贴板 + 入库 + 发 bubble-changed；
+/// 未命中静默（用户定案：无选区/复制被拒不回退捕获旧剪贴板，且剪贴板未变无需
+/// 恢复）。轮询最多 300ms 短临界区，不阻塞 UI
+#[cfg(target_os = "windows")]
+fn capture_quiet_windows(app: &AppHandle) {
+    // 终端边界守卫（PL016.4）：conhost/Windows Terminal 无选区时 Ctrl+C =
+    // 中断信号（SIGINT），合成会打断前台进程——跳过合成直接静默
+    if crate::capture::foreground_is_console() {
+        return;
+    }
+    let before = app.clipboard().read_text().ok();
+    crate::capture::synthesize_ctrl_c();
+    let start = std::time::Instant::now();
+    let picked = crate::capture::wait_clipboard_change(
+        before.as_deref(),
+        crate::capture::WAIT_TIMEOUT_MS,
+        crate::capture::POLL_INTERVAL_MS,
+        || start.elapsed().as_millis() as u64,
+        || app.clipboard().read_text().ok(),
+    );
+    let Some(text) = picked else {
+        return;
     };
+    // 恢复原剪贴板（圈选复制动作污染了用户剪贴板；失败落日志不阻断——捕获已
+    // 成立，且下次粘贴拿到的是刚圈选的文本损失为零）；原本无文本（None）无可恢复
+    if let Some(old) = &before {
+        if let Err(err) = app.clipboard().write_text(old) {
+            eprintln!("热键捕获：原剪贴板恢复失败：{err}");
+        }
+    }
+    finish_quiet_capture(app, &text);
+}
+
+/// 非 Windows 直读剪贴板捕获（无合成能力平台保持旧行为）
+#[cfg(not(target_os = "windows"))]
+fn capture_quiet_direct(app: &AppHandle) {
+    match app.clipboard().read_text() {
+        Ok(text) => finish_quiet_capture(app, &text),
+        Err(err) => eprintln!("热键捕获：剪贴板读取失败（{err}）"),
+    }
+}
+
+/// 捕获收尾（两平台共用）：校验 + 去重 + 入库；新增发 bubble-changed 驱动失焦
+/// 实时刷新（PL016.1，emit 失败落日志——热键反馈静默定案不变；Duplicate 列表
+/// 未变不发；Err 静默落日志）
+fn finish_quiet_capture(app: &AppHandle, text: &str) {
     let ctx = app.state::<AppContext>();
-    match bubble_capture_core(&text, &ctx) {
-        // added：新气泡已入排头，桌面常驻面板自会呈现；duplicate：静默
-        Ok(_) => {}
+    match bubble_capture_core(text, &ctx) {
+        Ok(BubbleCaptureOutcome::Added { .. }) => {
+            if let Err(err) = app.emit("bubble-changed", ()) {
+                eprintln!("bubble-changed 事件发送失败：{err}");
+            }
+        }
+        Ok(BubbleCaptureOutcome::Duplicate) => {}
         Err(err) => eprintln!("热键捕获失败：{err}"),
     }
 }

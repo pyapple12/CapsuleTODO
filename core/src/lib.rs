@@ -4,6 +4,7 @@
 //! 分态纱保留（聚焦纱退 0%）；聚焦/失焦均发 window-focus 事件驱动前端纱态与交互。
 
 pub mod bubble;
+pub mod capture;
 pub mod commands;
 pub mod fullscreen;
 #[cfg(target_os = "windows")]

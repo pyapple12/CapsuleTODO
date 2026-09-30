@@ -471,4 +471,4 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 > - **终端边界（条件条目）**：cmd/conhost 无选区时 Ctrl+C = 中断信号风险，实测若实证成立则 capture.rs 加前台控制台守卫（GetForegroundWindow + GetClassName 分治 ConsoleWindowClass 与 Windows Terminal CASCADIA_HOSTING_WINDOW_CLASS）——命中控制台 = 跳过合成直接静默；实测无风险则记豁免
 >
 > 红线：合成按键向系统发真实 Ctrl+C，live 验证须用户明示授权或亲自配合（实测矩阵：Windows Terminal 有选区 / cmd conhost / 管理员提权前台窗 UIPI 拒绝→静默自愈 / 无选区静默 / 剪贴板占用重试 3×10ms）；剪贴板恢复失败落日志不阻断（容错白名单登记候选）；测试零污染用户库；热键线程编排延续 PL015.4 直调实现注记。
-> 状态：🚧 已立项未开工（任务组见 x.progress.md PL016，5 条；完成时版本号用户拍板——建议合计推 minor V0.1.5.0 或逐条 feat V0.1.4.3 起）
+> 状态：✅ 已完工（2026-09-30，V0.1.5.0 minor 推进；实施记录与 live 实测定案见 x.progress.md PL016 组——圈选直达两段式 + 修饰键残留合成 keyup 清理 + 终端守卫 + 失焦实时刷新；live 矩阵 B/C 场景过、A 场景根因（修饰键残留）定位修复后用户回执通过）

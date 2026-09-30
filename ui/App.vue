@@ -37,6 +37,8 @@ const windowFocused = ref(false);
 let unlistenFocus: UnlistenFn | undefined;
 // 关窗 T 腿句柄（FIX004.19 T+R3 双腿）：白板组件引用供关窗前强制落库
 let unlistenClose: UnlistenFn | undefined;
+// 热键失焦刷新句柄（PL016.1）：徽章随 bubble-changed 事件实时 +1
+let unlistenBubbleChanged: UnlistenFn | undefined;
 const whiteboardRef = ref<InstanceType<typeof WhiteboardView> | null>(null);
 
 // 二期三页签（PL004）：清单（一期功能）/ 气泡（临时剪贴板）/ 白板（临时草稿）
@@ -198,6 +200,11 @@ onMounted(async () => {
   unlistenFocus = await listen<boolean>("window-focus", (event) => {
     windowFocused.value = event.payload;
   });
+  // 热键失焦刷新（PL016.1）：Rust 热键入库发 bubble-changed → 徽章实时 +1
+  //（气泡页内刷新由 BubblesView 自身的同款监听负责）
+  unlistenBubbleChanged = await listen("bubble-changed", () => {
+    void refreshBadge();
+  });
   getCurrentWindow()
     .isFocused()
     .then((focused) => {
@@ -230,6 +237,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unlistenFocus?.();
   unlistenClose?.();
+  unlistenBubbleChanged?.();
 });
 </script>
 
