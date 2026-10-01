@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
-import type { BubbleItem, BubbleSnapshot, TodoItem, TodoView } from "./types";
+import type { BubbleItem, BubbleSnapshot, PrefsView, TodoItem, TodoView } from "./types";
 import AddBar from "./src/components/AddBar.vue";
 import TabsBar from "./src/components/TabsBar.vue";
 import TodoList from "./src/components/TodoList.vue";
@@ -214,40 +214,56 @@ watch(activeTab, (tab) => {
 });
 
 onMounted(async () => {
+  // FIX006.10：四个 listen 逐个补 catch——注册失败只损失单个监听（该事件不刷新），
+  // 不再中断启动链（原 await 串行链任一 reject 即跳过 refresh×5/关窗 T 腿注册等
+  // 全部后续初始化 = 恒空态；mock-invoke.ts 注释自记同款教训）
   unlistenFocus = await listen<boolean>("window-focus", (event) => {
     windowFocused.value = event.payload;
+  }).catch((err) => {
+    console.error("window-focus 监听注册失败", err);
+    return undefined;
   });
   // 热键失焦刷新（PL016.1）：Rust 热键入库发 bubble-changed → 徽章实时 +1
   //（气泡页内刷新由 BubblesView 自身的同款监听负责）
   unlistenBubbleChanged = await listen("bubble-changed", () => {
     void refreshBadge();
+  }).catch((err) => {
+    console.error("bubble-changed 监听注册失败", err);
+    return undefined;
   });
-  // 托盘预览打勾同步（PL018.6）：tray-preview 窗勾选落库后广播 → 主窗刷新链
-  unlistenTodoChanged = await listen("todo-changed", () => {
+  // 托盘预览打勾同步（PL018.6）：广播载荷 = 发起窗 label（FIX006.1）——本窗
+  // 发起的变更早退（刷新走组件链时序，300ms 主拍不被截断），跨窗变更照常刷新
+  unlistenTodoChanged = await listen<string>("todo-changed", (event) => {
+    if (event.payload === getCurrentWindow().label) return;
     onListChanged();
+  }).catch((err) => {
+    console.error("todo-changed 监听注册失败", err);
+    return undefined;
   });
   // 窗口偏好回显（PL021，补齐 PL018.3 三入口双向）：托盘菜单切开关落库后广播
   // → 设置板 ref 同步刷新（托盘侧勾选态由 TrayMenu.vue 自身监听同款事件负责）
-  unlistenPrefsChanged = await listen<{ always_on_top: boolean; snap_to_edge: boolean }>(
-    "prefs-changed",
-    (event) => {
-      alwaysOnTop.value = event.payload.always_on_top;
-      snapToEdge.value = event.payload.snap_to_edge;
-    },
-  );
+  unlistenPrefsChanged = await listen<PrefsView>("prefs-changed", (event) => {
+    alwaysOnTop.value = event.payload.always_on_top;
+    snapToEdge.value = event.payload.snap_to_edge;
+  }).catch((err) => {
+    console.error("prefs-changed 监听注册失败", err);
+    return undefined;
+  });
   getCurrentWindow()
     .isFocused()
     .then((focused) => {
       windowFocused.value = focused;
     })
     .catch((err) => console.error("isFocused 查询失败（纱态保持透明态默认）", err));
-  // 关窗 T 腿（FIX004.19 T+R3 双腿，探针实测推翻 V0.1.1.1"关闭挂起"旧结论——健康
-  // webview + 正确用法不挂，实测记录 .temp/close-probe/）：关窗请求先过白板 flush
-  // （组件暴露的强制落库），完成即自动销毁（正常态秒关）；webview 卡死时 Rust R3 腿
-  // 600ms 超时强关兜底（lib.rs）。注册失败落日志——纯浏览器冒烟环境无窗口事件，
-  // 关窗链路仍由 R3 腿保证
+  // 关窗 T 腿（FIX004.19 T+R3 双腿）：关窗请求先过白板 flush（组件暴露的强制落库）。
+  // FIX006.5 preventDefault 语义正确化：JS API 在 handler 未拦截时会自动 destroy
+  //（window.cjs:1637）——此前靠 ACL 删权限的静默拒绝才保住 Rust hide 语义（脆弱
+  // 副作用）；现在显式拦截，关窗决策全权归 Rust 双腿（Alt+F4 = hide 分支 / 菜单
+  // 退出 = EXITING 销毁分支），flush 照跑不受影响。注册失败落日志——纯浏览器冒烟
+  // 环境无窗口事件，关窗链路仍由 R3 腿保证
   try {
-    unlistenClose = await getCurrentWindow().onCloseRequested(async () => {
+    unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
+      event.preventDefault();
       await whiteboardRef.value?.flush();
     });
   } catch (err) {

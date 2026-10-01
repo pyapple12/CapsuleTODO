@@ -13,11 +13,12 @@ pub fn settings_get_max_bubbles(ctx: State<'_, AppContext>) -> Result<u32, Comma
     settings_get_max_bubbles_core(&ctx)
 }
 
-/// 读取气泡提醒上限上限值（FIX005.25 单一来源出口：设置板步进禁用态与 mock
-/// 钳制经此拉取，替代三处硬编码 20——上限调整只改 settings::MAX_BUBBLES_LIMIT）
+/// 读取气泡提醒上限的最大合法值（FIX005.25 单一来源出口：设置板步进禁用态与
+/// mock 钳制经此拉取，替代三处硬编码——上限调整只改 settings::MAX_BUBBLES_LIMIT。
+/// FIX006.12 返回值 Result 化对齐同文件约定；当前无失败路径，Ok 直返）
 #[tauri::command]
-pub fn settings_get_bubble_max_limit() -> u32 {
-    MAX_BUBBLES_LIMIT
+pub fn settings_get_bubble_max_limit() -> Result<u32, CommandError> {
+    Ok(MAX_BUBBLES_LIMIT)
 }
 
 /// settings_get_max_bubbles 核心实现：读运行时设置副本
@@ -26,7 +27,8 @@ pub fn settings_get_max_bubbles_core(ctx: &AppContext) -> Result<u32, CommandErr
     Ok(settings.max_bubbles)
 }
 
-/// 写入气泡提醒上限（范围 1~20 钳制，越界值静默收敛到边界——与 stepper 前端钳制同规）
+/// 写入气泡提醒上限（范围 1~MAX_BUBBLES_LIMIT 钳制，越界值静默收敛到边界——与
+/// stepper 前端钳制同规）
 #[tauri::command]
 pub fn settings_set_max_bubbles(
     value: u32,
@@ -135,10 +137,10 @@ pub fn settings_set_always_on_top(
 ) -> Result<(), CommandError> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| CommandError::Settings("主窗口不存在".to_string()))?;
+        .ok_or_else(|| CommandError::Window("主窗口不存在".to_string()))?;
     window
         .set_always_on_top(on)
-        .map_err(|err| CommandError::Settings(format!("置顶切换失败：{err}")))?;
+        .map_err(|err| CommandError::Window(format!("置顶切换失败：{err}")))?;
     let path =
         crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
     settings_set_always_on_top_core(on, &path, &ctx)?;

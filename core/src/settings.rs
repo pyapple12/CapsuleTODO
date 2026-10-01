@@ -78,8 +78,11 @@ pub struct WindowSettings {
 impl Default for WindowSettings {
     fn default() -> Self {
         Self {
-            x: 0,
-            y: 0,
+            // FIX006.3 哨兵语义：x/y = i32::MIN 表示"首启未落位"（屏幕坐标不可达
+            // 值，position_on_monitor 必判 false → 走 default_position 主屏右下
+            // 默认位）。原 0,0 恰在主屏内被误判有效位 = 首启贴左上角
+            x: i32::MIN,
+            y: i32::MIN,
             max_bubbles: DEFAULT_MAX_BUBBLES,
             bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
             always_on_top: default_always_on_top(),
@@ -154,6 +157,14 @@ mod tests {
         let path = temp_path("missing.json");
         let _ = std::fs::remove_file(&path);
         assert!(matches!(load(&path), Ok(None)));
+    }
+
+    #[test]
+    fn default_position_is_sentinel_not_origin() {
+        // FIX006.3：哨兵 = 屏幕坐标不可达值——position_on_monitor 必判 false 走
+        // default_position 默认位（原 0,0 恰在主屏内被误判有效 = 首启贴左上角）
+        assert_eq!(WindowSettings::default().x, i32::MIN);
+        assert_eq!(WindowSettings::default().y, i32::MIN);
     }
 
     #[test]

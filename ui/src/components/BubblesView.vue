@@ -47,6 +47,9 @@ let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
 let unlistenBubbleChanged: UnlistenFn | undefined; // 热键失焦刷新监听句柄（PL016.1）
+// 监听竞态防护标志（FIX006.4）：setup 层声明——生命周期钩子仅在 setup 同步上下文
+// 注册才生效（嵌套注册被 Vue 忽略 = 防护恒失效教训）
+let bubbleListenDisposed = false;
 
 const clearBtn = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
@@ -216,9 +219,6 @@ function cancelClearConfirm(): void {
 
 // —— 行交互（V0.028 对调语义）：单击开板（180ms 延迟）、双击复制（占字反馈） ——
 
-// —— DelButton 二态单实例（对齐 design V0.026 三处二态推广：气泡删除也是两拍确认，
-// 此前 :confirming 恒 false 属移植遗漏）——
-
 // —— DelButton 二态单实例（FIX005.24 收敛至 useDelConfirmGroup；对调语义 V0.028：
 // 气泡删除也是两拍确认）——
 
@@ -321,26 +321,25 @@ onMounted(() => {
   }
   // 热键失焦刷新（PL016.1）：本组件 v-if 挂载 = 仅气泡页激活时存在——热键在
   // 别处入库时此监听把新泡拉进当前视图（无监听则要切页才见）。
-  // FIX005.26 竞态防护：listen 注册异步返回——快速切页时卸载清理先于句柄到手，
-  // 已卸载标志命中即当场注销（否则监听泄漏且死组件持续收事件）
-  let disposed = false;
+  // FIX006.4 竞态防护：listen 注册异步返回——快速切页时卸载清理先于句柄到手，
+  // 已卸载标志命中即当场注销（否则监听泄漏且死组件持续收事件）。
+  // disposed 声明在 setup 层、置位在顶层 onUnmounted（FIX005.26 曾嵌套注册在
+  // onMounted 回调内 = 生命周期钩子失效区，防护恒不生效，A006 P2-4 实证）
   listen("bubble-changed", () => {
     void refresh();
   })
     .then((unlisten) => {
-      if (disposed) {
+      if (bubbleListenDisposed) {
         unlisten();
       } else {
         unlistenBubbleChanged = unlisten;
       }
     })
     .catch((err) => console.error("bubble-changed 监听注册失败", err));
-  onUnmounted(() => {
-    disposed = true;
-  });
 });
 
 onUnmounted(() => {
+  bubbleListenDisposed = true; // FIX006.4：后到的监听句柄当场注销（防泄漏）
   // clearFxTimer（清空集体退场收尾）豁免清理：用户已点"确认清空"，300ms 收尾
   // 落库必须完成——切页取消会让"确认"被吞（数据残留 + 退场动画已播 = 状态诡异）。
   // 收尾回调仅 invoke + refresh，无报错路径（IAB 实测 errs=0），卸载后执行静默无害

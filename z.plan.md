@@ -607,3 +607,65 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 ### 三、亮点
 
 A004 二十四项修复零回退（7 个 PL 大改动无一冲掉）；SQL 全参数化、时间源注入、锁序纪律无反向；三窗 DOM 严格分域无跨窗触碰；App.vue 监听句柄全部入 onUnmounted；mock↔serde 契约零漂移；types.ts ↔ BubbleCaptureOutcome tagged 契约零漂移；PL022 prefs-changed 两条 emit 链载荷键名一致。
+
+## 附录 A006：全量代码审计报告（第6轮，2026-10-02）
+
+> 范围：全仓通读（约 19500 行）。方式：三路并行（Rust 业务 / Tauri 集成 / 前端）+ A005/FIX005 回归复核（主会话 grep 31 项 + 子代理 git diff 级补盲 + 主会话源码级裁决 3 项关键声称：tauri-2.11.5 listener.rs match_any_or_filter 语义 / @tauri-apps/api window.cjs onCloseRequested 自动 destroy 与 ACL invoke 路径 / settings Default x/y=0 落位链）。基线 eaa7e84 → 7907cb4。
+> 状态：📌 待修复（FIX006 任务清单见 x.progress.md；观察项默认全不提升）
+
+### 零、上轮修复复核清单（A005/FIX005）
+
+grep 级 31 项全命中；diff/语义级复核抓出 3 项"修复无效或改残"（grep 在位 ≠ 语义生效）：
+
+| FIX005 条目                                                              | 现状                      | 裁决证据                                                                                                                                                                     |
+| ------------------------------------------------------------------------ | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FIX005.5 "排除发起窗"（emit_filter）                                     | ❌ 对 JS 监听者无效       | tauri-2.11.5 listener.rs:306 match_any_or_filter：`Any \|\| filter`——JS listen() 缺省 target=Any 恒通过无视 filter；勾选坍缩截断原样在位                                     |
+| FIX005.26 listen 竞态防护（disposed）                                    | ❌ 恒失效                 | onUnmounted 注册在 onMounted 回调内——Vue 生命周期钩子仅 setup 同步上下文生效，disposed 永为 false                                                                            |
+| FIX005.1 非主窗关窗过滤                                                  | ⚠️ 改残                   | 早退分支未 prevent_close——托盘窗获焦 Alt+F4 走 runtime 默认销毁                                                                                                              |
+| 其余 28 项（.4 EXITING/.13 死权限/.24 三 composable/.27 reorder 收敛等） | ✅ 在位                   | 批量 grep + 三路 diff 复核                                                                                                                                                   |
+| 特别核验：hide 语义 vs T 腿自动 destroy                                  | ✅ 当前完好但靠脆弱副作用 | JS onCloseRequested handler 后自动 destroy（window.cjs:1637）→ plugin:window\|destroy invoke → ACL 静默拒绝（FIX005.13 已删 allow-destroy）——hide 语义是被权限删除意外保住的 |
+
+### 一、P0-P3 修复清单
+
+无 P0/P1。**P2 四条**：
+
+| #    | 文件:行号                                                 | 类型 | 描述                                                                                                                                                                                   | 建议                                                                 | 性质                       | 影响面            |
+| ---- | --------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------- | ----------------- |
+| P2-1 | commands/todo.rs:15-19 + App.vue:226 + TrayPreview.vue:82 | 1/4  | emit_filter 方案对 JS 监听者无效（源码实证 Any 恒通过）：主窗每次 todo 变更仍即时收广播 → 勾选 300ms 主拍截断 + 刷新双跑原样在位；注释与行为不符                                       | 载荷携带发起窗 label，前端两监听处 origin 自判早退；emit_filter 删除 | 遗留（A005 P2-5 修复无效） | 勾选动效/刷新链   |
+| P2-2 | lib.rs:470-472                                            | 1/2  | 非主窗 CloseRequested 早退未 prevent_close（FIX005.1 改残）：托盘窗获焦 Alt+F4 → runtime 默认销毁 → 预览窗 session 内失效至重启                                                        | 早退前对非 main 窗一律 prevent_close                                 | 新增                       | 预览窗生命周期    |
+| P2-3 | lib.rs:198,260 + settings.rs:81-82                        | 1/12 | 首启落位左上角 (0,0)：config 缺失 → unwrap_or_default → Default x/y=0 → position_on_monitor 判 true → 白名单③"主屏右下 40px"被绕过，default_position 死路径。复现：删 config.json 启动 | Default x/y 改屏外哨兵（如 i32::MIN）或 setup 按 Option 分支         | 新增（PL014.2 起潜伏）     | 启动落位/配置体系 |
+| P2-4 | BubblesView.vue:330-340                                   | 1/8  | FIX005.26 竞态防护恒失效：onUnmounted 嵌套在 onMounted 回调内注册被 Vue 忽略，disposed 永 false，"已卸载当场注销"为死代码；快速切页泄漏监听                                            | disposed 声明与置位移 setup 层（顶层 onUnmounted 内）                | 新增（FIX005.26 修复无效） | Vue 前端          |
+
+**P3 共 14 条**：
+
+| #   | 文件:行号                                                              | 类型  | 描述与建议                                                                                                                                                                     |
+| --- | ---------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | lib.rs:492-499 + App.vue:250-252                                       | 1/8   | 关窗链路脆弱平衡：T 腿 handler 无 preventDefault，JS 自动 destroy 当前被 ACL 静默拒绝才保住 hide 语义——权限恢复即被击穿。T 腿补 event.preventDefault()（关窗决策归 Rust 双腿） |
+| 2   | tray.rs:121-130                                                        | 1/4   | 托盘置顶臂先落库后切窗（与 FIX005.6 命令壳层顺序漂移）+ 主窗 None 静默跳过——状态分叉托盘路径残留。对齐先窗口成功再落库                                                         |
+| 3   | commands/tray_preview.rs:16 vs TrayPreview.vue:37-38                   | 1/3   | 预览窗空态缩高失效（FIX005.17 副作用）：钳制下限 80 > 空态实际高度 ≈51 → 命令拒绝停留旧高度 + 错误日志。下限降至前端可达值（如 40）并注释联动                                  |
+| 4   | BubblesView.vue:219-223 + TodoList.vue:282                             | 5/6   | FIX005.24 收敛残留：BubblesView 旧注释块（描述已删实现）；TodoList observer `!ul \|\|` 恒 false 死条件                                                                         |
+| 5   | useScrollKit.ts:54                                                     | 2/6   | unmount 摘标记硬编码 dataset.mounted 未走 opts.mountedFlag.key——接口承诺与实现不一致                                                                                           |
+| 6   | App.vue:216-237                                                        | 2/13  | 启动链四个 await listen 无 catch——任一 reject 中断整个 onMounted（refresh×5/关窗 T 腿注册全跳过）。逐 listen 补 catch                                                          |
+| 7   | App.vue:231-237 + TrayMenu.vue:53-59                                   | 11/4  | prefs-changed 载荷两窗内联类型——Rust PrefsSnapshot 已单源，前端补 types.ts 镜像（PrefsView）                                                                                   |
+| 8   | commands/settings.rs:16-29                                             | 6/11  | 新命令三处小瑕：文档"上限上限"笔误/返回裸 u32 违背 Result 约定/:29 注释"1~20"字面未随常量口径                                                                                  |
+| 9   | commands/tray_preview.rs:17,25 + tray_menu.rs:66 + settings.rs:138,141 | 11/13 | CommandError::Settings 挪用为窗口/校验通用错误（扩面）——增 Window(String) 变体或登记豁免                                                                                       |
+| 10  | lib.rs:73-81 vs tray.rs:142-147                                        | 13/4  | snap_if_needed 锁失败回退 false 未登记白名单，且与 snap_current 回退 true（已登记）同场景两方向——补登记或统一                                                                  |
+| 11  | lib.rs:296                                                             | 13    | 默认热键 parse(...).expect——A005 P3-11 同族漏网，改 match+日志                                                                                                                 |
+| 12  | lib.rs:136-137 + tauri.conf.json                                       | 3/12  | default_position 硬编码 300×400 与 conf 双处来源——读 inner_size 或注释钉死联动                                                                                                 |
+| 13  | examples/seed_data.rs:108                                              | 13    | unwrap_or(0) 静默吞读库错误（同文件其他路径均 exit(1)）——对齐                                                                                                                  |
+| 14  | tray.rs:216-227                                                        | 1     | Enter 重置武装打断"预览窗→图标"连续性（Shown 被重置 Armed → 预览闪没 0.5s 重停）——Shown 态仅更新锚点不重武装                                                                   |
+
+### 二、参考级观察项（豁免，含回落理由；用户默认全不提升）
+
+1. settings_set_always_on_top 反向残留（窗口已切、落库失败不回滚不广播）——采纳方案固有，IO 错误才触发
+2. reorder_in_transaction COMMIT 失败无显式 ROLLBACK——本地库近乎不可达（需验证）
+3. **tauri match_any_or_filter 语义是工程级陷阱**（Any target 无视 emit_filter）——建议 FIX006 录入 AGENTS 环境陷阱节
+4. fullscreen 三类失败共享日志旗标；hotkey ON_HOTKEY into_inner 恢复式（既有模式）
+5. capabilities start-dragging 授三窗实际仅 main 用——粒度残留
+6. 组合式在 onMounted 异步上下文调用内部 onUnmounted 失效（App 根生产不卸载无后果；P2-4 同机制首次产生实际后果）
+7. BUBBLE_MAX_LIMIT ref 用常量命名；tooltip "settings" 英文文案；defineExpose 零调用（预留面）
+8. A005 观察项保留项全部延续（CSP 打包前必补、录制态旧热键、-2000 首绘等）
+
+### 三、亮点
+
+SQL 全参数化、锁序单向、tray.rs 窗口调用零锁内违规（专项走查）；FIX004 时代防护全部完好；v-html 零注入面、零 any、零空 catch；组件链 emit 覆盖核查全场景闭合；上限单源三点一致；A005 修复 28/31 实质在位。本轮最大价值 = diff/语义级复核抓出 grep 级复核的三项"修复无效"——grep 在位 ≠ 语义生效。

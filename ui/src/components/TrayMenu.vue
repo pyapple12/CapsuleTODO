@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { PrefsView } from "../../types";
 
 // ===== 托盘菜单（PL021）：独立 tray-menu 窗的根组件——自绘菜单替代原生
 // Win32 菜单（深色模式下 Win11 圆角边距被 muda 涂实 = 上下空条）。四项动作
@@ -50,13 +51,10 @@ onMounted(async () => {
   }
   await refresh();
   // 开关事实源变化（任意入口切换）→ 勾选态回显
-  unlistenPrefs = await listen<{ snap_to_edge: boolean; always_on_top: boolean }>(
-    "prefs-changed",
-    (event) => {
-      snapOn.value = event.payload.snap_to_edge;
-      topOn.value = event.payload.always_on_top;
-    },
-  );
+  unlistenPrefs = await listen<PrefsView>("prefs-changed", (event) => {
+    snapOn.value = event.payload.snap_to_edge;
+    topOn.value = event.payload.always_on_top;
+  });
 });
 
 onUnmounted(() => {

@@ -104,8 +104,15 @@ fn main() {
 
     let base = now_ms();
     let pool_len = TODO_POOL.len();
-    // 已有条数作为池子偏移：重复注入不撞同文本
-    let offset = storage.list().map(|l| l.len()).unwrap_or(0);
+    // 已有条数作为池子偏移：重复注入不撞同文本（FIX006.17 对齐同文件严格语义——
+    // 原unwrap_or(0) 静默当空库，list 失败时从头注入与既有条目撞文本污染测试库）
+    let offset = match storage.list() {
+        Ok(list) => list.len(),
+        Err(err) => {
+            eprintln!("读取现有清单失败：{err}");
+            std::process::exit(1);
+        }
+    };
 
     // —— 未完成待办：created_at 四档分布（红 1/4、黄 1/4、3h 1/4、刚刚 1/4）——
     for i in 0..todo_count {

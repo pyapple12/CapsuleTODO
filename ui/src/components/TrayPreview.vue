@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { TodoView } from "../../types";
 
@@ -79,7 +80,10 @@ onMounted(async () => {
   }
   await refresh();
   // 主窗改动（新增/勾选/归档）→ 预览列表同步
-  unlistenTodoChanged = await listen("todo-changed", () => {
+  // 广播载荷 = 发起窗 label（FIX006.1）：预览窗发起的勾选早退（自刷新已有），
+  // 主窗等他窗变更照常刷新
+  unlistenTodoChanged = await listen<string>("todo-changed", (event) => {
+    if (event.payload === getCurrentWindow().label) return;
     void refresh();
   });
 });

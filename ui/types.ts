@@ -41,3 +41,11 @@ export interface BubbleSnapshot {
 
 /** 气泡捕获结果（镜像 BubbleCaptureOutcome；duplicate = 重复内容未入库，PL015.5） */
 export type BubbleCaptureOutcome = { status: "added"; item: BubbleItem } | { status: "duplicate" };
+
+/** 窗口偏好广播载荷（FIX006.11 镜像 PrefsSnapshot；Rust 侧单一来源 = commands/settings.rs） */
+export interface PrefsView {
+  /** 窗口置顶开关 */
+  always_on_top: boolean;
+  /** 贴边吸附开关 */
+  snap_to_edge: boolean;
+}

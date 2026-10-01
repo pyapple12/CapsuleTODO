@@ -104,7 +104,9 @@ pub(crate) fn now_ms() -> u64 {
 /// 任一步失败落日志，勾选态由下次事实源读取纠正（不做本地回滚——ctx 未变即
 /// 事实未变）
 pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
-    // FIX005.15 单 match：目标值计算与执行同臂（新增偏好开关只需加一个臂）
+    // FIX005.15 单 match：目标值计算与执行同臂（新增偏好开关只需加一个臂）。
+    // FIX006.6 置顶臂对齐 FIX005.6 命令壳层顺序：先主窗 set_always_on_top 成功
+    // 再落库——窗口失败/主窗缺失路径不动 ctx/磁盘（消除状态分叉）
     let ctx = app.state::<AppContext>();
     let path = match crate::paths::settings_path() {
         Ok(p) => p,
@@ -120,13 +122,15 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
         }
         "tray-top" => {
             let on = !top_current(app);
-            crate::commands::settings::settings_set_always_on_top_core(on, &path, &ctx).map(|_| {
-                if let Some(w) = app.get_webview_window("main") {
-                    if let Err(err) = w.set_always_on_top(on) {
-                        eprintln!("托盘置顶切换生效失败：{err}");
-                    }
-                }
-            })
+            let Some(w) = app.get_webview_window("main") else {
+                eprintln!("托盘置顶切换失败：主窗不存在（异常态）");
+                return;
+            };
+            if let Err(err) = w.set_always_on_top(on) {
+                eprintln!("托盘置顶切换生效失败：{err}");
+                return;
+            }
+            crate::commands::settings::settings_set_always_on_top_core(on, &path, &ctx)
         }
         _ => return,
     };
@@ -208,10 +212,10 @@ fn step_watch(
 }
 
 /// 托盘 Enter（预览延迟出现）：菜单开着则整个事件忽略（实测：菜单开着时托盘
-/// Enter 仍会触发——此时武装 = 菜单旁弹出预览窗，即旧 bug）；否则记录图标
-/// 矩形锚点并武装（显示延迟到守候线程"持续停留 500ms"判定）。残留可见窗
-/// 不在此处收（主线程不碰预览窗，跨线程窗口操作有死锁面）——守候线程下一拍
-/// 依"Armed ∧ 可见 → Hide"自愈。
+/// Enter 仍会触发——此时武装 = 菜单旁弹出预览窗，即旧 bug）。相位分派（FIX006.18
+/// 连续性语义）：Shown（窗正显示，光标自预览窗移回图标）仅更新锚点保持显示——
+/// 重武装会"Armed∧可见→Hide"闪没 0.5s 重现；Idle/Suppressed 才转 Armed 重新
+/// 计时（持续停留 500ms 防划过误触）。
 /// x/y/w/h 为托盘图标矩形物理坐标（真实值随 DPI 缩放，FIX005.11 起全量入状态）
 pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32) {
     if menu_is_open(app) {
@@ -223,7 +227,11 @@ pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32)
     st.tray_bottom = ry + rh;
     st.tray_width = rw;
     st.tray_height = rh;
-    st.phase = Phase::Armed { since_ms: now_ms() };
+    match st.phase {
+        // Shown 连续性：光标在两区域内移动，保持显示（锚点已更新）
+        Phase::Shown { ref mut miss } => *miss = 0,
+        _ => st.phase = Phase::Armed { since_ms: now_ms() },
+    }
 }
 
 /// 托盘右键按下（PL021 自绘菜单版）：菜单已开 = 再按收起（原生菜单同款）；

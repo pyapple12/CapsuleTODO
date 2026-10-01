@@ -279,7 +279,7 @@ onMounted(() => {
       (listEl.value as unknown as { $el?: HTMLElement })?.$el ??
       (listEl.value as HTMLElement | null);
     if (!ul) return;
-    if (!ul || ul.dataset.mounted !== "1") {
+    if (ul.dataset.mounted !== "1") {
       unmountScrollKit();
       mountScrollKit();
     }

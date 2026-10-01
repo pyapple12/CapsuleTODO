@@ -6,18 +6,14 @@ use tauri::{Emitter, State};
 use super::{AppContext, CommandError};
 use crate::todo::{age_level, validate_note, validate_text, AgeLevel, TodoItem};
 
-/// 变更广播（PL018.6 问题一修复；FIX005.5 收敛）：清单数据任何变更后由命令层发
-/// todo-changed——emit_filter 排除发起窗（发起窗刷新走自身组件链时序，300ms 主拍
-/// 不被广播提前截断；跨窗同步照收，预览窗/主窗互为对端）。todo_reorder 原漏发，
-/// 本版补齐
+/// 变更广播（PL018.6 问题一修复；FIX006.1 载荷 origin 方案）：清单数据任何变更后
+/// 由命令层发 todo-changed，载荷 = 发起窗 label——**前端自判早退**（发起窗刷新走
+/// 自身组件链时序，300ms 主拍不被截断；跨窗照常刷新）。
+/// 为什么不用 emit_filter：tauri 2.x 的 match_any_or_filter 语义下，JS listen()
+/// 缺省 target=Any **恒通过无视 filter**（listener.rs 实证）——FIX005.5 的过滤
+/// 方案对 JS 监听者整个无效，故改载荷显式 origin（详见 AGENTS 环境陷阱节）
 fn emit_todo_changed(window: &tauri::Window, app: &tauri::AppHandle) {
-    let origin = window.label().to_string();
-    if let Err(err) = app.emit_filter("todo-changed", (), move |target: &tauri::EventTarget| {
-        !matches!(
-            target,
-            tauri::EventTarget::WebviewWindow { label } if *label == origin
-        )
-    }) {
+    if let Err(err) = app.emit("todo-changed", window.label().to_string()) {
         eprintln!("todo-changed 广播失败：{err}");
     }
 }

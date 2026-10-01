@@ -419,3 +419,28 @@
 - [x] FIX005.29 [P3] AGENTS 目录树实态化 —— 目录树补 capture.rs/snap.rs/tray.rs 三行（含各期语义注记）、settings.rs 职责行补 always_on_top/snap_to_edge 与钳制单点、fullscreen 行补休眠语义、commands 行补 tray_preview/tray_menu；验证：文档核对（2026-10-01 已落）
 - [x] FIX005.30 [P3] is_duplicate 死代码收敛 —— storage.rs BubbleAddOutcome::is_duplicate 加 #[cfg(test)]（沿 added_item 先例）；验证：cargo test 绿（2026-10-01 已落）
 - [x] FIX005.31 [P3] 收尾验证 —— 全量门禁 fmt --check/clippy -D warnings/cargo test 131/vue-tsc/build/prettier 全绿 + app 重编拉起；live 回归（托盘三件套/预览窗/设置板双向同步/退出链/拖拽排序/气泡页）（2026-10-01 门禁已过 + 用户 live 回执通过，**FIX005 全组 31/31 闭环**）
+
+### FIX006: 第6轮审计修复 [audit#A006]
+
+> 范围：A006 P2 四条（emit_filter 无效遗留 / 关窗过滤改残 / 首启落位 0,0 / listen 竞态防护失效）+ P3 十四条。观察项默认全不提升。P2-1/P2-4 为 FIX005 修复自身无效的遗留——本轮优先。
+
+- [x] FIX006.1 [P2] todo-changed 载荷 origin 方案 —— commands/todo.rs emit_todo_changed 删 emit_filter 改 `app.emit("todo-changed", window.label())`（载荷 = 发起窗 label String，注释载明 emit_filter 无效根因并指向 AGENTS 陷阱节）；App.vue/TrayPreview.vue 两监听改 `listen<string>` + `if (event.payload === getCurrentWindow().label) return;`（发起窗早退，跨窗照常刷新；TrayPreview 补 getCurrentWindow import）；验证：cargo test 132 绿 + vue-tsc/build 绿 + live 主窗勾选 300ms 主拍完整播完不坍缩 + 预览窗打勾主窗同步（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.2 [P2] 非主窗关窗拦截 —— lib.rs CloseRequested 分支非 main 早退前加 `api.prevent_close()`（托盘窗显隐全归守候线程/命令层，任何 close 请求都拦）；验证：cargo test 绿 + live 预览窗获焦 Alt+F4 → 预览窗仍存活（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.3 [P2] 首启落位哨兵 —— settings.rs WindowSettings Default x/y 改 `i32::MIN` 哨兵（注释载明"首启未落位"语义）；新增测试 default_position_is_sentinel_not_origin；验证：cargo test 132 绿（131+1 哨兵用例）+ live 删 config.json 启动落主屏右下（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.4 [P2] BubblesView disposed 移 setup 层 —— 改名 `bubbleListenDisposed` 声明上提 setup 段（注释载明生命周期钩子失效区教训）；置位移顶层 onUnmounted 首行；删 onMounted 回调内嵌套注册；验证：vue-tsc/build 绿 + live 快速切页后热键捕获气泡页正常刷新（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.5 [P3] T 腿 preventDefault 语义正确化 —— App.vue onCloseRequested handler 首行 `event.preventDefault()`（关窗决策全权归 Rust 双腿；注释载明此前靠 ACL 删权限的脆弱依赖与 window.cjs:1637 自动 destroy 依据）；验证：vue-tsc 绿 + live Alt+F4 隐藏/菜单退出进程死两场景（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.6 [P3] 托盘置顶臂对齐调序 —— tray.rs on_pref_menu "tray-top" 臂改先主窗 set_always_on_top 成功再落库（None 分支 eprintln"主窗不存在（异常态）"，窗口失败 return 不落库）；验证：cargo test 132 绿 + live 托盘菜单切置顶不回归（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.7 [P3] 预览高度钳制下限联动 —— commands/tray_preview.rs 提命名常量 HEIGHT_MIN=40.0/HEIGHT_MAX=800.0（注释载明与 TrayPreview 高度公式 listH+18 联动：空态 ≈51 必须可达）；验证：cargo test 绿 + live 预览窗清空后缩至空态高度（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.8 [P3] 收敛残留清理 —— BubblesView.vue 删旧注释块（描述已删实现）；TodoList.vue observer 删 `!ul ||` 恒 false 死条件；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX006.9 [P3] useScrollKit 摘标记走选项 —— unmount 改 `dataset[opts.mountedFlag.key]` 与 mount 对称（注释载明不对称后果：换 key 调用方摘不掉标记被防重挂挡住）；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX006.10 [P3] 启动链 listen 补 catch —— App.vue 四个 await listen 逐个补 .catch（失败返回 undefined 保句柄类型，落语境日志）——注册失败只损失单监听，不再中断启动链后续初始化；验证：vue-tsc/build 绿（2026-10-02 已落）
+- [x] FIX006.11 [P3] prefs 载荷 types 镜像 —— types.ts 加 `export interface PrefsView`（镜像 PrefsSnapshot）；App.vue/TrayMenu.vue 两监听泛型改 PrefsView（TrayMenu 补 import）；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX006.12 [P3] 新命令文档与约定 —— settings_get_bubble_max_limit 文档笔误改"最大合法值"、返回值 Result 化（Ok 直返，对齐同文件 7 命令约定）、settings_set_max_bubbles 注释改 1~MAX_BUBBLES_LIMIT 口径；前端调用侧无需改（invoke 自动解包 Ok 值，mock 返回裸值为框架约定）；验证：cargo test 132 绿（2026-10-02 已落）
+- [x] FIX006.13 [P3] CommandError::Window 变体 —— mod.rs 加 `Window(String)`（Display/Serialize 两 match 各加一行）；窗口类错误迁移归户：settings.rs 置顶两处/tray_preview.rs 钳制与 set_size 两处/tray_menu.rs 未知动作；契约测试补 Window 断言（A004 Hotkey 同款）；验证：cargo test 132 绿（2026-10-02 已落）
+- [x] FIX006.14 [P3] 吸附锁失败白名单登记 —— AGENTS.md 补"snap_if_needed 锁失败回退 false 跳过吸附"三要素，条目内载明与 snap_current 回 true 的方向差异理由（动作保守 vs 显示缺省，均自愈面）；验证：文档核对（2026-10-02 已落）
+- [x] FIX006.15 [P3] 默认热键 expect 去除 —— lib.rs 启动热键段重构：parse 用户值/默认值两级 match，任一失败 eprintln 跳过注册（不中断 setup 后续托盘装配，白名单⑧同规；A005 P3-11 同族末颗）；验证：cargo test 132 绿（2026-10-02 已落）
+- [x] FIX006.16 [P3] default_position 尺寸单源 —— lib.rs default_position 硬编码 300×400 改读 window.inner_size()（创建时已按 conf 定型，conf 调整后偏移自动跟随）；失用 scale 变量一并删；验证：cargo build/clippy 绿（2026-10-02 已落）
+- [x] FIX006.17 [P3] seed_data 静默兜底对齐 —— examples/seed_data.rs list 失败改 match eprintln + exit(1)（对齐同文件严格语义，杜绝静默当空库撞文本污染测试库）；验证：cargo build --examples 绿（2026-10-02 已落）
+- [x] FIX006.18 [P3] Enter 重置打断连续性修复 —— tray.rs on_tray_enter 相位分派：Shown 仅清 miss 保持显示（预览窗→图标连续路径不闪没），Idle/Suppressed 才转 Armed；验证：cargo test 132 绿 + live 预览显示中移回图标不闪没（2026-10-02 已落，live 回执待用户）
+- [x] FIX006.19 [P3] 陷阱入库与权限粒度 —— AGENTS.md 环境陷阱节补两条（①tauri emit_filter 对 JS listen 无效[match_any_or_filter 语义 + 正确方案]②Vue 生命周期钩子仅 setup 同步上下文生效[嵌套注册被忽略]）；capabilities 拆 main-drag.json（start-dragging 限定 main），构建产物核验：default 集仅 core:default 三窗、main-drag 仅 main；验证：文档核对 + ACL 产物复核（2026-10-02 已落）
+- [x] FIX006.20 [P3] 收尾验证 —— 全量门禁 fmt --check/clippy -D warnings/cargo test 132/vue-tsc/build/prettier/cargo build --examples 全绿 + app 重编拉起；live 回归清单交用户（勾选主拍/托盘三件套/关窗两语义/首启落位哨兵/气泡页快速切页/预览连续性）（2026-10-02 门禁已过，live 回执待用户）

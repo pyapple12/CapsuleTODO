@@ -6,6 +6,12 @@ use tauri::Manager;
 
 use super::CommandError;
 
+/// 预览窗高度合法区间（FIX006.7 命名常量）：下限必须覆盖前端高度公式
+///（TrayPreview.vue: listH + 18）的最小可达值——空态 ≈51（tp-empty 行高 + 18），
+/// 原下限 80 把空态挡在门外 = 清空后缩高失效；上限覆盖满五条最大高度
+const HEIGHT_MIN: f64 = 40.0;
+const HEIGHT_MAX: f64 = 800.0;
+
 /// 预览窗高度随内容（PL018，用户定案 <5 条自动减高）：Rust set_size 直调
 ///（JS setSize 需 ACL allow-set-size，core:default 不含会静默拒绝）。可见态
 /// resize 后 1 帧切换（DWM 圆角已切掉闪帧直角，观感代价可接受——用户实测后
@@ -13,16 +19,16 @@ use super::CommandError;
 /// FIX005.17 入口钳制：公开 IPC 面假设参数会坏（NaN/负/超大直透会产生异常窗）
 #[tauri::command]
 pub fn tray_preview_resize(height: f64, app: tauri::AppHandle) -> Result<(), CommandError> {
-    if !height.is_finite() || !(80.0..=800.0).contains(&height) {
-        return Err(CommandError::Settings(format!(
-            "预览窗高度非法：{height}（允许 80-800）"
+    if !height.is_finite() || !(HEIGHT_MIN..=HEIGHT_MAX).contains(&height) {
+        return Err(CommandError::Window(format!(
+            "预览窗高度非法：{height}（允许 {HEIGHT_MIN}-{HEIGHT_MAX}）"
         )));
     }
     let Some(w) = app.get_webview_window("tray-preview") else {
         return Ok(());
     };
     w.set_size(tauri::LogicalSize::new(crate::tray::PREVIEW_WIDTH, height))
-        .map_err(|err| CommandError::Settings(format!("预览窗高度调整失败：{err}")))?;
+        .map_err(|err| CommandError::Window(format!("预览窗高度调整失败：{err}")))?;
     // resize 后底缘锚定托盘重算 y（上缘缩向托盘方向——用户定案的收缩方向）
     crate::tray::reanchor_to_tray(&w);
     Ok(())

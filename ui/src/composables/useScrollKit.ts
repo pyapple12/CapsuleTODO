@@ -51,7 +51,9 @@ export function useScrollKit(
     glassBar?.destroy();
     boardRead = null;
     glassBar = null;
-    delete document.getElementById(opts.mountedFlag.hostId)?.dataset.mounted;
+    // FIX006.9 摘标记与 mount 打标记走同一选项键（原硬编码 mounted 与接口承诺
+    // 不一致——换 key 的调用方会摘不掉标记，下次挂载被防重挂守卫挡住）
+    delete document.getElementById(opts.mountedFlag.hostId)?.dataset[opts.mountedFlag.key];
   }
 
   return { mount, unmount };

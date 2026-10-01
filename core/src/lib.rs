@@ -132,9 +132,11 @@ fn default_position(
         .ok_or("无主显示器，无法计算默认落位")?;
     let pos = monitor.position();
     let size = monitor.size();
-    let scale = window.scale_factor()?;
-    let win_w = (300.0 * scale).round() as i32;
-    let win_h = (400.0 * scale).round() as i32; // 与实验场卡片 300×400 一致（用户定案复刻）
+    // FIX006.16 尺寸单源：读窗口实际尺寸（创建时已按 tauri.conf 定型）替代硬编码
+    // 300×400 字面量——conf 尺寸调整后落位偏移自动跟随，无双处漂移
+    let inner = window.inner_size()?;
+    let win_w = inner.width as i32;
+    let win_h = inner.height as i32; // 与实验场卡片 300×400 一致（用户定案复刻）
     Ok(PhysicalPosition::new(
         pos.x + size.width as i32 - win_w - MARGIN_PX,
         pos.y + size.height as i32 - win_h - MARGIN_PX,
@@ -288,19 +290,35 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .lock_settings()
                     .map(|s| s.bubble_hotkey.clone())
                     .unwrap_or_else(|_| settings::DEFAULT_BUBBLE_HOTKEY.to_string());
-                let combo = hotkey::parse(&hotkey_text).unwrap_or_else(|err| {
-                    eprintln!(
-                        "气泡热键解析失败（{err}），回默认 {}",
-                        settings::DEFAULT_BUBBLE_HOTKEY
-                    );
-                    hotkey::parse(settings::DEFAULT_BUBBLE_HOTKEY).expect("默认热键必合法")
-                });
-                let handle = app.handle().clone();
-                hotkey::set_on_hotkey(Box::new(move || {
-                    commands::bubble::bubble_capture_from_clipboard_quiet(&handle);
-                }));
-                if let Err(err) = hotkey::reregister(combo) {
-                    eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
+                // FIX006.15 去 expect（A005 P3-11 同族末颗）：默认热键 parse 也走
+                // 可失败路径——失败跳过热键注册（白名单⑧"注册失败不阻断"同规），
+                // 不得中断 setup 后续托盘装配
+                let combo = match hotkey::parse(&hotkey_text) {
+                    Ok(c) => Some(c),
+                    Err(err) => {
+                        eprintln!(
+                            "气泡热键解析失败（{err}），回默认 {}",
+                            settings::DEFAULT_BUBBLE_HOTKEY
+                        );
+                        match hotkey::parse(settings::DEFAULT_BUBBLE_HOTKEY) {
+                            Ok(c) => Some(c),
+                            Err(default_err) => {
+                                eprintln!(
+                                    "默认热键解析失败（{default_err}）——跳过热键注册，其余功能不受影响"
+                                );
+                                None
+                            }
+                        }
+                    }
+                };
+                if let Some(combo) = combo {
+                    let handle = app.handle().clone();
+                    hotkey::set_on_hotkey(Box::new(move || {
+                        commands::bubble::bubble_capture_from_clipboard_quiet(&handle);
+                    }));
+                    if let Err(err) = hotkey::reregister(combo) {
+                        eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
+                    }
                 }
             }
             // 托盘（PL018.2）：主窗 skipTaskbar 后的常驻入口——左键显隐主窗，
@@ -464,10 +482,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 位置记忆：关闭时保存（拖动中不写盘）。max_bubbles 从运行时设置透传，
             // 与位置共存一份 config.json（PL014.2）
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // FIX005.1：托盘窗（tray-preview/tray-menu）的关窗事件不落主窗逻辑
-                // ——否则预览窗获焦 Alt+F4 会把预览窗位置写入主窗记忆并触发 R3 销毁
-                // （预览窗本 session 永不重建，hover 预览失效至重启）
+                // FIX006.2：托盘窗（tray-preview/tray-menu）的关窗请求一律拦截——
+                // 只早退不拦截会放行 runtime 默认销毁（预览窗获焦 Alt+F4 即销毁，
+                // session 内 hover 预览失效至重启）；显隐全归守候线程/命令层
                 if window.label() != "main" {
+                    api.prevent_close();
                     return;
                 }
                 // 位置记忆：关闭与隐藏两态都保存（拖动中不写盘）。max_bubbles 从

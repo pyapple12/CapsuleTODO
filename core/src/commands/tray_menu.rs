@@ -63,6 +63,6 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
             }
             Ok(())
         }
-        other => Err(CommandError::Settings(format!("未知菜单动作：{other}"))),
+        other => Err(CommandError::Window(format!("未知菜单动作：{other}"))),
     }
 }

@@ -51,6 +51,9 @@ pub enum CommandError {
     Whiteboard(String),
     /// 设置持久化失败（JSON/IO），承载错误说明
     Settings(String),
+    /// 窗口操作失败（主窗缺失/set_* 调用失败/非法参数，FIX006.13 从 Settings 挪用
+    /// 面归户），承载错误说明
+    Window(String),
     /// 全局热键解析/注册失败（PL015），承载错误说明
     Hotkey(String),
     /// 共享锁中毒（持锁线程 panic 后遗症，不可恢复）
@@ -67,6 +70,7 @@ impl serde::Serialize for CommandError {
             | CommandError::Clipboard(msg)
             | CommandError::Whiteboard(msg)
             | CommandError::Settings(msg)
+            | CommandError::Window(msg)
             | CommandError::Hotkey(msg) => serializer.serialize_str(msg),
             CommandError::Poisoned => serializer.serialize_str("共享锁中毒"),
         }
@@ -81,6 +85,7 @@ impl std::fmt::Display for CommandError {
             | CommandError::Clipboard(msg)
             | CommandError::Whiteboard(msg)
             | CommandError::Settings(msg)
+            | CommandError::Window(msg)
             | CommandError::Hotkey(msg) => write!(f, "{msg}"),
             CommandError::Poisoned => write!(f, "共享锁中毒"),
         }
@@ -168,6 +173,12 @@ mod tests {
             ))
             .expect("序列化必须成功"),
             "\"热键注册失败（已回退 Ctrl+Alt+C）\""
+        );
+        // A006 补：FIX006.13 新增 Window 变体纳入契约锁死
+        assert_eq!(
+            serde_json::to_string(&CommandError::Window("主窗口不存在".into()))
+                .expect("序列化必须成功"),
+            "\"主窗口不存在\""
         );
     }
 }
