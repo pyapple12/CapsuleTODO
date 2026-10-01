@@ -238,7 +238,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_always_on_top,
             commands::settings::settings_get_snap_to_edge,
             commands::settings::settings_set_snap_to_edge,
-            commands::tray_preview::tray_preview_hover,
             commands::tray_preview::tray_preview_resize,
         ])
         .setup(|app| {
@@ -392,23 +391,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        // hover 预览（PL018.5）：Enter 定位显示 / Leave 延迟隐藏
-                        // 右键按下（bug2 修复）：右键意图是菜单——预览窗让位隐藏
+                        // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程
+                        //（Leave 不作显隐依据——慢速移出可能丢失，守候光标轮询全覆盖）
+                        // 右键按下：锁死预览窗（菜单活跃期压制，收编进 tray 模块）
                         TrayIconEvent::Click {
                             button: MouseButton::Right,
                             button_state: MouseButtonState::Down,
                             ..
                         } => {
-                            if let Some(pw) = tray.app_handle().get_webview_window("tray-preview") {
-                                let _ = pw.hide();
-                            }
+                            crate::tray::on_tray_right_button(tray.app_handle());
                         }
                         TrayIconEvent::Enter { rect, .. } => {
                             if let (tauri::Position::Physical(p), tauri::Size::Physical(s)) =
                                 (rect.position, rect.size)
                             {
                                 crate::tray::on_tray_enter(
-                                    tray.app_handle(),
                                     p.x,
                                     p.y,
                                     s.width as i32,
@@ -416,12 +413,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 );
                             }
                         }
-                        TrayIconEvent::Leave { .. } => {
-                            crate::tray::on_tray_leave(tray.app_handle());
-                        }
                         _ => {}
                     })
                     .build(app)?;
+                // 预览守候线程（单一常驻）：状态机驱动显隐，show/hide 唯一调用者
+                crate::tray::spawn_preview_watcher(app.handle());
                 // prefs-changed 监听（PL018.3）：设置板改开关 → 托盘勾选态同步
                 let handle = app.handle().clone();
                 app.listen("prefs-changed", move |event| {

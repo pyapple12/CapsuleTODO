@@ -1,16 +1,10 @@
-//! 托盘预览窗命令（PL018.5）：预览窗前端上报悬停状态——mouseenter 取消待执行的
-//! 延迟隐藏，mouseleave 重新起延迟。逻辑在 tray.rs（状态与守候线程同处）。
+//! 托盘预览窗命令（PL018.5）：预览窗高度随内容调整（Rust set_size 直调 +
+//! 底缘锚定重算）。显隐已收归 tray.rs 单一守候线程（前端不再上报悬停状态
+//! ——守候线程的光标轮询全条件覆盖 mouseenter/mouseleave 丢失场景）
 
 use tauri::Manager;
 
 use super::CommandError;
-
-/// 预览窗悬停状态上报（TrayPreview mouseenter/mouseleave 调用）
-#[tauri::command]
-pub fn tray_preview_hover(hovering: bool, app: tauri::AppHandle) -> Result<(), CommandError> {
-    crate::tray::set_preview_hover(hovering, &app);
-    Ok(())
-}
 
 /// 预览窗高度随内容（PL018，用户定案 <5 条自动减高）：Rust set_size 直调
 ///（JS setSize 需 ACL allow-set-size，core:default 不含会静默拒绝）。可见态

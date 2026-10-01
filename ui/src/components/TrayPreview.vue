@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // ===== 托盘悬浮预览（PL018.4）：独立 tray-preview 窗的根组件——未完成待办前五
-// 条最简展示（状态点 + 文本，点行切换），悬停状态上报 Rust（延迟隐藏竞态取消端）
+// 条最简展示（状态点 + 文本，点行切换）。显隐由 Rust 守候线程光标轮询判定，
+// 前端只管列表与高度（不再上报悬停状态）
 
 /** 预览条目（todo_list 返回 TodoView 的展示子集） */
 interface PreviewTodo {
@@ -67,11 +68,6 @@ async function toggle(id: number): Promise<void> {
   }
 }
 
-/** 悬停状态上报（延迟隐藏竞态的取消端，见 tray.rs set_preview_hover） */
-function reportHover(hovering: boolean): void {
-  void invoke("tray_preview_hover", { hovering });
-}
-
 onMounted(async () => {
   // 高度链修正（视觉二轮）：html/body/#app 无显式高度时 height:100% 塌缩为内容高，
   // 窗体剩余区域露出 webview 原生暗背景（用户截图"两层"）——预览窗实例 JS 直改
@@ -98,7 +94,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="tray-preview" @mouseenter="reportHover(true)" @mouseleave="reportHover(false)">
+  <div class="tray-preview">
     <ul class="tp-list">
       <li v-for="t in todos" :key="t.id" class="tp-row" @click="onRowClick(t)">
         <span class="tp-box" :class="{ 'tp-box-checked': animatingId === t.id }">
