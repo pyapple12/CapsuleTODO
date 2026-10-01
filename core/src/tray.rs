@@ -14,7 +14,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::commands::AppContext;
 
@@ -23,6 +23,10 @@ static ABSENT_TICKS: AtomicU32 = AtomicU32::new(0);
 
 /// 预览窗宽度（逻辑像素，用户口头调参单一来源：创建与 resize 共用）
 pub const PREVIEW_WIDTH: f64 = 200.0;
+
+/// 预览窗创建高度（逻辑像素，FIX005.12 单源：高度随内容动态调整，此值仅创建
+/// 初始尺寸——首绘后由 tray_preview_resize 按内容重设）
+pub const PREVIEW_HEIGHT: f64 = 180.0;
 
 /// 菜单窗宽度（逻辑像素，用户口头调参单一来源）：四项中文文本 + 勾选列 +
 /// 内距的紧凑自定宽
@@ -59,12 +63,16 @@ enum WatchAction {
 }
 
 /// 守候状态（唯一事实源）：相位 + 托盘图标矩形锚点（定位 / resize 后底缘锚定
-/// / 光标判定共用）。事件处理（Enter/右键）与守候线程经 WATCH 互斥锁读写
+/// / 光标判定共用；宽高为 Enter 事件真实值——FIX005.11 替代硬编码 50×60，DPI
+/// 缩放下真实矩形大于旧硬编码值，命中区不再偏小）。事件处理（Enter/右键）与
+/// 守候线程经 WATCH 互斥锁读写
 struct WatchState {
     phase: Phase,
     tray_top: i32,
     tray_right: i32,
     tray_bottom: i32,
+    tray_width: i32,
+    tray_height: i32,
 }
 
 static WATCH: Mutex<WatchState> = Mutex::new(WatchState {
@@ -72,6 +80,8 @@ static WATCH: Mutex<WatchState> = Mutex::new(WatchState {
     tray_top: 0,
     tray_right: 0,
     tray_bottom: 0,
+    tray_width: 0,
+    tray_height: 0,
 });
 
 /// WATCH 取锁（锁中毒恢复取值——持锁线程 panic 后内部数据仍完整，取值优于卡死）
@@ -79,8 +89,9 @@ fn lock_watch() -> std::sync::MutexGuard<'static, WatchState> {
     WATCH.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 当前时刻（Unix 毫秒）——Armed 停留计时的时钟源
-fn now_ms() -> u64 {
+/// 当前时刻（Unix 毫秒）——Armed 停留计时的时钟源（FIX005.10 单点：lib.rs 吸附
+/// 防抖共用此实现，删除其本地副本）
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -93,11 +104,8 @@ fn now_ms() -> u64 {
 /// 任一步失败落日志，勾选态由下次事实源读取纠正（不做本地回滚——ctx 未变即
 /// 事实未变）
 pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
-    let on = match id {
-        "tray-snap" => !snap_current(app),
-        "tray-top" => !top_current(app),
-        _ => return,
-    };
+    // FIX005.15 单 match：目标值计算与执行同臂（新增偏好开关只需加一个臂）
+    let ctx = app.state::<AppContext>();
     let path = match crate::paths::settings_path() {
         Ok(p) => p,
         Err(err) => {
@@ -105,33 +113,29 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
             return;
         }
     };
-    let ctx = app.state::<AppContext>();
     let result = match id {
         "tray-snap" => {
+            let on = !snap_current(app);
             crate::commands::settings::settings_set_snap_to_edge_core(on, &path, &ctx).map(|_| ())
         }
-        "tray-top" => crate::commands::settings::settings_set_always_on_top_core(on, &path, &ctx)
-            .map(|_| {
+        "tray-top" => {
+            let on = !top_current(app);
+            crate::commands::settings::settings_set_always_on_top_core(on, &path, &ctx).map(|_| {
                 if let Some(w) = app.get_webview_window("main") {
                     if let Err(err) = w.set_always_on_top(on) {
                         eprintln!("托盘置顶切换生效失败：{err}");
                     }
                 }
-            }),
+            })
+        }
         _ => return,
     };
     if let Err(err) = result {
         eprintln!("托盘开关切换失败（落库未变）：{err}");
         return;
     }
-    // 全量广播（菜单窗 TrayMenu 监听回显勾选态；设置板 v-model 链自读事实源）
-    let (snap, top) = prefs_current(app);
-    if let Err(err) = app.emit(
-        "prefs-changed",
-        serde_json::json!({ "always_on_top": top, "snap_to_edge": snap }),
-    ) {
-        eprintln!("prefs-changed 广播失败：{err}");
-    }
+    // 全量广播（FIX005.9 单源：settings.rs emit_prefs_changed 统一快照与载荷）
+    crate::commands::settings::emit_prefs_changed(app, &ctx);
 }
 
 /// 贴边吸附当前值（锁失败按默认开——与托盘构建缺省语义一致）
@@ -148,11 +152,6 @@ fn top_current(app: &tauri::AppHandle) -> bool {
         .lock_settings()
         .map(|s| s.always_on_top)
         .unwrap_or(true)
-}
-
-/// 全量当前偏好（snap, top）
-fn prefs_current(app: &tauri::AppHandle) -> (bool, bool) {
-    (snap_current(app), top_current(app))
 }
 
 /// 守候状态机单步（纯函数，单测直测）：输入当前相位/时刻/光标位置/菜单存亡/
@@ -213,7 +212,7 @@ fn step_watch(
 /// 矩形锚点并武装（显示延迟到守候线程"持续停留 500ms"判定）。残留可见窗
 /// 不在此处收（主线程不碰预览窗，跨线程窗口操作有死锁面）——守候线程下一拍
 /// 依"Armed ∧ 可见 → Hide"自愈。
-/// x/y/w/h 为托盘图标矩形物理坐标（spike 实测 50×50 含 padding）
+/// x/y/w/h 为托盘图标矩形物理坐标（真实值随 DPI 缩放，FIX005.11 起全量入状态）
 pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32) {
     if menu_is_open(app) {
         return; // 菜单开着：不解锁、不武装（解除只走守候线程的菜单存亡探测）
@@ -222,6 +221,8 @@ pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32)
     st.tray_top = ry;
     st.tray_right = rx + rw;
     st.tray_bottom = ry + rh;
+    st.tray_width = rw;
+    st.tray_height = rh;
     st.phase = Phase::Armed { since_ms: now_ms() };
 }
 
@@ -233,18 +234,24 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
         return;
     };
     if menu_win.is_visible().unwrap_or(false) {
-        let _ = menu_win.hide(); // 菜单开着再右键 = 收起；锁死由守候探测解除
-        return;
+        if let Err(err) = menu_win.hide() {
+            eprintln!("菜单窗收起失败：{err}");
+        }
+        return; // 菜单开着再右键 = 收起；锁死由守候探测解除
     }
     {
         let mut st = lock_watch();
         st.tray_top = ry;
         st.tray_right = rx + rw;
         st.tray_bottom = ry + rh;
+        st.tray_width = rw;
+        st.tray_height = rh;
         st.phase = Phase::Suppressed;
     }
     if let Some(pw) = app.get_webview_window("tray-preview") {
-        let _ = pw.hide(); // 右键意图是菜单，预览窗让位
+        if let Err(err) = pw.hide() {
+            eprintln!("右键收预览窗失败：{err}");
+        }
     }
     // 菜单窗锚定（用户定案）：左缘对齐图标水平中轴向右展开（区别于预览窗的
     // 右对齐）；纵向同预览窗规则——默认图标上方，屏上缘放不下翻下方。屏右缘
@@ -341,7 +348,7 @@ pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
         let menu_open = menu_is_open(&handle);
         let (action, anchors) = {
             let mut st = lock_watch();
-            let in_tray = cursor_in_tray(st.tray_top, st.tray_right);
+            let in_tray = cursor_in_tray(st.tray_top, st.tray_right, st.tray_width, st.tray_height);
             let (new_phase, action) = step_watch(
                 st.phase.clone(),
                 now_ms(),
@@ -385,6 +392,9 @@ fn menu_is_open(app: &tauri::AppHandle) -> bool {
 /// 弹出那次右键松开（立即判定会"弹出即收"）；此后任一左/右键按下且光标不在
 /// 菜单窗内 = 点外 → 收起退出。点菜单项光标在窗内不触发，菜单窗由
 /// tray_menu_action 命令收起；窗口已不可见（动作路径已收）即自灭退出
+///（FIX005.18 cfg 化：win_input 为 Windows 专属模块，非 Windows 无托盘语义
+/// 给空实现，沿 cursor_in_tray 先例）
+#[cfg(target_os = "windows")]
 fn spawn_menu_watch(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -403,15 +413,22 @@ fn spawn_menu_watch(app: &tauri::AppHandle) {
             let clicked_outside = (crate::win_input::left_down() || crate::win_input::right_down())
                 && !cursor_in_window(&w);
             if clicked_outside {
-                let _ = w.hide();
+                if let Err(err) = w.hide() {
+                    eprintln!("菜单窗点外收起失败：{err}");
+                }
                 return;
             }
         }
     });
 }
 
-/// 光标是否落在托盘图标矩形内（守候循环判定：图标矩形由 Enter 记录）
-fn cursor_in_tray(tray_top: i32, tray_right: i32) -> bool {
+/// 非 Windows：无托盘语义，点外收起无实现面（编译期分支互不影响）
+#[cfg(not(target_os = "windows"))]
+fn spawn_menu_watch(_app: &tauri::AppHandle) {}
+
+/// 光标是否落在托盘图标矩形内（守候循环判定：矩形四缘由 Enter 真实记录，
+/// FIX005.11 参数化替代硬编码 50×60——DPI 缩放下硬编码命中区偏小）
+fn cursor_in_tray(tray_top: i32, tray_right: i32, tray_width: i32, tray_height: i32) -> bool {
     #[cfg(target_os = "windows")]
     {
         #[repr(C)]
@@ -427,12 +444,15 @@ fn cursor_in_tray(tray_top: i32, tray_right: i32) -> bool {
         if unsafe { GetCursorPos(&mut pt) } == 0 {
             return false;
         }
-        // 图标矩形：右缘/顶缘已知，按 spike 实测 50×60 反推左/下
-        pt.x >= tray_right - 50 && pt.x <= tray_right && pt.y >= tray_top && pt.y <= tray_top + 60
+        // 图标矩形：右缘/顶缘已知，宽高为 Enter 真实值，左/下缘反推
+        pt.x >= tray_right - tray_width
+            && pt.x <= tray_right
+            && pt.y >= tray_top
+            && pt.y <= tray_top + tray_height
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (tray_top, tray_right);
+        let _ = (tray_top, tray_right, tray_width, tray_height);
         false
     }
 }

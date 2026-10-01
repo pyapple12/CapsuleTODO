@@ -36,6 +36,9 @@ use storage::Storage;
 static LAST_MOVED_MS: AtomicU64 = AtomicU64::new(0);
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static DRAG_SNAP_PENDING: AtomicBool = AtomicBool::new(false);
+/// 菜单退出标志（FIX005.4 hide 语义）：tray_menu exit 动作置位后 CloseRequested 走
+/// 真退销毁链；未置位的关窗（Alt+F4）= 保存位置后隐藏到托盘（PL018 定案对齐）
+pub(crate) static EXITING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 mod win_input {
@@ -57,14 +60,6 @@ mod win_input {
     extern "system" {
         fn GetAsyncKeyState(v_key: i32) -> i16;
     }
-}
-
-/// 当前系统毫秒时刻（吸附防抖时间源；回拨由 saturating_sub 兜底）
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// 贴边吸附判定与落位（PL017.4）：读开关（锁失败跳过——吸附是体验增强层，
@@ -212,6 +207,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(err) = window.set_focus() {
                     eprintln!("单实例唤起聚焦失败：{err}");
                 }
+            } else {
+                eprintln!("单实例唤起失败：主窗不存在（异常态）");
             }
         }))
         // 剪贴板（PL004）：仅 Rust 侧读写，不经 ACL
@@ -238,6 +235,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::whiteboard::whiteboard_load,
             commands::whiteboard::whiteboard_save,
             commands::settings::settings_get_max_bubbles,
+            commands::settings::settings_get_bubble_max_limit,
             commands::settings::settings_set_max_bubbles,
             commands::settings::settings_get_bubble_hotkey,
             commands::settings::settings_set_bubble_hotkey,
@@ -329,14 +327,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(w) = app.get_webview_window("main") {
                                 match w.is_visible() {
                                     Ok(true) => {
-                                        let _ = w.hide();
+                                        if let Err(err) = w.hide() {
+                                            eprintln!("托盘隐藏主窗失败：{err}");
+                                        }
                                     }
                                     Ok(false) => {
-                                        let _ = w.show();
-                                        let _ = w.set_focus();
+                                        if let Err(err) = w.show() {
+                                            eprintln!("托盘唤回主窗 show 失败：{err}");
+                                        }
+                                        if let Err(err) = w.set_focus() {
+                                            eprintln!("托盘唤回主窗聚焦失败：{err}");
+                                        }
                                     }
                                     Err(err) => eprintln!("托盘显隐切换失败：{err}"),
                                 }
+                            } else {
+                                // FIX005.4：hide 语义下主窗恒存活（只隐藏不销毁），
+                                // None 属异常态，落日志供排查
+                                eprintln!("托盘左键切换失败：主窗不存在（异常态）");
                             }
                         }
                         // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程
@@ -393,7 +401,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .title("CapsuleTODO 预览")
                 .position(-2000.0, -2000.0)
-                .inner_size(crate::tray::PREVIEW_WIDTH, 180.0)
+                .inner_size(crate::tray::PREVIEW_WIDTH, crate::tray::PREVIEW_HEIGHT)
                 .transparent(true)
                 .decorations(false)
                 .skip_taskbar(true)
@@ -456,32 +464,50 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 位置记忆：关闭时保存（拖动中不写盘）。max_bubbles 从运行时设置透传，
             // 与位置共存一份 config.json（PL014.2）
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // 锁中毒跳过保存落日志（AGENTS 容错白名单登记项）：默认值写盘会静默
-                // 覆盖用户已存设置——位置同弃（下次启动回默认位），磁盘现值不动
+                // FIX005.1：托盘窗（tray-preview/tray-menu）的关窗事件不落主窗逻辑
+                // ——否则预览窗获焦 Alt+F4 会把预览窗位置写入主窗记忆并触发 R3 销毁
+                // （预览窗本 session 永不重建，hover 预览失效至重启）
+                if window.label() != "main" {
+                    return;
+                }
+                // 位置记忆：关闭与隐藏两态都保存（拖动中不写盘）。max_bubbles 从
+                // 运行时设置透传，与位置共存一份 config.json（PL014.2）。锁中毒跳过
+                // 保存落日志（AGENTS 容错白名单登记项）
                 match window.app_handle().state::<AppContext>().lock_settings() {
                     Ok(guard) => save_window_position(window, &guard),
                     Err(err) => eprintln!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}"),
                 }
-                // R3 兜底腿（FIX004.19 T+R3 双腿）：拦默认关，600ms 后无条件销毁——
-                // T 腿（前端 onCloseRequested flush 白板后自动销毁）健康时先到即秒关、
-                // 进程随之退出本计时器不再触发；webview 卡死时 T 腿事件不可达，本腿
-                // 保证任意状态 ≤600ms 必关（探针实测 .temp/close-probe/ 五场景）。
-                // destroy 派发走 Rust 事件循环不依赖 webview 线程；先到腿销毁后的
-                // 迟到 destroy 报错属预期竞态，落日志即止
                 api.prevent_close();
-                let win = window.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(600));
-                    if let Err(err) = win.destroy() {
-                        eprintln!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}");
+                if EXITING.load(Ordering::Relaxed) {
+                    // 托盘菜单退出（EXITING 置位）：真退销毁链——R3 兜底腿（FIX004.19
+                    // T+R3 双腿）：600ms 后无条件销毁，webview 卡死时 T 腿事件不可达
+                    // 由本腿保证必关；迟到 destroy 报错属预期竞态，落日志即止
+                    let win = window.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                        if let Err(err) = win.destroy() {
+                            eprintln!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}");
+                        }
+                    });
+                } else {
+                    // FIX005.4 hide 语义（PL018 定案对齐）：用户关窗（Alt+F4）= 保存
+                    // 位置后隐藏到托盘；真正退出只走托盘菜单（EXITING 置位区分）。
+                    // 主窗销毁会让托盘三入口全部失效（进程被两隐藏窗撑活），hide 根除
+                    if let Err(err) = window.hide() {
+                        eprintln!("主窗隐藏失败：{err}");
                     }
-                });
+                }
             }
             if let WindowEvent::Moved(_) = event {
+                // FIX005.3：吸附状态机只服务主窗——托盘窗 set_position 的 Moved 不入
+                // （时间戳污染/潜在菜单窗误吸附）
+                if window.label() != "main" {
+                    return;
+                }
                 // 贴边吸附状态机（PL017.4）：Moved 更新时间戳；左键按住（真拖动，
                 // 含悬停/慢速——静默判定会误吸）或间隔 ≤150ms 置 DRAG_ACTIVE；
                 // pending 单线程守到"左键已松 + 静默 ≥150ms"→ 吸附一次
-                let now = now_ms();
+                let now = crate::tray::now_ms();
                 let last = LAST_MOVED_MS.swap(now, Ordering::Relaxed);
                 let dragging = now.saturating_sub(last) <= 150;
                 #[cfg(target_os = "windows")]
@@ -497,7 +523,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if win_input::left_down() {
                             continue; // 左键仍按住 = 还在拖（悬停/慢速不误吸）
                         }
-                        if now_ms().saturating_sub(LAST_MOVED_MS.load(Ordering::Relaxed)) < 150 {
+                        if crate::tray::now_ms()
+                            .saturating_sub(LAST_MOVED_MS.load(Ordering::Relaxed))
+                            < 150
+                        {
                             continue; // 刚松手还在惯性/最后移动
                         }
                         DRAG_SNAP_PENDING.store(false, Ordering::Relaxed);
@@ -509,6 +538,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if let WindowEvent::Focused(focused) = event {
+                // FIX005.2：焦点联动只服务主窗——预览窗获焦不挂背板、不广播
+                // window-focus（否则主窗纱态与真实焦点相反）
+                if window.label() != "main" {
+                    return;
+                }
                 #[cfg(target_os = "windows")]
                 {
                     // 系统背板聚焦联动（SYSTEMBACKDROP 实验）：聚焦挂系统亚克力，

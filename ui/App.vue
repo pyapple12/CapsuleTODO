@@ -432,11 +432,4 @@ onUnmounted(() => {
   min-height: 0;
   flex: 1;
 }
-
-.placeholder {
-  margin: 24px 0;
-  font-size: 13px;
-  text-align: center;
-  opacity: 0.5;
-}
 </style>

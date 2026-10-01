@@ -10,13 +10,18 @@ use thiserror::Error;
 /// 气泡提醒上限缺省值（serde default：旧 config.json 缺字段兼容）
 pub const DEFAULT_MAX_BUBBLES: u32 = 5;
 
+/// 气泡提醒上限最大值（FIX005.25 单一来源：钳制/设置板步进禁用/mock 三处共用，
+/// 前端经 settings_get_bubble_max_limit 命令拉取——上限调整只改此处）
+pub const MAX_BUBBLES_LIMIT: u32 = 20;
+
 /// 气泡捕获全局热键缺省值（PL015：serde default 旧 config.json 缺字段兼容）
 pub const DEFAULT_BUBBLE_HOTKEY: &str = "Ctrl+Alt+C";
 
-/// 气泡提醒上限合法区间钳制（1~20，与设置板步进同规）：读路径（config.json 加载点）
-/// 与写路径（settings_set 命令）共用单一来源——手改文件越界静默收敛到边界（白名单⑤）
+/// 气泡提醒上限合法区间钳制（1~MAX_BUBBLES_LIMIT，与设置板步进同规）：读路径
+///（config.json 加载点）与写路径（settings_set 命令）共用单一来源——手改文件
+/// 越界静默收敛到边界（白名单⑤）
 pub fn clamp_max_bubbles(value: u32) -> u32 {
-    value.clamp(1, 20)
+    value.clamp(1, MAX_BUBBLES_LIMIT)
 }
 
 /// serde default 挂钩：旧 config.json 缺 max_bubbles 字段时回填 5（PL014.2）

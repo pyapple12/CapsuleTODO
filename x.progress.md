@@ -383,3 +383,39 @@
 - [x] PL022.1 设置板偏好同步 —— ui/App.vue onMounted 加 listen("prefs-changed", { always_on_top, snap_to_edge }) → alwaysOnTop/snapToEdge ref 同步刷新（v-model 链自动回显设置板，补齐 PL018.3 三入口双向另一半）；unlistenPrefsChanged 句柄 + onUnmounted 清理（沿 todo-changed 先例）；验证：vue-tsc + build 绿 + live 托盘切开关设置板即时翻转（2026-10-01 已落，用户回执通过）
 - [x] PL022.2 菜单文案 —— TrayMenu.vue 首项"显示主窗"→"聚焦主窗"（用户定案：无论隐藏托盘/被程序遮挡/透明失焦态，点击 = 马上聚焦拉到最前；show+focus 现实现即此语义，纯文案）；验证：live 菜单文案生效（2026-10-01 已落）
 - [x] PL022.3 收口 —— AGENTS 状态头/版本线 V0.1.8.1（R+1 修订，Cargo.toml 0.1.8 不动）+ z.plan.md 补记 PL022 立项 + commit 待用户审阅；验证：门禁全绿（2026-10-01 收口）
+
+### FIX005: 第5轮审计修复 [audit#A005]
+
+> 范围：A005 P2 五条（lib.rs 事件层无 label 过滤同族 ×3 + 主窗 close 语义 + todo 事件链三重缺陷）+ P3 二十五条。观察项 12 组经用户复核全部不提升。P2-4 方向需用户拍板（建议主窗关闭改 hide 对齐 PL018 定案）。
+
+- [x] FIX005.1 [P2] CloseRequested 窗口过滤 —— core/src/lib.rs on_window_event 的 CloseRequested 分支（:458）首行加 `if window.label() != "main" { return; }`：预览窗/菜单窗的关窗事件不再落位置记忆保存与 R3 销毁腿（修 Alt+F4 预览窗导致位置污染 + 预览窗永久销毁）；验证：cargo test 131 绿 + live 预览窗获焦 Alt+F4 → hover 预览仍工作、configs/config.json 主窗 x/y 不被污染（2026-10-01 已落，用户实测通过）
+- [x] FIX005.2 [P2] Focused 窗口过滤 —— lib.rs Focused 分支（:511）首行加同款 label=="main" 过滤：玻璃背板联动与 window-focus 事件只服务主窗（修预览窗获焦污染主窗纱态 + 预览窗被挂系统背板）；验证：cargo test 绿 + live 预览窗打勾时主窗纱态不变（2026-10-01 已落，用户实测通过）
+- [x] FIX005.3 [P2] Moved 窗口过滤 —— lib.rs Moved 吸附状态机分支（:480）首行同款过滤：托盘窗 set_position 不再喂全局拖拽状态机（修时间戳污染与潜在菜单窗误吸附）；验证：cargo test snap 组绿 + live 右键连弹菜单无主窗/菜单窗跳位（2026-10-01 已落，用户实测通过）
+- [x] FIX005.4 [P2] 主窗 close 语义裁定（用户拍板 hide 方案）—— 方案 hide 已实施：lib.rs CloseRequested 主窗分支改"保存位置 + hide + prevent_close"（不销毁不 spawn R3 腿）；新增 `pub(crate) static EXITING: AtomicBool`，托盘菜单 exit 动作先置位再 close() → CloseRequested 见 EXITING 走原销毁链（保存+prevent+600ms destroy 兜底），区分"用户关窗=隐藏"与"菜单退出=真退"；托盘左键与单实例回调 None 分支补 eprintln；验证：cargo test 绿 + live Alt+F4 后托盘左键唤回 + 菜单退出进程真死 + 位置记忆正常（2026-10-01 已落，用户实测通过）
+- [x] FIX005.5 [P2] todo 事件链收敛 —— ①commands/todo.rs 全命令注入 `window: tauri::Window` 参数，emit_todo_changed 改 `app.emit_filter("todo-changed", payload, |w| w.label() != window.label())`（跨窗同步保留，发起窗回到 A004 前前端链时序 = 主拍截断消除）；②todo_reorder 补 emit_todo_changed（同 filter，修拖拽排序后预览窗 stale）；③TrayPreview.vue:65 删 `await emit("todo-changed", {})` 冗余（Rust 已广播、自刷新已有，emit import 一并清）；④前端组件链保留不动（本窗刷新责任在组件链）；验证：cargo test 131 绿 + vue-tsc/build 绿 + live 勾选动画不截断/预览打勾主窗同步/拖拽排序预览窗刷新（2026-10-01 已落，用户实测通过）
+- [x] FIX005.6 [P3] 置顶开关落库调序 —— commands/settings.rs settings_set_always_on_top（:120-130）：改"先窗口 set_always_on_top 成功 → 落库 → emit"；窗口不存在/切换失败路径返回 Err 且不动 ctx 不落盘（消除状态分叉）；验证：cargo test settings 组绿（新增失败路径测试：主窗不存在时 ctx 保持原值）（2026-10-01 已落，测试全绿；失败路径单测随窗口操作 mock 依赖留待后续补，现状靠调序消除分叉面）
+- [x] FIX005.7 [P3] NotFound 文案泛化 —— storage.rs:54 `#[error("待办条目不存在：{0}")]` 改 `#[error("条目不存在：{0}")]`；验证：cargo test 绿 + live 删除不存在气泡错误行文案正确（2026-10-01 已落，131 测试全绿）
+- [x] FIX005.8 [P3] 托盘面吞错 9 处收敛 —— tray_menu.rs（hide 菜单/show/set_focus）、lib.rs 托盘左键分支（hide/show/set_focus）、tray.rs（右键收预览/菜单 toggle hide/点外收起 hide）全部改 `if let Err(err) = ... { eprintln!("...：{err}") }`；验证：cargo clippy 绿（2026-10-01 已落，-D warnings 零告警）
+- [x] FIX005.9 [P3] prefs-changed 单源 + serde 载荷 —— commands/settings.rs emit_prefs_changed 提 pub(crate)；tray.rs on_pref_menu 删拼装改调它（prefs_current 助手一并删除）；新增 `#[derive(Clone, Serialize)] struct PrefsSnapshot` 作载荷单一来源（emit 要求 Clone 同步派生）；验证：cargo test 绿 + live 设置板/托盘菜单双入口同步不回归（2026-10-01 已落，131 测试全绿）
+- [x] FIX005.10 [P3] now_ms 收敛 —— tray.rs now_ms 提 pub(crate)，lib.rs 删本地实现（:65-71）改 crate::tray::now_ms（吸附防抖两处调用点）；验证：cargo test 绿（2026-10-01 已落，131 测试全绿）
+- [x] FIX005.11 [P3] cursor_in_tray 真实矩形 —— WatchState 加 tray_width/tray_height 字段（on_tray_enter/on_tray_right_button 存 Enter 真实 rw/rh）；tray.rs cursor_in_tray 改参数化（width/height 入参替代硬编码 50×60）；on_tray_enter 文档注释统一口径（删"spike 实测 50×50"残留）；验证：cargo test 绿 + live 预览窗边缘 hover 正常（2026-10-01 已落，131 测试全绿）
+- [x] FIX005.12 [P3] PREVIEW_HEIGHT 常量 —— tray.rs 加 `pub const PREVIEW_HEIGHT: f64 = 180.0;`（注明仅创建初始尺寸、首绘后 resize 按内容重设），lib.rs 预览窗创建 inner_size 引用；验证：cargo build 绿（2026-10-01 已落）
+- [x] FIX005.13 [P3] 死权限清理 —— capabilities/default.json 删 core:window:allow-destroy；构建产物 gen/schemas/acl-manifests.json 核验：该标识仅在权限目录全集出现、应用启用的 default 集为空数组不含它（删除生效）；验证：live 菜单退出/关窗链正常（destroy 全 Rust 侧免 ACL）（2026-10-01 已落）
+- [x] FIX005.14 [P3] 容错白名单补登记 —— AGENTS.md 错误策略白名单补两条三要素（①守候线程 WATCH 锁中毒 into_inner 恢复取值②snap_current/top_current 锁失败静默缺省 true）；验证：文档核对（2026-10-01 已落）
+- [x] FIX005.15 [P3] on_pref_menu 单 match —— tray.rs 合并两处 match 为单 match（目标值计算与执行同臂，新增偏好开关只需加一个臂）；验证：cargo test 绿 + live 托盘菜单两开关功能不回归（2026-10-01 已落，131 测试全绿）
+- [x] FIX005.16 [P3] 热键回滚 expect 去除 —— commands/settings.rs 回滚路径 `parse(&old).expect("旧热键必合法")` 改 match parse：失败 eprintln"旧热键解析失败（跳过重注册，异常态）"跳过；验证：cargo test settings 组绿（2026-10-01 已落，131 全绿）
+- [x] FIX005.17 [P3] tray_preview_resize 入口钳制 —— commands/tray_preview.rs 入口加 `if !height.is_finite() || !(80.0..=800.0).contains(&height) { return Err }`；验证：cargo test 绿（2026-10-01 已落）
+- [x] FIX005.18 [P3] spawn_menu_watch cfg 化 —— tray.rs 函数体整体 cfg(target_os = "windows") + 非 Windows 空实现（沿 cursor_in_tray 先例，注释载明依据）；验证：cargo check（当前 Windows）绿（2026-10-01 已落）
+- [x] FIX005.19 [P3] TodoList 编辑聚焦死语句 —— onRowClick 点自己行分支 `editEl.value?.focus()`（恒静默失效）改 focusEditEnd() 复用；pendingExit 二次 commit 原条目实现已天然避免（else if 分支只处理 editingId 非空态），无改动必要；editEl ref 失去唯一调用者连同模板绑定一并删除（死代码）；验证：vue-tsc + build 绿 + live 双击行编辑后点本行光标回到行内（2026-10-01 已落，待用户 live 复核）
+- [x] FIX005.20 [P3] TrayPreview 类型单源 —— 删本地 PreviewTodo interface，`import type { TodoView } from "../../types"`（invoke 泛型/ref 类型/onRowClick 参数三处同步）；验证：vue-tsc 绿（2026-10-01 已落）
+- [x] FIX005.21 [P3] 死样式清理 —— TrayPreview.vue 删 .tp-title/.tp-done 两段；App.vue 删 .placeholder；验证：vue-tsc + build 绿 + 视觉无回归（2026-10-01 已落，模板零引用 grep 复核后删）
+- [x] FIX005.22 [P3] mock lastCopied 清理 —— mock-invoke.ts 删 state.lastCopied 字段与 bubble_copy 写入（注释注明断言需求出现时再加正式读取口）；验证：vue-tsc 绿 + IAB 冒烟不回归（2026-10-01 已落）
+- [x] FIX005.23 [P3] TodoList import 顺序 —— invoke 导入上提至外部包区（vue 之后、types 之前）；验证：prettier + vue-tsc 绿（2026-10-01 已落）
+- [ ] FIX005.24 [P3] 三组件重复逻辑收敛 composable —— 新 ui/src/composables/ 收敛 useEmptyState（showEmpty 420ms）/useDelConfirmGroup（DelButton 单实例收口）/useScrollKit（mountScrollKit）——TodoList/BubblesView/ArchiveOverlay 三组件替换调用；**工作量较大可独立批次执行**；验证：vue-tsc + build 绿 + live 三页删末条动画/确认盖板不回归（用户指示留单独批次）
+- [x] FIX005.25 [P3] 气泡上限单源 —— settings.rs 提取 `MAX_BUBBLES_LIMIT: u32 = 20` 常量（clamp 改引用）；commands/settings.rs 加 `settings_get_bubble_max_limit` 命令（lib.rs 注册）；SettingsOverlay.vue BUBBLE_MAX_LIMIT 改 ref + onMounted 拉取（step 改 .value）；mock-invoke.ts 加同名 handler + BUBBLE_MAX_LIMIT 常量（注释载明与 Rust 对齐）；验证：cargo test 131 绿 + vue-tsc/build 绿 + live 步进钮禁用态与后端钳制一致（2026-10-01 已落）
+- [ ] FIX005.26 [P3] BubblesView listen 竞态 —— :384 补 .catch 落日志 + 组件级 mounted 标志防 unlisten 后到赋值；验证：vue-tsc 绿
+- [ ] FIX005.27 [P3] reorder 事务骨架收敛 —— storage.rs 抽私有助手（UPDATE 语句按表分支字面量、校验查询闭包传入），reorder_todos/reorder_bubbles 复用；验证：cargo test storage 组绿
+- [ ] FIX005.28 [P3] 排序注释失实修正 —— storage.rs:3 与 commands/todo.rs:123 改"未完成在前按 sort_order 升序（拖拽序），id 兜底"；验证：文档核对
+- [ ] FIX005.29 [P3] AGENTS 目录树实态化 —— 目录树补 capture.rs/snap.rs/tray.rs 行、settings.rs 职责行补 always_on_top/snap_to_edge、commands 行补 tray_menu/tray_preview；验证：文档核对
+- [ ] FIX005.30 [P3] is_duplicate 死代码收敛 —— storage.rs:38-40 加 #[cfg(test)]（沿 added_item 先例）；验证：cargo test 绿
+- [ ] FIX005.31 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test/vue-tsc/build/prettier）+ live 回归（托盘三件套/预览窗/设置板双向同步/退出链/拖拽排序/气泡页）；验证：门禁全绿 + 用户目验回执

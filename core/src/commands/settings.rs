@@ -1,16 +1,23 @@
-//! 设置命令（PL014.2 气泡上限 + PL015 气泡热键）：读取与持久化（config.json 与
-//! 窗口位置共存）。上限钳制 1~20 与 design stepper 同规；热键 parse 校验 + 注册
-//! 失败回滚；核心抽自由函数直测。
+//! 设置命令（PL014.2 气泡上限 + PL015 气泡热键 + PL017 窗口偏好）：读取与持久化
+//!（config.json 与窗口位置共存）。上限钳制 1~MAX_BUBBLES_LIMIT 与 design stepper
+//! 同规；热键 parse 校验 + 注册失败回滚；核心抽自由函数直测。
 
 use tauri::{Manager, State};
 
 use super::{AppContext, CommandError};
-use crate::settings::clamp_max_bubbles;
+use crate::settings::{clamp_max_bubbles, MAX_BUBBLES_LIMIT};
 
 /// 读取气泡提醒上限
 #[tauri::command]
 pub fn settings_get_max_bubbles(ctx: State<'_, AppContext>) -> Result<u32, CommandError> {
     settings_get_max_bubbles_core(&ctx)
+}
+
+/// 读取气泡提醒上限上限值（FIX005.25 单一来源出口：设置板步进禁用态与 mock
+/// 钳制经此拉取，替代三处硬编码 20——上限调整只改 settings::MAX_BUBBLES_LIMIT）
+#[tauri::command]
+pub fn settings_get_bubble_max_limit() -> u32 {
+    MAX_BUBBLES_LIMIT
 }
 
 /// settings_get_max_bubbles 核心实现：读运行时设置副本
@@ -70,13 +77,20 @@ pub fn settings_set_bubble_hotkey(
     let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
     #[cfg(target_os = "windows")]
     if let Err(err) = crate::hotkey::reregister(normalized) {
-        // 回滚：恢复旧热键落库 + 重注册（旧热键此前注册成功，二次失败仅落日志）
+        // 回滚：恢复旧热键落库 + 重注册（FIX005.16 去 expect：parse 失败属异常态，
+        // 落日志跳过重注册——热键是"失败不阻断"容错域，禁业务 panic）
         if let Err(rollback_err) = settings_set_bubble_hotkey_core(&old, &path, &ctx) {
             eprintln!("热键回滚落库失败：{rollback_err}");
         }
-        let rollback = crate::hotkey::parse(&old).expect("旧热键必合法");
-        if let Err(re_err) = crate::hotkey::reregister(rollback) {
-            eprintln!("旧热键重注册失败：{re_err}");
+        match crate::hotkey::parse(&old) {
+            Ok(rollback) => {
+                if let Err(re_err) = crate::hotkey::reregister(rollback) {
+                    eprintln!("旧热键重注册失败：{re_err}");
+                }
+            }
+            Err(parse_err) => {
+                eprintln!("旧热键解析失败（跳过重注册，异常态）：{parse_err}");
+            }
         }
         return Err(CommandError::Hotkey(format!(
             "热键注册失败（已回退 {old}）：{err}"
@@ -110,23 +124,24 @@ pub fn settings_get_always_on_top_core(ctx: &AppContext) -> Result<bool, Command
     Ok(ctx.lock_settings()?.always_on_top)
 }
 
-/// 写入窗口置顶开关（PL017）：落库 → 主窗 set_always_on_top 即时生效 →
-/// 广播 prefs-changed（托盘菜单勾选态同步，PL018.3）
+/// 写入窗口置顶开关（PL017；FIX005.6 调序）：主窗 set_always_on_top **成功后**才
+/// 落库与广播——窗口操作失败路径不动 ctx/磁盘（消除"配置已开、窗口实际未置顶"
+/// 的状态分叉，全屏让位线程读 ctx 不再基于错值行动）
 #[tauri::command]
 pub fn settings_set_always_on_top(
     on: bool,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
-    let path =
-        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
-    settings_set_always_on_top_core(on, &path, &ctx)?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| CommandError::Settings("主窗口不存在".to_string()))?;
     window
         .set_always_on_top(on)
         .map_err(|err| CommandError::Settings(format!("置顶切换失败：{err}")))?;
+    let path =
+        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    settings_set_always_on_top_core(on, &path, &ctx)?;
     emit_prefs_changed(&app, &ctx);
     Ok(())
 }
@@ -170,20 +185,32 @@ pub fn settings_set_snap_to_edge(
     Ok(())
 }
 
-/// 全量广播窗口偏好（PL018.3）：设置板/托盘菜单切换后各入口同步勾选态与回显
-fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
+/// 窗口偏好广播载荷（FIX005.9 单一来源）：prefs-changed 的 serde 结构，替代
+/// 裸 json! 拼键——键名漂移从此编译期可查，两端共享此定义
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct PrefsSnapshot {
+    /// 窗口置顶开关
+    pub always_on_top: bool,
+    /// 贴边吸附开关
+    pub snap_to_edge: bool,
+}
+
+/// 全量广播窗口偏好（PL018.3；FIX005.9 提 pub(crate) 供 tray.rs 单源复用）：
+/// 设置板/托盘菜单切换后各入口同步勾选态与回显。单锁取快照（消除 tray.rs 旧
+/// 实现两次取锁的半新半旧窗口）
+pub(crate) fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
     use tauri::Emitter;
-    let (snap, top) = match ctx.lock_settings() {
-        Ok(s) => (s.snap_to_edge, s.always_on_top),
+    let snapshot = match ctx.lock_settings() {
+        Ok(s) => PrefsSnapshot {
+            always_on_top: s.always_on_top,
+            snap_to_edge: s.snap_to_edge,
+        },
         Err(err) => {
             eprintln!("prefs-changed 读取失败（跳过广播）：{err:?}");
             return;
         }
     };
-    if let Err(err) = app.emit(
-        "prefs-changed",
-        serde_json::json!({ "always_on_top": top, "snap_to_edge": snap }),
-    ) {
+    if let Err(err) = app.emit("prefs-changed", snapshot) {
         eprintln!("prefs-changed 广播失败：{err}");
     }
 }

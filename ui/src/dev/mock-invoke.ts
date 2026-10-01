@@ -52,6 +52,9 @@ interface MockBubbleSnapshot {
 
 /** 气泡提醒阈值（PL014 接配置前的硬编码对齐值） */
 let MAX_BUBBLES = 5;
+/** 气泡上限单源（FIX005.25）：与 Rust settings::MAX_BUBBLES_LIMIT 对齐的 mock 侧
+ * 常量（IAB 无法跨进程拉真值，改 Rust 上限时此处同步改一行） */
+const BUBBLE_MAX_LIMIT = 20;
 let MOCK_ALWAYS_ON_TOP = true; // PL017 设置板置顶开关 mock 态
 let MOCK_SNAP_TO_EDGE = true; // PL017 设置板贴边吸附开关 mock 态
 let MOCK_BUBBLE_HOTKEY = "Ctrl+Alt+C"; // PL015 mock 内存态；busy 标志模拟占用失败
@@ -75,7 +78,6 @@ const state = {
   todos: [] as MockTodo[],
   bubbles: [] as MockBubble[],
   whiteboard: "",
-  lastCopied: "",
 };
 
 /** 种子装载（装载时快照 Date.now，断言可复现） */
@@ -235,12 +237,12 @@ const handlers: Record<string, CommandHandler> = {
     state.bubbles.push(item);
     return { status: "added", item };
   },
-  // 复制回（Rust = 写真剪贴板；mock 环境写不进去，记录最近复制内容供断言）
+  // 复制回（Rust = 写真剪贴板；mock 环境写不进去，无读取口故仅返回成功
+  //——FIX005.22：原 state.lastCopied 只写不读删除，断言需求出现时再加正式读取口）
   bubble_copy: (args) => {
     const id = Number(args.id);
     const item = state.bubbles.find((x) => x.id === id);
     if (!item) throw `气泡条目不存在：${id}`;
-    state.lastCopied = item.text;
     return null;
   },
   bubble_add: (args) => {
@@ -281,10 +283,12 @@ const handlers: Record<string, CommandHandler> = {
     });
     return null;
   },
-  // 设置（PL014.2）：读取/写入气泡提醒上限（内存态，设置板步进回显用）
+  // 设置（PL014.2）：读取/写入气泡提醒上限（内存态，设置板步进回显用；
+  // FIX005.25：上限钳制用 BUBBLE_MAX_LIMIT 单源，不再本地硬编码 20）
   settings_get_max_bubbles: () => MAX_BUBBLES,
+  settings_get_bubble_max_limit: () => BUBBLE_MAX_LIMIT,
   settings_set_max_bubbles: (args) => {
-    MAX_BUBBLES = Math.min(20, Math.max(1, Number(args.value) || 5));
+    MAX_BUBBLES = Math.min(BUBBLE_MAX_LIMIT, Math.max(1, Number(args.value) || 5));
     return null;
   },
   // 窗口偏好（PL017）：置顶与贴边吸附开关（内存态，设置板 toggle 断言用）

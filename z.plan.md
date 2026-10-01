@@ -533,3 +533,77 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 > 方案要点：App.vue 监听 prefs-changed → alwaysOnTop/snapToEdge ref 同步刷新（v-model 链自动回显，补齐三入口双向另一半）；TrayMenu.vue 首项文案改"聚焦主窗"。最小化不处理（app 无最小化入口，无法触发，用户确认）。
 > 红线：设置板开合状态均同步；监听随组件卸载清理。
 > 状态：✅ 已完工（2026-10-01，V0.1.8.1 修订推进；实施记录见 x.progress.md PL022 组）
+
+## 附录 A005：全量代码审计报告（第5轮，2026-10-01）
+
+> 范围：core/ 全部 .rs + Cargo.toml + tauri.conf.json + capabilities + ui/ 全部 .ts/.vue/.css（约 19200 行）。方式：三路并行只读通读（Rust 业务组 / Tauri 集成组 / 前端组）+ A004/FIX004 回归复核（主会话 grep 批量 + 子代理 git diff d6820ba..HEAD 补盲）。基线 commit d6820ba → HEAD eaa7e84。
+> 状态：📌 待修复（FIX005 任务清单见 x.progress.md；观察项 12 组经用户复核全部不提升）
+
+### 零、上轮修复复核清单（A004/FIX004.1–24）
+
+| 上轮条目                                                                                                                                                                    | 现状             | 证据                                                                                                                                                                |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P2 七条（DetailOverlay 防抖清理 / SettingsOverlay 录制态复位 / BubblesView duplicate 复位 / useDragReorder forceRemount / mock 对齐 / TodoList 空态共存 / hotkey 线程加固） | ✅ 全部在位      | DetailOverlay.vue:145-173、SettingsOverlay.vue:166-169、BubblesView.vue:312、useDragReorder.ts:406、mock-invoke.ts:226-322、TodoList.vue:316-334、hotkey.rs:211-266 |
+| P3 十五条（吞错改 eprintln / 文档失实 / 契约断言 / 死代码收敛 / 钳制收敛 / 白名单注释等）                                                                                   | ✅ 全部在位      | settings.rs:74-76、hotkey.rs:131-136、mod.rs:164-171、bubble.rs:98 cfg(test)、settings.rs:105-107 等                                                                |
+| **结论**                                                                                                                                                                    | **零回退零漏改** | 后续 7 个 PL 大改动无一冲掉 A004 修复                                                                                                                               |
+
+### 一、P0-P3 修复清单
+
+无 P0/P1。**P2 五条（跨组同根已合并）**：
+
+| #    | 文件:行号                                                                                                           | 类型  | 描述                                                                                                                                                                                                                                                                                                                | 建议                                                                                                             | 性质                              | 影响面                  |
+| ---- | ------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------- | ----------------------- |
+| P2-1 | lib.rs:458-479                                                                                                      | 1/2   | **CloseRequested 无窗口 label 过滤**：预览窗可获焦（打勾点击），Alt+F4 落在 tray-preview 上——①预览窗 outer_position 写入 config.json 主窗 x/y（位置记忆污染）②R3 腿 600ms 销毁预览窗且本 session 永不重建，hover 预览失效至重启                                                                                     | 分支首行 `window.label() != "main"` 即 return                                                                    | 新增                              | 位置记忆/预览窗生命周期 |
+| P2-2 | lib.rs:511-526 + App.vue:217-219                                                                                    | 1/11  | **Focused 无 label 过滤且全局广播**：预览窗获焦时玻璃背板挂到预览窗 hwnd；主窗收到预览窗 focused=true → 纱态与真实焦点相反                                                                                                                                                                                          | Focused 分支过滤 label=="main"                                                                                   | 新增                              | 主窗玻璃纱态/预览窗视觉 |
+| P2-3 | lib.rs:480-510                                                                                                      | 1/8   | **Moved 吸附状态机无 label 过滤**：托盘窗 set_position 喂进全局拖拽状态机并可触发 snap（preview reanchor 路径确定污染时间戳；菜单窗吸附路径需验证）                                                                                                                                                                 | Moved 分支过滤 label=="main"                                                                                     | 新增                              | 吸附状态机/托盘窗定位   |
+| P2-4 | lib.rs:329-341 + tray_menu.rs:21-24 + lib.rs:208-215                                                                | 1     | **主窗销毁后托盘僵尸态**：Alt+F4 主窗（关窗=destroy）后进程因两隐藏窗存活——托盘左键/聚焦主窗/单实例唤起三入口全部 get main=None 静默 no-op，板子永久消失仅剩托盘。与 PL018"关闭入口=隐藏语义"定案相悖                                                                                                               | 主窗 CloseRequested 托盘存活时改 hide（对齐定案，**方向待用户拍板**）或三入口 None 时重建主窗                    | 新增                              | 托盘常驻形态核心交互    |
+| P2-5 | commands/todo.rs:9-13,156-165 + App.vue:226-228 + TodoList/DetailOverlay/ArchiveOverlay 组件链 + TrayPreview.vue:65 | 1/4/9 | **todo 变更事件三重缺陷（同根合并）**：①Rust emit_todo_changed 全局广播含发起窗 → 本窗 refresh 即时替换 items → 勾选/归档 300ms 主拍被截断（TodoList.vue:102 注释预警的"勾选瞬间坍缩"复活）+ 刷新双跑（6 invoke）②前端组件链各自 emit → 双跑另一半 ③todo_reorder 唯一漏发 todo-changed → 拖拽排序后托盘预览窗不刷新 | Rust emit_filter 排除发起窗（跨窗同步保留，本窗回到 A004 前前端链时序）+ reorder 补发 + TrayPreview 冗余 emit 删 | 新增（A004 #14 修复在更高层复活） | 勾选动效/刷新链/预览窗  |
+
+**P3 共 25 条**：
+
+| #   | 文件:行号                                                       | 类别 | 描述与建议                                                                                                                                                                                |
+| --- | --------------------------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | settings.rs:120-130                                             | 1/13 | 置顶开关先落库后切窗口：窗口切换失败时 ctx/磁盘已翻转不回滚、不发广播——分叉至用户再拨。建议先窗口成功再落库或失败回滚                                                                     |
+| 2   | storage.rs:54 + :459-486                                        | 1/11 | StorageError::NotFound 文案硬编码"待办条目不存在"，气泡路径复用 → 删/读不存在气泡报"待办"（确定性错值）。泛化文案或独立变体                                                               |
+| 3   | tray_menu.rs:15,21-22 + lib.rs:329-341 等 + tray.rs:236,247,406 | 13   | `let _` 吞显隐/聚焦错误共 9 处零日志（合并条），白名单未登记。改 eprintln 或按三要素登记                                                                                                  |
+| 4   | tray.rs:128-134 vs commands/settings.rs:174-189 + 两处裸 json!  | 4/11 | prefs-changed 双实现（tray.rs 两次取锁拼快照有半新半旧窗口）+ 载荷裸 json! 无 serde struct 单一来源。emit_prefs_changed 提 pub(crate) + 定义 PrefsSnapshot                                |
+| 5   | lib.rs:63-68 vs tray.rs:83-88                                   | 4    | now_ms() 两文件逐字重复。收敛单点                                                                                                                                                         |
+| 6   | tray.rs:431 vs lib.rs:216                                       | 3/1  | cursor_in_tray 硬编码 50×60 命中矩形（忽略 Enter 真实 rw/rh）且两处注释矛盾（50×50 vs 50×60）——DPI 大于该值时边缘 hover 失效。WatchState 补存真实宽高                                     |
+| 7   | lib.rs:396                                                      | 3    | 预览窗创建高度 180.0 内联魔法数（宽高常量已单源、高缺位）。补 PREVIEW_HEIGHT                                                                                                              |
+| 8   | capabilities/default.json:8                                     | 12   | core:window:allow-destroy 全前端零调用（退出/关窗全走 Rust 侧）——死权限扩大 ACL 面。删除（先经构建产物复核）                                                                              |
+| 9   | tray.rs:78-80,138-151                                           | 13   | 锁中毒 into_inner 恢复 + snap/top_current 锁失败静默缺省——白名单未落账（注释自称"候选"）。补登记三要素                                                                                    |
+| 10  | tray.rs:96-122                                                  | 4    | on_pref_menu 对同一 id 两处 match 分发（算值/执行分离）。合并单 match                                                                                                                     |
+| 11  | commands/settings.rs:77                                         | 13   | 回滚路径 parse(&old).expect("旧热键必合法")——业务 expect，不变量依赖两处远端逻辑。改 match + 落日志                                                                                       |
+| 12  | commands/tray_preview.rs:14-19                                  | 2    | tray_preview_resize(height: f64) 零校验（NaN/负/超大直透）。入口 clamp(80, 800)                                                                                                           |
+| 13  | tray.rs:392,403                                                 | 6    | spawn_menu_watch 引用 crate::win_input（cfg windows 模块）函数体未 cfg 化——非 Windows 编译必失败。函数体 cfg 化                                                                           |
+| 14  | TodoList.vue:145                                                | 1/5  | editEl.value?.focus() 恒 no-op 死语句（v-for 模板 ref 被收集为数组，本文件注释自记同款坑）——"点自己行重聚焦"永不生效；pendingExit 态点行二次 commit 重复 IPC。改 DOM 直查 + 去二次 commit |
+| 15  | TrayPreview.vue:11-15                                           | 11   | 本地 PreviewTodo 未走 types.ts 单一来源（TodoView 镜像已有）。改 import                                                                                                                   |
+| 16  | TrayPreview.vue:128-132,201-204 + App.vue:436-441               | 5    | 死样式三段（tp-title/tp-done/.placeholder 模板零引用）。删                                                                                                                                |
+| 17  | mock-invoke.ts:78,243                                           | 5/10 | state.lastCopied 只写不读（注释称"供断言"实不可达）。暴露读取口或删                                                                                                                       |
+| 18  | TodoList.vue:2-6                                                | 6    | import 顺序违规（外部包夹在内部模块后）。上提                                                                                                                                             |
+| 19  | TodoList/BubblesView/ArchiveOverlay                             | 4    | 三组件逐字重复四套逻辑（showEmpty 420ms / DelButton 收口 / pinLeaveHeight / mountScrollKit）——FIX004.6 同根修复落了三份。收敛 composable                                                  |
+| 20  | SettingsOverlay.vue:221 vs settings.rs                          | 12/3 | BUBBLE_MAX_LIMIT=20 前端与 Rust clamp(20) 双处硬编码（mock 第三处）。加命令读上限或注释钉死联动                                                                                           |
+| 21  | BubblesView.vue:384-388                                         | 8/13 | void listen("bubble-changed") 无 catch + unlisten 异步赋值与卸载竞态（句柄后到 = 泄漏）。补 catch + 挂载标志                                                                              |
+| 22  | storage.rs:373-456                                              | 4    | reorder_todos/reorder_bubbles 事务脚手架约 30 行逐字重复。抽私有助手                                                                                                                      |
+| 23  | storage.rs:3 + commands/todo.rs:123                             | 6    | 两处注释仍写"排序按 id 升序"（实际 sort_order 优先）——文档失实                                                                                                                            |
+| 24  | AGENTS.md:47-58                                                 | 6    | 目录树漂移：settings.rs 职责行缺两开关、commands 缺 tray_menu/tray_preview、缺 capture.rs/snap.rs/tray.rs 行                                                                              |
+| 25  | storage.rs:38-40                                                | 5    | is_duplicate 常驻 pub 零生产调用（added_item 同族漏网）。cfg(test) 收敛                                                                                                                   |
+
+### 二、参考级观察项（豁免，含回落理由；用户复核 2026-10-01 全部不提升）
+
+1. 三态主题不持久化（SettingsOverlay.vue:90）——重启回系统深浅；产品语义向，用户定案不提升
+2. capture.rs 合成 keyup 清修饰键残留——有注释依据的定案权衡
+3. 热键 reregister 500ms 超时残余注册 / add_bubble 去重 TOCTOU / bubbles COUNT 无索引——理论缺口（需验证）与量级豁免
+4. 全屏让位 set_always_on_top 持续失败约 1s 一条日志——白名单②未覆盖此路径，触发面极窄
+5. 预览/菜单窗 -2000 首绘负坐标副屏闪现 / py<0 翻转以 0 为虚拟屏顶——需特定多屏拓扑验证
+6. 菜单 toggle 100ms 竞窗 / current_monitor 失败跳过钳制 / 守候慢盘 5s 缺席——理论（需验证）
+7. 托盘菜单动作失败仅 console.error——Rust 点项先收窗架构下无反馈可行面
+8. TrayMenu/TrayPreview 零 IAB 覆盖——mock label 固定恒走主窗分支，测试性缺口登记
+9. 预览窗首拉失败"暂无待办"与真空态不可区分——冻结豁免同族
+10. tauri.conf 未设 CSP——仅本地资源；**打包发布前必补**（挂打包待办）
+11. R3 迟到 destroy 竞态日志（定案行为）/ MARGIN=8 双函数重复
+12. mock settings_set_max_bubbles 0 值语义漂移（前端钳制后不可达）；A004 观察项保留项不重复报
+
+### 三、亮点
+
+A004 二十四项修复零回退（7 个 PL 大改动无一冲掉）；SQL 全参数化、时间源注入、锁序纪律无反向；三窗 DOM 严格分域无跨窗触碰；App.vue 监听句柄全部入 onUnmounted；mock↔serde 契约零漂移；types.ts ↔ BubbleCaptureOutcome tagged 契约零漂移；PL022 prefs-changed 两条 emit 链载荷键名一致。

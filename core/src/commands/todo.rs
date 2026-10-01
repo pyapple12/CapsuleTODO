@@ -6,10 +6,18 @@ use tauri::{Emitter, State};
 use super::{AppContext, CommandError};
 use crate::todo::{age_level, validate_note, validate_text, AgeLevel, TodoItem};
 
-/// 变更广播（PL018.6 问题一修复）：清单数据任何变更后由命令层发 todo-changed，
-/// 托盘预览窗与主窗刷新链同源监听（单一事实源 = db，事件只做通知）
-fn emit_todo_changed(app: &tauri::AppHandle) {
-    if let Err(err) = app.emit("todo-changed", ()) {
+/// 变更广播（PL018.6 问题一修复；FIX005.5 收敛）：清单数据任何变更后由命令层发
+/// todo-changed——emit_filter 排除发起窗（发起窗刷新走自身组件链时序，300ms 主拍
+/// 不被广播提前截断；跨窗同步照收，预览窗/主窗互为对端）。todo_reorder 原漏发，
+/// 本版补齐
+fn emit_todo_changed(window: &tauri::Window, app: &tauri::AppHandle) {
+    let origin = window.label().to_string();
+    if let Err(err) = app.emit_filter("todo-changed", (), move |target: &tauri::EventTarget| {
+        !matches!(
+            target,
+            tauri::EventTarget::WebviewWindow { label } if *label == origin
+        )
+    }) {
         eprintln!("todo-changed 广播失败：{err}");
     }
 }
@@ -17,12 +25,13 @@ fn emit_todo_changed(app: &tauri::AppHandle) {
 /// 添加待办（文本校验 + 落库；拒绝经 CommandError 跨进程可见）→ 广播变更
 #[tauri::command]
 pub fn todo_add(
+    window: tauri::Window,
     text: String,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<TodoItem, CommandError> {
     let item = todo_add_core(&text, &ctx)?;
-    emit_todo_changed(&app);
+    emit_todo_changed(&window, &app);
     Ok(item)
 }
 
@@ -36,12 +45,13 @@ pub fn todo_add_core(text: &str, ctx: &AppContext) -> Result<TodoItem, CommandEr
 /// 勾选翻转（不存在经 NotFound 严格报错）→ 广播变更
 #[tauri::command]
 pub fn todo_toggle(
+    window: tauri::Window,
     id: i64,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<TodoItem, CommandError> {
     let item = todo_toggle_core(id, &ctx)?;
-    emit_todo_changed(&app);
+    emit_todo_changed(&window, &app);
     Ok(item)
 }
 
@@ -54,13 +64,14 @@ pub fn todo_toggle_core(id: i64, ctx: &AppContext) -> Result<TodoItem, CommandEr
 /// 改标题（清单行内编辑/详情板标题共用；文本校验同 add）→ 广播变更（预览窗同步）
 #[tauri::command]
 pub fn todo_rename(
+    window: tauri::Window,
     id: i64,
     text: String,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<TodoItem, CommandError> {
     let item = todo_rename_core(id, &text, &ctx)?;
-    emit_todo_changed(&app);
+    emit_todo_changed(&window, &app);
     Ok(item)
 }
 
@@ -74,13 +85,14 @@ pub fn todo_rename_core(id: i64, text: &str, ctx: &AppContext) -> Result<TodoIte
 /// 写笔记（全文覆盖；详情板防抖 300ms 后调用）→ 广播变更（一致性：清单数据变更必广播）
 #[tauri::command]
 pub fn todo_set_note(
+    window: tauri::Window,
     id: i64,
     note: String,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
     todo_set_note_core(id, &note, &ctx)?;
-    emit_todo_changed(&app);
+    emit_todo_changed(&window, &app);
     Ok(())
 }
 
@@ -94,12 +106,13 @@ pub fn todo_set_note_core(id: i64, note: &str, ctx: &AppContext) -> Result<(), C
 /// 删除待办（不存在严格报错）→ 广播变更
 #[tauri::command]
 pub fn todo_remove(
+    window: tauri::Window,
     id: i64,
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
     todo_remove_core(id, &ctx)?;
-    emit_todo_changed(&app);
+    emit_todo_changed(&window, &app);
     Ok(())
 }
 
@@ -153,9 +166,17 @@ pub fn todo_archive_list_core(ctx: &AppContext) -> Result<Vec<TodoItem>, Command
 }
 
 /// 清单重排（拖拽落点提交）：ids = 未完成条目的目标顺序（全量集，一致性校验在 storage 层）
+/// → 广播变更（FIX005.5 补齐：拖拽排序原漏发致预览窗 stale）
 #[tauri::command]
-pub fn todo_reorder(ids: Vec<i64>, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
-    todo_reorder_core(&ids, &ctx)
+pub fn todo_reorder(
+    window: tauri::Window,
+    ids: Vec<i64>,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    todo_reorder_core(&ids, &ctx)?;
+    emit_todo_changed(&window, &app);
+    Ok(())
 }
 
 /// todo_reorder 核心实现：透传 storage.reorder_todos（校验+事务在存储层）

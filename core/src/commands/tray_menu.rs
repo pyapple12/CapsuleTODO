@@ -12,14 +12,22 @@ use super::CommandError;
 #[tauri::command]
 pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), CommandError> {
     if let Some(menu_win) = app.get_webview_window("tray-menu") {
-        let _ = menu_win.hide();
+        if let Err(err) = menu_win.hide() {
+            eprintln!("菜单窗收起失败：{err}");
+        }
     }
     match action.as_str() {
-        // 显示主窗（原 tray-show 分发语义）
+        // 显示主窗（原 tray-show 分发语义；PL022 定案更名"聚焦主窗"）
         "show" => {
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+                if let Err(err) = w.show() {
+                    eprintln!("聚焦主窗 show 失败：{err}");
+                }
+                if let Err(err) = w.set_focus() {
+                    eprintln!("聚焦主窗 set_focus 失败：{err}");
+                }
+            } else {
+                eprintln!("聚焦主窗失败：主窗不存在（异常态）");
             }
             Ok(())
         }
@@ -34,12 +42,13 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
             Ok(())
         }
         // 退出（用户定案变更：托盘模式需要退出入口）——**必须销毁全部窗口**：
-        // 主窗 close() 复用完整关窗保存链（位置/设置落库 + T+R3 双腿）；两个托盘
-        // 隐藏窗（tray-preview/tray-menu）若只销毁主窗会撑住事件循环致进程不退
-        //（实测：主窗消失但进程存活，托盘图标健在——曾被误判为"幽灵图标"）。
-        // 全窗销毁后事件循环自然退出，App drop 删托盘 + ExitRequested 显式删除
-        // 双保险。禁 app.exit(0) 绕过保存链（PL019 定案）
+        // FIX005.4 hide 语义配套：先置 EXITING 标志，主窗 CloseRequested 见标志走
+        // 真退销毁链（区别于 Alt+F4 的"保存+隐藏"）。主窗 close() 保留完整关窗
+        // 保存链（位置/设置落库）；两个托盘隐藏窗（tray-preview/tray-menu）同步
+        // destroy——只销毁主窗会被它们撑住事件循环致进程不退（V0.1.8.0 实测）。
+        // 禁 app.exit(0) 绕过保存链（PL019 定案）
         "exit" => {
+            crate::EXITING.store(true, std::sync::atomic::Ordering::Relaxed);
             if let Some(w) = app.get_webview_window("main") {
                 if let Err(err) = w.close() {
                     eprintln!("托盘退出主窗关闭失败：{err}");

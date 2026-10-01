@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import type { TodoItem, TodoView } from "../../types";
 import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
-import { invoke } from "@tauri-apps/api/core";
 import { rowMaskDead, syncMaskDead } from "../composables/useMaskDead";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
@@ -142,7 +142,9 @@ function onRowClick(item: TodoItem, e: MouseEvent): void {
   if (editingId.value !== null || pendingExitId.value !== null) {
     const editingNow = editingId.value ?? pendingExitId.value;
     if (editingNow === item.id) {
-      editEl.value?.focus();
+      // FIX005.19：聚焦走 focusEditEnd 同款 DOM 直查——v-for 模板 ref 被 Vue
+      // 收集为数组，editEl.value?.focus() 恒静默失效（本文件同款坑自记）
+      focusEditEnd();
     } else if (editingId.value !== null) {
       // 仍有未提交编辑（pendingExit 态则 rename 已落库，无需二次提交）
       const editing = props.items.find((t) => t.id === editingId.value);
@@ -184,7 +186,6 @@ function onRowDblClick(item: TodoItem): void {
 
 const editingId = ref<number | null>(null);
 const editDraft = ref("");
-const editEl = ref<HTMLInputElement | null>(null);
 
 function startInlineEdit(item: TodoItem): void {
   editingId.value = item.id;
@@ -388,7 +389,6 @@ onUnmounted(() => {
           <NeonCheckbox :checked="item.done" />
           <input
             v-if="editingId === item.id"
-            ref="editEl"
             v-model="editDraft"
             class="t-edit"
             maxlength="12"

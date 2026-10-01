@@ -1,27 +1,23 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+import type { TodoView } from "../../types";
 
 // ===== 托盘悬浮预览（PL018.4）：独立 tray-preview 窗的根组件——未完成待办前五
 // 条最简展示（状态点 + 文本，点行切换）。显隐由 Rust 守候线程光标轮询判定，
-// 前端只管列表与高度（不再上报悬停状态）
+// 前端只管列表与高度（不再上报悬停状态）。条目类型 = types.ts 单一来源
+//（FIX005.20：本地 PreviewTodo 副本删除，防 serde 契约漂移无编译期预警）
 
-/** 预览条目（todo_list 返回 TodoView 的展示子集） */
-interface PreviewTodo {
-  id: number;
-  text: string;
-  done: boolean;
-}
-
-const todos = ref<PreviewTodo[]>([]);
+const todos = ref<TodoView[]>([]);
 let unlistenTodoChanged: UnlistenFn | undefined;
 /** 勾选动画中的条目 id（用户定案：方形勾选框 + 画勾动画，播完行才消失落库） */
 const animatingId = ref<number | null>(null);
 const CHECK_ANIM_MS = 380;
 
 /** 点行：播画勾动画，播完 toggle 落库（行随已完成过滤消失）；动画期防重复点击 */
-function onRowClick(t: PreviewTodo): void {
+function onRowClick(t: TodoView): void {
   if (animatingId.value !== null) return;
   animatingId.value = t.id;
   window.setTimeout(() => {
@@ -50,19 +46,19 @@ watch(
 /** 拉取未完成前五条（过滤已完成——用户定案不列已完成） */
 async function refresh(): Promise<void> {
   try {
-    const all = await invoke<PreviewTodo[]>("todo_list");
+    const all = await invoke<TodoView[]>("todo_list");
     todos.value = all.filter((t) => !t.done).slice(0, 5);
   } catch (err) {
     console.error("预览列表拉取失败", err);
   }
 }
 
-/** toggle 落库（动画播完后调用）→ 自刷新 → 广播 todo-changed 驱动主窗同步 */
+/** toggle 落库（动画播完后调用）→ 自刷新；主窗同步由 Rust todo_toggle 的
+ * emit_filter 广播送达（FIX005.5：前端冗余 emit 删除，原会造成主窗刷新双跑） */
 async function toggle(id: number): Promise<void> {
   try {
     await invoke("todo_toggle", { id });
     await refresh();
-    await emit("todo-changed", {});
   } catch (err) {
     console.error("预览打勾失败", err);
   }
@@ -123,12 +119,6 @@ onUnmounted(() => {
   color: #fff;
   font-size: 12px;
   user-select: none;
-}
-
-.tp-title {
-  margin: 0 0 6px;
-  font-size: 11px;
-  opacity: 0.6;
 }
 
 .tp-list {
@@ -196,11 +186,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tp-done {
-  text-decoration: line-through;
-  opacity: 0.45;
 }
 
 .tp-empty {
