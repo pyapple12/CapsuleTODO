@@ -133,7 +133,7 @@ pub struct TodoView {
     pub age_level: AgeLevel,
 }
 
-/// 清单排序视图（未完成在前按 id 升序、已完成在后；逐条附龄期档位）
+/// 清单排序视图（未完成在前按 sort_order 升序（拖拽序）、id 兜底，已完成在后；逐条附龄期档位）
 #[tauri::command]
 pub fn todo_list(ctx: State<'_, AppContext>) -> Result<Vec<TodoView>, CommandError> {
     todo_list_core(&ctx)

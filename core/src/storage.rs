@@ -1,6 +1,7 @@
 //! SQLite 存储层：todos/bubbles/whiteboard 三表增删改查（全参数化绑定，禁 SQL 拼接），
 //! 含气泡去重裁决（add_bubble 重复文本返回 Duplicate 不入库，PL015.5）。
-//! 单一事实源 = db（PL002 定案）：操作即落库，list 排序 = 未完成在前按 id 升序。
+//! 单一事实源 = db（PL002 定案）：操作即落库，list 排序 = 未完成在前按 sort_order
+//! 升序（拖拽序），id 兜底。
 //! PL010 扩容：todos 三列迁移（created_at/done_at/note，幂等 ALTER）+ 时间源注入
 //! （NowFn 默认系统时钟，测试注入固定值零真实等待）+ rename/set_note。
 
@@ -34,7 +35,8 @@ impl BubbleAddOutcome {
         }
     }
 
-    /// 是否重复拒入库
+    /// 是否重复拒入库（测试辅助，FIX005.30 沿 added_item 先例收敛——生产路径一律 match）
+    #[cfg(test)]
     pub fn is_duplicate(&self) -> bool {
         matches!(self, BubbleAddOutcome::Duplicate)
     }
@@ -377,39 +379,8 @@ impl Storage {
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         active.sort_unstable();
-        let mut given: Vec<i64> = ids.to_vec();
-        given.sort_unstable();
-        given.dedup();
-        if given.len() != ids.len() || given != active {
-            return Err(StorageError::ReorderMismatch(format!(
-                "ids 长度 {}（去重 {}）与未完成集 {} 不一致",
-                ids.len(),
-                given.len(),
-                active.len()
-            )));
-        }
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| -> Result<(), StorageError> {
-            for (order, id) in ids.iter().enumerate() {
-                self.conn.execute(
-                    "UPDATE todos SET sort_order = ?1 WHERE id = ?2",
-                    rusqlite::params![order as i64, id],
-                )?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
-            }
-            Err(err) => {
-                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("清单重排事务回滚失败：{rollback}");
-                }
-                Err(err)
-            }
-        }
+        Self::validate_reorder_ids(ids, &active, "未完成集")?;
+        self.reorder_in_transaction(ids, "todos")
     }
 
     /// 气泡重排（拖拽落点提交）：ids = 全量气泡的目标顺序。校验与事务语义同 reorder_todos
@@ -420,24 +391,41 @@ impl Storage {
             .query_map([], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         current.sort_unstable();
+        Self::validate_reorder_ids(ids, &current, "气泡集")?;
+        self.reorder_in_transaction(ids, "bubbles")
+    }
+
+    /// 重排 id 集三重校验（FIX005.27 收敛）：去重后与现存集长度一致、集合相等——
+    /// 任一不符返回 ReorderMismatch（防丢行/幽灵行/重复 id，拒绝执行）
+    fn validate_reorder_ids(
+        ids: &[i64],
+        active: &[i64],
+        active_label: &str,
+    ) -> Result<(), StorageError> {
         let mut given: Vec<i64> = ids.to_vec();
         given.sort_unstable();
         given.dedup();
-        if given.len() != ids.len() || given != current {
+        if given.len() != ids.len() || given != active {
             return Err(StorageError::ReorderMismatch(format!(
-                "ids 长度 {}（去重 {}）与气泡集 {} 不一致",
+                "ids 长度 {}（去重 {}）与{} {} 不一致",
                 ids.len(),
                 given.len(),
-                current.len()
+                active_label,
+                active.len()
             )));
         }
+        Ok(())
+    }
+
+    /// 重排事务骨架（FIX005.27 收敛，两 reorder 共用）：表名按字面量拼定值子句
+    ///（非用户输入，无注入面），逐条 UPDATE 后提交；失败回滚落日志并上抛
+    fn reorder_in_transaction(&self, ids: &[i64], table: &str) -> Result<(), StorageError> {
         self.conn.execute_batch("BEGIN")?;
+        let sql = format!("UPDATE {table} SET sort_order = ?1 WHERE id = ?2");
         let result = (|| -> Result<(), StorageError> {
             for (order, id) in ids.iter().enumerate() {
-                self.conn.execute(
-                    "UPDATE bubbles SET sort_order = ?1 WHERE id = ?2",
-                    rusqlite::params![order as i64, id],
-                )?;
+                self.conn
+                    .execute(&sql, rusqlite::params![order as i64, id])?;
             }
             Ok(())
         })();
@@ -448,7 +436,7 @@ impl Storage {
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("气泡重排事务回滚失败：{rollback}");
+                    eprintln!("重排事务回滚失败：{rollback}");
                 }
                 Err(err)
             }

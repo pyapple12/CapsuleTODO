@@ -320,11 +320,23 @@ onMounted(() => {
     rebuildObserver.observe(host, { childList: true });
   }
   // 热键失焦刷新（PL016.1）：本组件 v-if 挂载 = 仅气泡页激活时存在——热键在
-  // 别处入库时此监听把新泡拉进当前视图（无监听则要切页才见）
-  void listen("bubble-changed", () => {
+  // 别处入库时此监听把新泡拉进当前视图（无监听则要切页才见）。
+  // FIX005.26 竞态防护：listen 注册异步返回——快速切页时卸载清理先于句柄到手，
+  // 已卸载标志命中即当场注销（否则监听泄漏且死组件持续收事件）
+  let disposed = false;
+  listen("bubble-changed", () => {
     void refresh();
-  }).then((unlisten) => {
-    unlistenBubbleChanged = unlisten;
+  })
+    .then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        unlistenBubbleChanged = unlisten;
+      }
+    })
+    .catch((err) => console.error("bubble-changed 监听注册失败", err));
+  onUnmounted(() => {
+    disposed = true;
   });
 });
 
