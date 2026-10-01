@@ -46,6 +46,13 @@ mod win_input {
         unsafe { (GetAsyncKeyState(VK_LBUTTON) as u16) & PRESSED != 0 }
     }
 
+    /// 鼠标右键是否按下（菜单窗点外收起判定与松手宽限共用）
+    pub fn right_down() -> bool {
+        const VK_RBUTTON: i32 = 0x02;
+        const PRESSED: u16 = 0x8000;
+        unsafe { (GetAsyncKeyState(VK_RBUTTON) as u16) & PRESSED != 0 }
+    }
+
     #[link(name = "user32")]
     extern "system" {
         fn GetAsyncKeyState(v_key: i32) -> i16;
@@ -239,6 +246,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_get_snap_to_edge,
             commands::settings::settings_set_snap_to_edge,
             commands::tray_preview::tray_preview_resize,
+            commands::tray_menu::tray_menu_action,
         ])
         .setup(|app| {
             let window = app
@@ -298,78 +306,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // 托盘（PL018.2）：主窗 skipTaskbar 后的常驻入口——左键显隐主窗，
-            // 右键菜单（显示主窗 + 贴边/置顶勾选项；无退出项，用户定案）。
-            // 勾选态唯一事实源 = AppContext；句柄存 TrayMenuItems state 供事件翻转
+            // 右键出菜单窗（PL021 弃原生 Win32 菜单改自绘 HTML 窗：深色模式下
+            // Win11 圆角边距被 muda 自绘涂实 = 上下空条，原生无尺寸口）
             #[cfg(target_os = "windows")]
             {
-                use tauri::{
-                    menu::{CheckMenuItem, Menu, MenuItem},
-                    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-                    Listener,
-                };
+                use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
                 let icon = app
                     .default_window_icon()
                     .cloned()
                     .expect("默认图标必须存在（打包期替换正式图标）");
-                let (snap_on, top_on) = app
-                    .state::<AppContext>()
-                    .lock_settings()
-                    .map(|s| (s.snap_to_edge, s.always_on_top))
-                    .unwrap_or_else(|err| {
-                        eprintln!("托盘勾选态读取失败（按默认开）：{err:?}");
-                        (true, true)
-                    });
-                let show_item =
-                    MenuItem::with_id(app, "tray-show", "显示主窗", true, None::<&str>)?;
-                let snap_item = CheckMenuItem::with_id(
-                    app,
-                    "tray-snap",
-                    "贴边吸附",
-                    true,
-                    snap_on,
-                    None::<&str>,
-                )?;
-                let top_item = CheckMenuItem::with_id(
-                    app,
-                    "tray-top",
-                    "窗口置顶",
-                    true,
-                    top_on,
-                    None::<&str>,
-                )?;
-                // 退出项（PL018 用户定案变更：托盘模式需要退出入口）——走主窗
-                // close() 复用完整关窗保存链（位置/设置落库 + T+R3 双腿），禁 app.exit
-                let exit_item = MenuItem::with_id(app, "tray-exit", "退出", true, None::<&str>)?;
-                app.manage(crate::tray::TrayMenuItems {
-                    snap: snap_item.clone(),
-                    top: top_item.clone(),
-                });
-                let menu = Menu::with_items(app, &[&show_item, &snap_item, &top_item, &exit_item])?;
                 TrayIconBuilder::with_id("main-tray")
                     .icon(icon)
-                    .menu(&menu)
-                    .show_menu_on_left_click(false) // 左键给显隐，右键才出菜单
-                    .on_menu_event(|app, event| match event.id.as_ref() {
-                        "tray-show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
-                        // 退出（用户定案变更：托盘模式需要退出入口）——走主窗 close()
-                        // 复用完整关窗保存链（位置/设置落库 + T+R3 双腿），禁 app.exit
-                        "tray-exit" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                if let Err(err) = w.close() {
-                                    eprintln!("托盘退出失败：{err}");
-                                }
-                            }
-                        }
-                        "tray-snap" | "tray-top" => {
-                            crate::tray::on_pref_menu(app, event.id.as_ref());
-                        }
-                        _ => {}
-                    })
+                    .show_menu_on_left_click(false) // 左键给显隐，右键才出菜单窗
                     .on_tray_icon_event(|tray, event| match event {
                         // 左键单击完成（Up 态）= 显隐切换；Down 忽略防按住中间态误触
                         TrayIconEvent::Click {
@@ -393,19 +341,31 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程
                         //（Leave 不作显隐依据——慢速移出可能丢失，守候光标轮询全覆盖）
-                        // 右键按下：锁死预览窗（菜单活跃期压制，收编进 tray 模块）
+                        // 右键按下：锁死预览窗 + 弹自绘菜单窗（收编进 tray 模块）
                         TrayIconEvent::Click {
                             button: MouseButton::Right,
                             button_state: MouseButtonState::Down,
+                            rect,
                             ..
                         } => {
-                            crate::tray::on_tray_right_button(tray.app_handle());
+                            if let (tauri::Position::Physical(p), tauri::Size::Physical(s)) =
+                                (rect.position, rect.size)
+                            {
+                                crate::tray::on_tray_right_button(
+                                    tray.app_handle(),
+                                    p.x,
+                                    p.y,
+                                    s.width as i32,
+                                    s.height as i32,
+                                );
+                            }
                         }
                         TrayIconEvent::Enter { rect, .. } => {
                             if let (tauri::Position::Physical(p), tauri::Size::Physical(s)) =
                                 (rect.position, rect.size)
                             {
                                 crate::tray::on_tray_enter(
+                                    tray.app_handle(),
                                     p.x,
                                     p.y,
                                     s.width as i32,
@@ -418,21 +378,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .build(app)?;
                 // 预览守候线程（单一常驻）：状态机驱动显隐，show/hide 唯一调用者
                 crate::tray::spawn_preview_watcher(app.handle());
-                // prefs-changed 监听（PL018.3）：设置板改开关 → 托盘勾选态同步
-                let handle = app.handle().clone();
-                app.listen("prefs-changed", move |event| {
-                    let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload())
-                    else {
-                        return;
-                    };
-                    let items = handle.state::<crate::tray::TrayMenuItems>();
-                    if let Some(on) = payload.get("always_on_top").and_then(|v| v.as_bool()) {
-                        let _ = items.top.set_checked(on);
-                    }
-                    if let Some(on) = payload.get("snap_to_edge").and_then(|v| v.as_bool()) {
-                        let _ = items.snap.set_checked(on);
-                    }
-                });
+                // 菜单窗点外收起守候（PL021）：右键弹出期间监听点外左/右键
+                // spawn 点在 on_tray_right_button——此处无预启动
                 // 预览窗（PL018.4）：托盘 hover 的 todo 前五列表——透明玻璃小窗。
                 // alwaysOnTop = 悬浮层语义（诊断实测：非置顶 show 被活动窗盖住）。
                 // 首绘方案（二轮修正）：屏外坐标创建 + visible(true) 让 webview 创建
@@ -463,6 +410,44 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Err(err) = preview.hide() {
                     eprintln!("预览窗首绘后隐藏失败：{err}");
+                }
+                // 托盘菜单窗（PL021）：自绘 HTML 菜单——尺寸/间距/圆角全可控，
+                // 视觉与预览窗统一。focusable(false)：点击不抢系统焦点（原生菜单
+                // 同款不打断输入）；首绘方案与预览窗同款（屏外创建 + visible(true)
+                // + build 后 hide——废弃隐藏创建，首 hover 空窗）
+                let menu_win = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "tray-menu",
+                    tauri::WebviewUrl::App("index.html".into()),
+                )
+                .title("CapsuleTODO 菜单")
+                .position(-2000.0, -2000.0)
+                .inner_size(crate::tray::MENU_WIDTH, crate::tray::MENU_HEIGHT)
+                .transparent(true)
+                .decorations(false)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(true)
+                .focused(false)
+                .focusable(false)
+                .always_on_top(true)
+                .shadow(false)
+                .build()?;
+                // DWM 系统圆角（预览窗同款）：DWM 切掉 CSS 圆角外的窗口直角区
+                if let Ok(hwnd) = menu_win.hwnd() {
+                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
+                }
+                // 创建期 inner_size 宽度被 WebView2 最小 bounds 钳制（实测 60/100
+                // 均被抬到 136 逻辑；高度不受影响）——创建后 set_size 重设（预览窗
+                // set_size 精确生效先例）
+                if let Err(err) = menu_win.set_size(tauri::LogicalSize::new(
+                    crate::tray::MENU_WIDTH,
+                    crate::tray::MENU_HEIGHT,
+                )) {
+                    eprintln!("菜单窗尺寸重设失败：{err}");
+                }
+                if let Err(err) = menu_win.hide() {
+                    eprintln!("菜单窗首绘后隐藏失败：{err}");
                 }
             }
             Ok(())
@@ -540,6 +525,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = (focused, window);
             }
         })
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(|app, event| {
+            // 托盘幽灵图标修复（PL021）：常驻守候线程持有 AppHandle 会卡死退出时
+            // 的 App drop 链（TrayIcon 的 NIM_DELETE 永不执行，图标残留托盘区直到
+            // 鼠标划过）——退出请求阶段（主线程必达）显式移除托盘图标，不依赖 drop
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(tray) = app.remove_tray_by_id("main-tray") {
+                    drop(tray); // 从管理器移除并立即释放（NIM_DELETE 同步执行）
+                }
+            }
+        });
     Ok(())
 }
