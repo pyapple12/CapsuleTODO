@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
@@ -72,6 +72,13 @@ function onInput(): void {
 }
 
 defineExpose({ flush });
+
+// 内容变化重算 ▲▼ 三角显隐（bug4 修复）：textarea 内容清空/增删不产生 DOM 子节点
+// 变化（value 非子节点），useBoardRead 的 MutationObserver 观察不到——scroll 事件
+// 也不会因删除触发，三角残留删除前状态；数据层 watch 补触发源
+watch(content, () => {
+  boardRead?.sync();
+});
 
 onMounted(() => {
   void load();

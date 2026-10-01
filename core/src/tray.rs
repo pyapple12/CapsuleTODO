@@ -134,6 +134,10 @@ pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32)
     if let Err(err) = w.show() {
         eprintln!("预览窗显示失败：{err}");
     }
+    // 守候循环启动（bug1 修复）：Leave 事件慢速移出时可能丢失——由循环持续
+    // 评估"鼠标离开预览窗与托盘图标两区域"替代一次性 Leave 触发隐藏
+    let gen = PREVIEW_GEN.load(Ordering::Relaxed);
+    spawn_hover_watch(app, gen);
 }
 
 /// resize 后底缘锚定托盘重算位置（PL018，用户定案收缩方向）：窗高变化时
@@ -156,47 +160,91 @@ pub fn reanchor_to_tray(w: &tauri::WebviewWindow) {
     }
 }
 
-/// 托盘 Leave（PL018.5）：延迟 400ms 隐藏——鼠标移向预览窗途中的间隙不闪没；
-/// 预览窗 mouseenter 置取消标志（set_preview_hover(true)）则本线程退避
+/// 托盘 Leave（PL018.5）：慢速移出时该事件可能不触发——隐藏职责已由 Enter 启动
+/// 的守候循环（watch_hover_loop）全条件覆盖，此处仅复位取消标志
 pub fn on_tray_leave(app: &tauri::AppHandle) {
     PREVIEW_HOVER_CANCELLED.store(false, Ordering::Relaxed);
     let gen = PREVIEW_GEN.load(Ordering::Relaxed);
-    spawn_delayed_hide(app, 400, gen);
+    spawn_hover_watch(app, gen);
 }
 
 /// 预览窗悬停状态上报（PL018.5，命令 tray_preview_hover 调用）：
-/// true = mouseenter 取消待执行的隐藏；false = mouseleave 重新起延迟隐藏
+/// true = mouseenter（鼠标进预览窗，守候循环见此退避，显隐交 mouseleave）；
+/// false = mouseleave（重新起守候循环）
 pub fn set_preview_hover(hovering: bool, app: &tauri::AppHandle) {
     PREVIEW_HOVER_CANCELLED.store(hovering, Ordering::Relaxed);
     if !hovering {
         let gen = PREVIEW_GEN.load(Ordering::Relaxed);
-        spawn_delayed_hide(app, 400, gen);
+        spawn_hover_watch(app, gen);
     }
 }
 
-/// 延迟隐藏预览窗：到点三重守卫——①代数不符（期间有过新 Enter，托盘边缘抖动）
-/// ②取消标志（鼠标在预览窗内，mouseenter 正常上报）③光标落在预览窗矩形内
-/// （mouseenter 丢失的兜底：快速移动时窗 hide/show 切换期事件不产生）——任一
-/// 命中即退避，否则隐藏
-pub fn spawn_delayed_hide(app: &tauri::AppHandle, delay_ms: u64, gen: u64) {
+/// 守候循环（bug1 修复，替代一次性到点判定）：Enter/离开预览窗时启动，200ms
+/// 步进持续评估—— Leave 事件丢失（慢速移出）不再导致永挂；鼠标连续 400ms
+/// 不在预览窗与托盘图标两区域内 → 隐藏；期间新 Enter（代数变化）或进预览窗
+/// → 线程退避，显隐交新周期
+fn spawn_hover_watch(app: &tauri::AppHandle, gen: u64) {
     let handle = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        if gen != PREVIEW_GEN.load(Ordering::Relaxed) {
-            return; // 代数过期：期间有过新 Enter（图标边缘抖动），不得隐藏
-        }
-        if PREVIEW_HOVER_CANCELLED.load(Ordering::Relaxed) {
-            return; // 鼠标在预览窗内（mouseenter 上报）
-        }
-        if let Some(w) = handle.get_webview_window("tray-preview") {
-            if cursor_in_window(&w) {
-                return; // 光标守卫：mouseenter 丢失时按物理位置兜底
+        let mut miss = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if gen != PREVIEW_GEN.load(Ordering::Relaxed) {
+                return; // 新 Enter 已接管，本线程退避
             }
-            if let Err(err) = w.hide() {
-                eprintln!("预览窗隐藏失败：{err}");
+            if PREVIEW_HOVER_CANCELLED.load(Ordering::Relaxed) {
+                return; // 鼠标在预览窗内，显隐交 mouseleave 路径
+            }
+            let Some(w) = handle.get_webview_window("tray-preview") else {
+                return;
+            };
+            if cursor_in_window(&w) {
+                miss = 0;
+                continue; // 鼠标在预览窗上（mouseenter 丢失兜底），守候
+            }
+            let tray_top = LAST_TRAY_TOP.load(Ordering::Relaxed);
+            let tray_right = LAST_TRAY_RIGHT.load(Ordering::Relaxed);
+            if cursor_in_tray(tray_top, tray_right) {
+                miss = 0;
+                continue; // 鼠标还在托盘图标上，守候
+            }
+            miss += 1;
+            if miss >= 2 {
+                // 连续 400ms 离开两区域：确已离开，隐藏
+                if let Err(err) = w.hide() {
+                    eprintln!("预览窗隐藏失败：{err}");
+                }
+                return;
             }
         }
     });
+}
+
+/// 光标是否落在托盘图标矩形内（守候循环判定：图标矩形由 Enter 记录）
+fn cursor_in_tray(tray_top: i32, tray_right: i32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetCursorPos(point: *mut Point) -> i32;
+        }
+        let mut pt = Point { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut pt) } == 0 {
+            return false;
+        }
+        // 图标矩形：右缘/顶缘已知，按 spike 实测 50×60 反推左/下
+        pt.x >= tray_right - 50 && pt.x <= tray_right && pt.y >= tray_top && pt.y <= tray_top + 60
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (tray_top, tray_right);
+        false
+    }
 }
 
 /// 光标是否落在预览窗矩形内（bug2 兜底守卫：窗 hide/show 切换期 webview 的
