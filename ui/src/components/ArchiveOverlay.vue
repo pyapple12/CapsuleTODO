@@ -6,8 +6,10 @@ import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
+import { useEmptyState } from "../composables/useEmptyState";
+import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
-import { registerDelConfirms, rollbackAllDelConfirms } from "../composables/delConfirmBus";
+import { rollbackAllDelConfirms } from "../composables/delConfirmBus";
 
 // ===== 归档板（PL011.2）：已完成条目管理（勾选退回 / 删除二态）。
 // 板揭示 = 动态落位（板顶=页签顶-4）+ origin 注入 scale 回弹（从归档图标飞出）；
@@ -186,83 +188,37 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   window.clearTimeout(animTimer);
-  window.clearTimeout(emptyTimer);
   unmountScrollKit();
   restoreTimers.forEach((handle) => window.clearTimeout(handle));
   restoreTimers.clear();
-  unregisterRollback?.();
+  disposeEmptyState();
 });
 
-// —— 二态确认删除（与清单同款；单实例收口在板内行间） ——
+// —— 二态确认删除（与清单同款；FIX005.24 收敛至 useDelConfirmGroup）——
 
-const confirmingId = ref<number | null>(null);
-const delRefs = new Map<number, InstanceType<typeof DelButton>>();
 // 列表重建计数：开板时勾选态粒子/环/描画动画重播（design renderBoard 重建语义）
 const listKey = ref(0);
 
-// 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
-// v-if/v-else 互斥——删末条走分支整体卸载时 leave 无机会播 = 瞬间消失，CDP 实测），
-// 空态文案延至末条 leave 播完（after-leave）出现；无 leave 路径（清空两段式 DOM
-// 直改）由定时器兜底置位
-const showEmpty = ref(props.items.length === 0);
-let emptyTimer = 0; // showEmpty 兜底句柄（卸载清理，FIX004.20）
-watch(
-  () => props.items.length,
-  (n, o) => {
-    if (n > 0) {
-      showEmpty.value = false;
-    } else if ((o ?? 0) > 0) {
-      emptyTimer = window.setTimeout(() => {
-        if (props.items.length === 0) showEmpty.value = true;
-      }, 420);
-    } else {
-      showEmpty.value = true;
+// 空态显隐（删末条动画定案 2026-09-30；FIX005.24 收敛至 useEmptyState）：
+// TransitionGroup 恒挂载（不再与空态 v-if/v-else 互斥——删末条走分支整体卸载时
+// leave 无机会播 = 瞬间消失，CDP 实测），空态文案延至末条 leave 播完（after-leave）
+// 出现；无 leave 路径（清空两段式 DOM 直改）由定时器兜底置位
+const {
+  showEmpty,
+  onAfterLeave,
+  dispose: disposeEmptyState,
+} = useEmptyState(() => props.items.length);
+
+const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmGroup<TodoItem>(
+  async (item) => {
+    try {
+      await invoke("todo_remove", { id: item.id });
+      emit("changed");
+    } catch (err) {
+      console.error("删除失败", err);
     }
   },
 );
-/** 末条 leave 播完：列表真空才亮空态文案 */
-function onAfterLeave(): void {
-  if (props.items.length === 0) showEmpty.value = true;
-}
-
-// 收口总线注册（A2）：板开合/页签切换时批量摘未决确认（归档板自家行也在列——
-// design rollbackDelConfirms 收全局 .del-open）
-let unregisterRollback: (() => void) | null = null;
-onMounted(() => {
-  unregisterRollback = registerDelConfirms(() => {
-    if (confirmingId.value != null) {
-      delRefs.get(confirmingId.value)?.rollBack();
-      confirmingId.value = null;
-    }
-  });
-});
-
-function setDelRef(id: number, el: InstanceType<typeof DelButton> | null): void {
-  if (el) delRefs.set(id, el);
-  else delRefs.delete(id);
-}
-
-function onPress(item: TodoItem): void {
-  if (confirmingId.value != null && confirmingId.value !== item.id) {
-    delRefs.get(confirmingId.value)?.rollBack();
-  }
-  confirmingId.value = item.id;
-}
-
-async function onConfirm(item: TodoItem): Promise<void> {
-  confirmingId.value = null;
-  try {
-    await invoke("todo_remove", { id: item.id });
-    emit("changed");
-  } catch (err) {
-    console.error("删除失败", err);
-  }
-}
-
-/** 确认态鼠标离开即回退（A1：V0.025 定案，归档行并入同款） */
-function onCancel(item: TodoItem): void {
-  if (confirmingId.value === item.id) confirmingId.value = null;
-}
 
 /** 退场钉高（⑤ = design collapseRow 第一步 1:1，与清单同款）：height auto→0 不可
  * 过渡，leave 前钉实测高度作过渡起点，缺失即"行直接消失" */

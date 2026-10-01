@@ -5,10 +5,10 @@ import type { TodoItem, TodoView } from "../../types";
 import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
 import { rowMaskDead, syncMaskDead } from "../composables/useMaskDead";
-import { useBoardRead } from "../composables/useBoardRead";
-import { useGlassBar } from "../composables/useGlassBar";
+import { useEmptyState } from "../composables/useEmptyState";
+import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
+import { useScrollKit } from "../composables/useScrollKit";
 import { deferDuringDrag, installDragHooks, isSuppressed } from "../composables/useDragReorder";
-import { registerDelConfirms } from "../composables/delConfirmBus";
 
 // ===== 清单页（PL010.4 换装实验场形态）：行模板 1:1（NeonCheckbox + t-text +
 // DelButton 二态 + age-alert 黄红提醒）+ TransitionGroup 出入场（0.3s 显式 duration——
@@ -33,54 +33,19 @@ const listEl = ref<HTMLElement | null>(null);
 /** 未完成行（排序视图已由 Rust 裁决，此处不再排序只过滤） */
 const active = computed(() => props.items.filter((it) => !it.done));
 
-// —— DelButton 二态单实例：全列表同时只允许一行处于确认态 ——
+// —— DelButton 二态单实例（FIX005.24 收敛至 useDelConfirmGroup）：全列表同时
+// 只允许一行处于确认态；再点执行 = 删除 + 变更上抛 ——
 
-/** 当前确认中的条目 id（null = 无）；换目标时旧行自动回退 */
-const confirmingId = ref<number | null>(null);
-
-/** 行组件的 rollBack expose 句柄（id → 组件实例） */
-const delRefs = new Map<number, InstanceType<typeof DelButton>>();
-
-function setDelRef(id: number, el: InstanceType<typeof DelButton> | null): void {
-  if (el) delRefs.set(id, el);
-  else delRefs.delete(id);
-}
-
-/** 首点进确认态：单实例收口（旧确认行立即回退） */
-function onPress(item: TodoItem): void {
-  if (confirmingId.value != null && confirmingId.value !== item.id) {
-    delRefs.get(confirmingId.value)?.rollBack();
-  }
-  confirmingId.value = item.id;
-}
-
-/** 再点执行：摘确认态 + 删除（DelButton 已延迟 200ms 播完脉冲） */
-async function onConfirm(item: TodoItem): Promise<void> {
-  confirmingId.value = null;
-  try {
-    await invoke("todo_remove", { id: item.id });
-    emit("changed");
-  } catch (err) {
-    console.error("删除失败", err);
-  }
-}
-
-/** 确认态鼠标离开即回退（A1：DelButton mouseleave 上抛，父级摘 confirming） */
-function onCancel(item: TodoItem): void {
-  if (confirmingId.value === item.id) confirmingId.value = null;
-}
-
-// 收口总线注册（A2 = design rollbackDelConfirms）：归档板开合/页签切换时批量摘
-// 本列表的未决确认——行被遮盖后 mouseout 不再来，不收口会在板收/切回后红态复活
-let unregisterRollback: (() => void) | null = null;
-onMounted(() => {
-  unregisterRollback = registerDelConfirms(() => {
-    if (confirmingId.value != null) {
-      delRefs.get(confirmingId.value)?.rollBack();
-      confirmingId.value = null;
+const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmGroup<TodoItem>(
+  async (item) => {
+    try {
+      await invoke("todo_remove", { id: item.id });
+      emit("changed");
+    } catch (err) {
+      console.error("删除失败", err);
     }
-  });
-});
+  },
+);
 
 // —— 勾选 / 点击语义 ——
 
@@ -264,29 +229,15 @@ installDragHooks({
 // rAF 闭包仍存活，切页往返会给新 DOM 重复挂载滑杆/三角且无人清理（白板页黄三角
 // 残留的根因）。改为 items 长度 watch + nextTick：挂载时机与数据到达对齐；
 // composable 在异步上下文挂载时生命周期钩子失效（无组件实例），destroy 由本组件
-// 持有，重挂/卸载时显式调用
-let glassBar: { sync: () => void; destroy: () => void } | null = null;
-let boardRead: { destroy: () => void } | null = null;
-
-/** 挂滑杆与整板阅读（ul 已在 DOM 时执行；dataset.mounted 防重挂） */
-function mountScrollKit(): void {
-  // TransitionGroup 的 template ref 指向组件实例——真实 UL 须经 $el 取（PL011 同教训）
-  const ul =
-    (listEl.value as unknown as { $el?: HTMLElement })?.$el ?? (listEl.value as HTMLElement | null);
-  if (!ul || glassBar || ul.dataset.mounted === "1") return;
-  ul.dataset.mounted = "1";
-  glassBar = useGlassBar(ul, { inset: true });
-  boardRead = useBoardRead(ul, { skipDuringDrag: true });
-}
-
-/** 拆旧挂新前显式清理（监听/observer/三角/浮钮全清） */
-function unmountScrollKit(): void {
-  glassBar?.destroy();
-  boardRead?.destroy();
-  glassBar = null;
-  boardRead = null;
-  delete document.getElementById("todo-active")?.dataset.mounted;
-}
+// 持有，重挂/卸载时显式调用（FIX005.24 收敛至 useScrollKit）
+// 整板阅读套件：滑杆 + 阅读三角挂卸显式管理
+const scrollKit = useScrollKit(listEl, {
+  boardRead: { skipDuringDrag: true },
+  glassBar: { inset: true },
+  mountedFlag: { key: "mounted", hostId: "todo-active" },
+});
+const mountScrollKit = scrollKit.mount;
+const unmountScrollKit = scrollKit.unmount;
 
 // items 到达/清空 → 渲染完成后挂载（覆盖首挂与重建两种时机）
 watch(
@@ -311,28 +262,12 @@ watch(
   { deep: true },
 );
 
-// —— 空态显隐（FIX004.6，与归档/气泡同款共存渲染）：TransitionGroup 恒挂载
-// （v-if/v-else 互斥时删末条走分支整体卸载，leave 塌缩动画无机会播 = 瞬间消失），
-// 空态文案延至末条 leave 播完（after-leave）出现 ——
-const showEmpty = ref(props.items.length === 0);
-watch(
-  () => props.items.length,
-  (n, o) => {
-    if (n > 0) {
-      showEmpty.value = false;
-    } else if ((o ?? 0) > 0) {
-      window.setTimeout(() => {
-        if (props.items.length === 0) showEmpty.value = true;
-      }, 420);
-    } else {
-      showEmpty.value = true;
-    }
-  },
-);
-/** 末条 leave 播完：列表真空才亮空态文案 */
-function onAfterLeave(): void {
-  if (props.items.length === 0) showEmpty.value = true;
-}
+// —— 空态显隐（FIX005.24 收敛至 useEmptyState，与归档/气泡同款共存渲染）——
+const {
+  showEmpty,
+  onAfterLeave,
+  dispose: disposeEmptyState,
+} = useEmptyState(() => props.items.length);
 
 // v-else 切换重建 ul 兜底（items 长度不变但 ul 换元素的场景）：观测 section.list
 // 子树替换即重挂
@@ -344,7 +279,7 @@ onMounted(() => {
       (listEl.value as unknown as { $el?: HTMLElement })?.$el ??
       (listEl.value as HTMLElement | null);
     if (!ul) return;
-    if (!glassBar || ul.dataset.mounted !== "1") {
+    if (!ul || ul.dataset.mounted !== "1") {
       unmountScrollKit();
       mountScrollKit();
     }
@@ -361,7 +296,7 @@ onUnmounted(() => {
   toggleTimers.clear();
   rebuildObserver?.disconnect();
   unmountScrollKit();
-  unregisterRollback?.();
+  disposeEmptyState();
 });
 </script>
 
