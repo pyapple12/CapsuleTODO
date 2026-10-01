@@ -135,3 +135,10 @@
     transition: none;
   }
 }
+
+/* 保存失败可见反馈（FIX007.7，对齐 AddBar/bubbles .error 模式） */
+.detail-error {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--danger);
+}

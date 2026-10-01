@@ -669,3 +669,56 @@ grep 级 31 项全命中；diff/语义级复核抓出 3 项"修复无效或改�
 ### 三、亮点
 
 SQL 全参数化、锁序单向、tray.rs 窗口调用零锁内违规（专项走查）；FIX004 时代防护全部完好；v-html 零注入面、零 any、零空 catch；组件链 emit 覆盖核查全场景闭合；上限单源三点一致；A005 修复 28/31 实质在位。本轮最大价值 = diff/语义级复核抓出 grep 级复核的三项"修复无效"——grep 在位 ≠ 语义生效。
+
+## 附录 A007：全量代码审计报告（第7轮，2026-10-02）
+
+> 范围：全仓通读（约 19600 行）。方式：三路并行（Rust 业务 / Tauri 集成 / 前端）+ A006/FIX006 回归复核（主会话 grep 20 项全命中 + 子代理 git diff 级 + 语义级推演——延续 A006 "grep 在位 ≠ 语义生效"教训）。基线 7907cb4 → 386b049。
+> 状态：📌 待修复（FIX007 任务清单见 x.progress.md；观察项默认全不提升）
+
+### 零、上轮修复复核清单（A006/FIX006 20 项）
+
+| 结果                | 条目                                                                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅ 语义级在位 19 项 | origin 载荷方案（端到端实证）/ 非主窗 prevent_close / 默认热键两级 match / CommandError::Window 归户 / 启动链 catch×4 / PrefsView 镜像 / disposed setup 层 / 摘标记对称 / main-drag 粒度 / Shown 连续性 / 陷阱入库等 |
+| ⚠️ 语义级残留 1 项  | FIX006.3 哨兵只修半边：Default impl 改 i32::MIN，但 x/y 字段级 #[serde(default)] 仍回 0——config 存在但手删 x/y 字段经第二路径复活左上角落位（settings.rs:59-63，确定性复现）                                         |
+| 并发纪律专项        | tray.rs 全部窗口调用零锁内违规、WATCH 与 settings 锁零嵌套、EXITING 销毁链跨文件推演闭环                                                                                                                             |
+
+### 一、P0-P3 修复清单
+
+无 P0/P1/P2（A006 修完后 P2 级清零）。**P3 共 18 条**（跨组同根合并）：
+
+| #   | 文件:行号                                                   | 类别 | 描述与建议                                                                                                                                                                                               |
+| --- | ----------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | settings.rs:59-64                                           | 1/12 | 哨兵字段级残留：x/y 改 #[serde(default = "sentinel_xy")] 回 i32::MIN，补"config 存在但缺 x/y"锁定用例                                                                                                    |
+| 2   | core/tauri.conf.json                                        | 12   | 无 beforeBuildCommand——npm run tauri build 不重建前端，打包产物内嵌陈旧 dist。打包发布前必须补                                                                                                           |
+| 3   | hotkey.rs:208-225                                           | 8/1  | reregister 父侧 swap(0) 自我拆台：先清零后"等旧线程退出"条件恒 false（死等待），Unregister/Register 竞窗致换热键偶发误报占用 → 回滚同一组合再竞失败 → 热键悬空至重启。去 swap(0) 改等旧线程自行 CAS 清零 |
+| 4   | TodoList.vue:70-93 + ArchiveOverlay.vue:236-252             | 1    | 同行 300ms 主拍内二次点击 = 双 toggle 翻回：无 in-flight 守卫，二次 invoke 把落库翻回，拍子到点行"弹回"；archived 按陈旧 wasUndone 误上抛。主拍在飞二次点击改视觉回退或忽略                              |
+| 5   | DetailOverlay.vue:145,170                                   | 1    | rename/note 相等判定引用陈旧 props.todo（App 刷新不回写 detailTodo）：改名 A→B 再改回 A 恒相等 → 不保存 → UI/DB 静默分叉。保存成功后维护 lastSaved 基准                                                  |
+| 6   | TrayMenu.vue:54-57 + TrayPreview.vue:85-88                  | 13/2 | await listen 无 catch（FIX006.10 同族漏网，A006 只框定 App.vue）：两窗常驻不重建，注册失败 = session 级失效。对齐 catch 同款                                                                             |
+| 7   | DetailOverlay.vue:156-212 + BubblesView.vue:186-212         | 2/13 | 保存失败无可见反馈两处（详情板 debounce/flush 仅 console.error；气泡清空先 DOM 塌缩后落库失败呈"假空"）。对齐错误行模式                                                                                  |
+| 8   | mock-invoke.ts:126-132                                      | 10/3 | mock validateText 上限 100 与 Rust MAX_TEXT_LEN=24 漂移（注释自称对齐已失真）。常量对齐 24                                                                                                               |
+| 9   | TodoList.vue:52-58,97-99,142 ≈ BubblesView ≈ ArchiveOverlay | 4    | FIX005.24 收敛遗漏面：rowEl 双份/pinLeaveHeight 三份/180ms 消歧双份——收敛进 composable                                                                                                                   |
+| 10  | AddBar.vue:36 + TodoList.vue:329 + DetailOverlay.vue:235    | 3/4  | maxlength="12" 三处散装，与 Rust MAX_TEXT_LEN=24 的"2 倍余量"锚点仅在 Rust 注释——types.ts 出 UI 上限常量三处引用                                                                                         |
+| 11  | commands/settings.rs:37,76,144,183                          | 4    | settings_path().map_err(...) 同一习语一处文件内重复四次——收敛 settings_path_or_err() 单点                                                                                                                |
+| 12  | commands/settings.rs:204                                    | 4/6  | emit_prefs_changed fn 内 use Emitter（FIX005.9 引入）——并入顶部导入                                                                                                                                      |
+| 13  | tray.rs:270,308                                             | 4/3  | 锚定 MARGIN=8 双函数各声明一份——提模块级常量单源                                                                                                                                                         |
+| 14  | lib.rs:531,547                                              | 3/4  | 拖动静默阈值 150ms 两处字面无编译期关联——提 DRAG_QUIET_MS                                                                                                                                                |
+| 15  | lib.rs:139                                                  | 6    | 注释残渣"与实验场卡片 300×400 一致"（FIX006.16 后失真）——删或改写                                                                                                                                        |
+| 16  | lib.rs:65-66                                                | 6/13 | snap_if_needed 注释"白名单候选"过时（FIX006.14 已登记）——更新措辞                                                                                                                                        |
+| 17  | commands/whiteboard.rs:28                                   | 4    | 手写 map_err 与 mod.rs 既有 From<WhiteboardError> 重复——? 直转                                                                                                                                           |
+| 18  | tray.rs:357-384                                             | 1/8  | Show/Suppressed 跨线程竞态（需验证）：守候锁内提交 Show 后锁外执行前右键可完成 Suppressed+hide → 预览伴菜单弹出且滞留至下次 hover。Show 执行前重入锁复核 phase 仍为 Shown                                |
+
+### 二、参考级观察项（豁免，含回落理由；用户默认全不提升）
+
+1. 置顶反向残留（窗口已切落库失败）——A006 保留延续
+2. fullscreen yielded 跳过期间不清零——重开置顶必经交互自愈（理论）
+3. TrayPreview listen 注册在 await refresh 之后——refresh 已有 catch 不会 reject（回落）
+4. FIX006.1 origin 自判链路 IAB 零覆盖（mock 无事件源）——真机 live 已验，登记测试性缺口
+5. TrayPreview ?? 164 回退魔法数；onRowClick async 无 await；DRAG_THRESHOLD 5/6 同名异值（不同域有注释）
+6. seed_data 存量 expect 与新 exit(1) 并存（工具不出货）；hotkey MOD_*/Rect pub 过宽（历史面）
+7. 系统关机时主窗 prevent_close+hide 的 WM_QUERYENDSESSION 行为——需实机关机验证（超出静态审计）
+8. A005/A006 保留项全部延续（CSP 打包前必补、装配期 expect、锚点哨兵 0,0 等）
+
+### 三、亮点
+
+A006 全部 20 项修复语义级在位零冲掉（上轮"grep≠语义"教训已内化为审计方法）；origin 载荷方案端到端九调用点推演无刷新丢失；EXITING 销毁链跨文件推演闭环（三腿互洽）；并发纪律锁外铁律零违规、锁零嵌套；SQL 全参数化、v-html 零注入、零 any；FIX004 时代防护全部完好；capabilities 拆分后权限面与 label 分流严格对应。

@@ -46,6 +46,13 @@ fn default_snap_to_edge() -> bool {
     true
 }
 
+/// serde default 挂钩：config.json 缺 x/y 字段时回填哨兵（FIX007.1——字段级
+/// default 按字段类型取 i32::default()=0，不走 struct Default，0 恰在主屏内会被
+/// 落位判定误收 = 左上角；哨兵 i32::MIN 必判屏外 → 走 default_position 默认位）
+fn sentinel_xy() -> i32 {
+    i32::MIN
+}
+
 /// 贴边吸附触发阈值（窗口边距屏幕边 ≤ 此值即吸附，px）
 pub const SNAP_THRESHOLD_PX: i32 = 50;
 
@@ -55,11 +62,11 @@ pub const SNAP_GAP_PX: i32 = 5;
 /// 运行时设置（窗口位置 + 气泡提醒上限 + 气泡热键；serde default 容忍手改缺字段）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WindowSettings {
-    /// 窗口左上角 x（屏幕物理坐标）
-    #[serde(default)]
+    /// 窗口左上角 x（屏幕物理坐标；缺字段回哨兵 = 首启未落位，FIX007.1）
+    #[serde(default = "sentinel_xy")]
     pub x: i32,
-    /// 窗口左上角 y（屏幕物理坐标）
-    #[serde(default)]
+    /// 窗口左上角 y（屏幕物理坐标；缺字段回哨兵，与 struct Default 哨兵一致）
+    #[serde(default = "sentinel_xy")]
     pub y: i32,
     /// 气泡提醒上限（PL014.2；旧 config.json 缺字段回填 5）
     #[serde(default = "default_max_bubbles")]
@@ -165,6 +172,19 @@ mod tests {
         // default_position 默认位（原 0,0 恰在主屏内被误判有效 = 首启贴左上角）
         assert_eq!(WindowSettings::default().x, i32::MIN);
         assert_eq!(WindowSettings::default().y, i32::MIN);
+    }
+
+    #[test]
+    fn load_missing_xy_fields_fills_sentinel() {
+        // FIX007.1：config 存在但手删 x/y 字段——字段级 serde default 必须同样回
+        // 哨兵（原 #[serde(default)] 回 0 = 左上角第二路径复活）
+        let path = temp_path("missing-xy.json");
+        std::fs::write(&path, r#"{"max_bubbles": 8}"#).expect("写测试配置失败");
+        let loaded = load(&path).expect("读取必须成功").expect("配置存在非 None");
+        assert_eq!(loaded.x, i32::MIN);
+        assert_eq!(loaded.y, i32::MIN);
+        assert_eq!(loaded.max_bubbles, 8);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

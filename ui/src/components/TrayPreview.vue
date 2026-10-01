@@ -81,10 +81,14 @@ onMounted(async () => {
   await refresh();
   // 主窗改动（新增/勾选/归档）→ 预览列表同步
   // 广播载荷 = 发起窗 label（FIX006.1）：预览窗发起的勾选早退（自刷新已有），
-  // 主窗等他窗变更照常刷新
+  // 主窗等他窗变更照常刷新（FIX007.6 补 catch：常驻窗注册失败 session 级失效，
+  // 落日志可见）
   unlistenTodoChanged = await listen<string>("todo-changed", (event) => {
     if (event.payload === getCurrentWindow().label) return;
     void refresh();
+  }).catch((err) => {
+    console.error("todo-changed 监听注册失败", err);
+    return undefined;
   });
 });
 

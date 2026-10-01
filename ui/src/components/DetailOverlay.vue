@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, TodoItem } from "../../types";
+import { UI_TEXT_MAX_LEN } from "../../types";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
@@ -138,11 +139,20 @@ watch(
 /** 改名待保存快照（null = 无未决保存） */
 let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
+/** 保存失败可见反馈（FIX007.7，对齐 AddBar 错误行模式；成功/新输入即清） */
+const saveError = ref("");
+/** 最近一次成功落库的标题基准（FIX007.5）：相等判定对基准比而非 props.todo——
+ * App 刷新不回写 detailTodo，props 是陈旧快照，"改 A→B 再改回 A"对陈旧值恒相等
+ * = 跳过保存 = UI/DB 静默分叉 */
+let lastSavedText: string | null = null;
 watch(titleDraft, (text) => {
   const todo = props.todo;
+  saveError.value = ""; // 新输入即清（FIX007.7）
   // FIX004.1：相等分支必须清未决快照——只 return 会残留上一变更的定时器，
-  // 300ms 内改回原文时到点仍把中间草稿写库（UI 原文 / DB 草稿分叉）
-  if (todo == null || text === todo.text) {
+  // 300ms 内改回原文时到点仍把中间草稿写库（UI 原文 / DB 草稿分叉）。
+  // 基准取序：lastSaved（本会话已落库值）→ props（板打开时初值）
+  const savedBase = lastSavedText ?? todo?.text ?? null;
+  if (todo == null || text === savedBase) {
     clearTimeout(renameTimer);
     renamePending = null;
     return;
@@ -154,8 +164,14 @@ watch(titleDraft, (text) => {
     renamePending = null;
     if (pending == null) return;
     void invoke("todo_rename", { id: pending.id, text: pending.text })
-      .then(() => emit("changed"))
-      .catch((err) => console.error("改名失败", err));
+      .then(() => {
+        lastSavedText = pending.text; // FIX007.5 基准随落库推进
+        emit("changed");
+      })
+      .catch((err) => {
+        saveError.value = `改名保存失败：${String(err)}`;
+        console.error("改名失败", err);
+      });
   }, 300);
 });
 
@@ -164,10 +180,22 @@ watch(titleDraft, (text) => {
 /** 笔记待保存快照（null = 无未决保存） */
 let notePending: { id: number; note: string } | null = null;
 let noteTimer: number | undefined;
+/** 最近一次成功落库的笔记基准（FIX007.5，同改名基准机制） */
+let lastSavedNote: string | null = null;
+// 切换条目时重置基准（lastSaved 属于上一条目，跨条目残留会误判相等/误建 pending）
+watch(
+  () => props.todo?.id,
+  () => {
+    lastSavedText = null;
+    lastSavedNote = null;
+  },
+);
 watch(noteDraft, (note) => {
   const todo = props.todo;
+  saveError.value = ""; // 新输入即清（FIX007.7）
   // FIX004.1 同构：相等分支清未决快照（同"改回原文"残留）
-  if (todo == null || note === todo.note) {
+  const savedBase = lastSavedNote ?? todo?.note ?? null;
+  if (todo == null || note === savedBase) {
     clearTimeout(noteTimer);
     notePending = null;
     return;
@@ -179,8 +207,14 @@ watch(noteDraft, (note) => {
     notePending = null;
     if (pending == null) return;
     void invoke("todo_set_note", { id: pending.id, note: pending.note })
-      .then(() => emit("changed"))
-      .catch((err) => console.error("笔记保存失败", err));
+      .then(() => {
+        lastSavedNote = pending.note; // FIX007.5 基准随落库推进
+        emit("changed");
+      })
+      .catch((err) => {
+        saveError.value = `笔记保存失败：${String(err)}`;
+        console.error("笔记保存失败", err);
+      });
   }, 300);
 });
 
@@ -197,15 +231,27 @@ async function flushPending(): Promise<void> {
   if (rename != null) {
     jobs.push(
       invoke("todo_rename", { id: rename.id, text: rename.text })
-        .then(() => emit("changed"))
-        .catch((err) => console.error("改名失败", err)),
+        .then(() => {
+          lastSavedText = rename.text; // FIX007.5 基准随落库推进
+          emit("changed");
+        })
+        .catch((err) => {
+          saveError.value = `改名保存失败：${String(err)}`;
+          console.error("改名失败", err);
+        }),
     );
   }
   if (note != null) {
     jobs.push(
       invoke("todo_set_note", { id: note.id, note: note.note })
-        .then(() => emit("changed"))
-        .catch((err) => console.error("笔记保存失败", err)),
+        .then(() => {
+          lastSavedNote = note.note; // FIX007.5 基准随落库推进
+          emit("changed");
+        })
+        .catch((err) => {
+          saveError.value = `笔记保存失败：${String(err)}`;
+          console.error("笔记保存失败", err);
+        }),
     );
   }
   await Promise.all(jobs);
@@ -230,9 +276,16 @@ onBeforeUnmount(() => {
 <template>
   <div ref="overlay" class="detail-overlay" :class="{ open: isOpen, 'bubble-mode': isBubbleMode }">
     <div class="board-glass detail-glass">
+      <!-- FIX007.7 保存失败可见反馈（对齐 AddBar 错误行模式） -->
+      <p v-if="saveError" class="detail-error">{{ saveError }}</p>
       <div v-if="!isBubbleMode" class="detail-head">
         <span class="detail-label">标题</span>
-        <input v-model="titleDraft" class="detail-title" maxlength="12" placeholder="最多 12 字" />
+        <input
+          v-model="titleDraft"
+          class="detail-title"
+          :maxlength="UI_TEXT_MAX_LEN"
+          placeholder="最多 12 字"
+        />
       </div>
       <div class="note-shell" :class="{ 'bubble-shell': isBubbleMode }">
         <textarea

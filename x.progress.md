@@ -444,3 +444,26 @@
 - [x] FIX006.18 [P3] Enter 重置打断连续性修复 —— tray.rs on_tray_enter 相位分派：Shown 仅清 miss 保持显示（预览窗→图标连续路径不闪没），Idle/Suppressed 才转 Armed；验证：cargo test 132 绿 + live 预览显示中移回图标不闪没（2026-10-02 已落，live 回执待用户）
 - [x] FIX006.19 [P3] 陷阱入库与权限粒度 —— AGENTS.md 环境陷阱节补两条（①tauri emit_filter 对 JS listen 无效[match_any_or_filter 语义 + 正确方案]②Vue 生命周期钩子仅 setup 同步上下文生效[嵌套注册被忽略]）；capabilities 拆 main-drag.json（start-dragging 限定 main），构建产物核验：default 集仅 core:default 三窗、main-drag 仅 main；验证：文档核对 + ACL 产物复核（2026-10-02 已落）
 - [x] FIX006.20 [P3] 收尾验证 —— 全量门禁 fmt --check/clippy -D warnings/cargo test 132/vue-tsc/build/prettier/cargo build --examples 全绿 + app 重编拉起；live 回归清单交用户（勾选主拍/托盘三件套/关窗两语义/首启落位哨兵/气泡页快速切页/预览连续性）（2026-10-02 门禁已过，live 回执待用户）
+
+### FIX007: 第7轮审计修复 [audit#A007]
+
+> 范围：A007 P3 十八条（无 P2——A006 修完后 P2 级清零；哨兵字段级残留与打包链缺口最实，后者打包前必办）+ 收尾。观察项默认全不提升。P3 级均为低风险小改，可一批做完。
+
+- [x] FIX007.1 [P3] 哨兵字段级残留 —— settings.rs x/y 改 `#[serde(default = "sentinel_xy")]`（私有函数回 i32::MIN）；新增测试 load_missing_xy_fields_fills_sentinel（config 存在但缺 x/y → 哨兵）；验证：cargo test 133 绿（132+1）（2026-10-02 已落）
+- [x] FIX007.2 [P3] 打包链 beforeBuildCommand —— core/tauri.conf.json 补 `"beforeBuildCommand": "npm run build"`（与 dev 侧对称）；验证：配置核对（实际打包时 live 验证）（2026-10-02 已落）
+- [x] FIX007.3 [P3] hotkey reregister 死等待修复 —— 去 `THREAD_ID.swap(0)` 改 load 轮询（等旧线程自行 CAS 清零，:254-259 配套逻辑恢复生效，Unregister/Register 竞窗根除）；验证：cargo test 绿 + live 连续换热键无占用误报（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.4 [P3] 主拍 in-flight 守卫 —— TodoList.vue toggle 加 `toggleTimers.has(item.id) return`；ArchiveOverlay.vue restore 加 `restoreTimers.has(item.id) return`；验证：vue-tsc 绿 + live 双击勾选框不弹回（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.5 [P3] DetailOverlay 陈旧基准 —— 加 lastSavedText/lastSavedNote 基准（四处 save 成功后推进；相等判定改对基准比 `lastSaved ?? props` 取序）；切条目（props.todo?.id watch）重置基准防跨条目残留；验证：vue-tsc 绿 + live 板内 A→B→A 重开显示 A（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.6 [P3] 托盘两窗 listen 补 catch —— TrayMenu/TrayPreview 各补 .catch（落日志返 undefined，对齐 App.vue 形态）；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX007.7 [P3] 保存失败可见反馈 —— DetailOverlay 加 saveError ref + `.detail-error` 错误行（detail.css 对齐 AddBar/bubbles 样式；防抖/flush 四处失败置错，新输入即清）；BubblesView 清空失败置 error.value（塌缩假空可见化）；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX007.8 [P3] mock 文本上限对齐 —— mock-invoke.ts validateText 100 → 24（注释锚 core MAX_TEXT_LEN 与 2 倍余量关系）；验证：vue-tsc 绿 + IAB 超长文本冒烟（2026-10-02 已落）
+- [x] FIX007.9 [P3] 三组件收敛遗漏面 —— 新 ui/src/composables/useListRow.ts（rowElById 页选择器参数化/pinLeaveHeight 统一带 boxSizing[气泡行膨胀教训内聚]/useClickDisambiguate 180ms 消歧件）；TodoList/BubblesView rowEl 改薄 wrapper + pinLeaveHeight 导入替换；ArchiveOverlay pinLeaveHeight 导入替换；**clickTimer 收敛裁量保留**（牵动 installDragHooks cancelPendingClick 回调签名，收益低风险高，注记待真实需要时再做）；验证：vue-tsc + build 绿 + live 三页单击/双击/退场动画不回归（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.10 [P3] 文本上限口径单源 —— types.ts 加 `export const UI_TEXT_MAX_LEN = 12`（注释锚 MAX_TEXT_LEN=24 两倍余量联动）；AddBar/TodoList/DetailOverlay 三处 maxlength 改 `:maxlength` 绑定引用（AddBar 补 types import 修相对路径）；验证：vue-tsc 绿（2026-10-02 已落）
+- [x] FIX007.11 [P3] settings_path 习语收敛 —— commands/settings.rs 加私有 `settings_path_or_err()`，四处调用点替换；验证：cargo test 133 绿（2026-10-02 已落）
+- [x] FIX007.12 [P3] emit_prefs_changed fn 内 use 上提 —— Emitter 并入顶部 use；验证：cargo clippy -D warnings 绿（2026-10-02 已落）
+- [x] FIX007.13 [P3] 锚定 MARGIN 单源 —— tray.rs 提模块级 `ANCHOR_MARGIN: i32 = 8`，菜单锚定/预览锚定两处引用；验证：cargo build 绿（2026-10-02 已落）
+- [x] FIX007.14 [P3] 拖动静默阈值单源 —— lib.rs 提 `DRAG_QUIET_MS: u64 = 150`，置位/松手两处判定引用；验证：cargo test 绿 + live 拖动吸附不回归（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.15 [P3] 注释残渣两处 —— default_position 删"300×400 一致"失真注释；snap_if_needed "白名单候选"改"已登记（FIX006.14）"；验证：文档核对（2026-10-02 已落）
+- [x] FIX007.16 [P3] whiteboard map_err 收敛 —— 校验改 `?` 直转（From<WhiteboardError> 已有）；验证：cargo test 绿（2026-10-02 已落）
+- [x] FIX007.17 [P3] Show/Suppressed 竞态复核 —— 守候线程 Show 动作执行前重入锁复核 `phase 仍 Shown && !menu_is_open`（决策/执行空窗从 100ms 压至微秒级），任一变放弃由后续拍按当前相位处理；验证：cargo test 133 绿 + live 右键与显示瞬间交替预览不伴菜单滞留（2026-10-02 已落，live 回执待用户）
+- [x] FIX007.18 [P3] 收尾验证 —— 全量门禁 fmt --check/clippy -D warnings/cargo test 133/vue-tsc/build/prettier/cargo build --examples 全绿 + app 重编拉起；live 回归清单交用户（双击勾选/换热键连打/详情板改名回退/气泡清空/托盘三件套）（2026-10-02 门禁已过，live 回执待用户；回执通过后 **FIX007 全组 18/18 闭环**）

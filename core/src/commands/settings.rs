@@ -2,7 +2,7 @@
 //!（config.json 与窗口位置共存）。上限钳制 1~MAX_BUBBLES_LIMIT 与 design stepper
 //! 同规；热键 parse 校验 + 注册失败回滚；核心抽自由函数直测。
 
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use super::{AppContext, CommandError};
 use crate::settings::{clamp_max_bubbles, MAX_BUBBLES_LIMIT};
@@ -11,6 +11,12 @@ use crate::settings::{clamp_max_bubbles, MAX_BUBBLES_LIMIT};
 #[tauri::command]
 pub fn settings_get_max_bubbles(ctx: State<'_, AppContext>) -> Result<u32, CommandError> {
     settings_get_max_bubbles_core(&ctx)
+}
+
+/// 配置路径解析收敛（FIX007.11）：四写命令共用同一两行习语，单点化后策略变更
+///（如错误消息加语境）只改此处
+fn settings_path_or_err() -> Result<std::path::PathBuf, CommandError> {
+    crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))
 }
 
 /// 读取气泡提醒上限的最大合法值（FIX005.25 单一来源出口：设置板步进禁用态与
@@ -34,8 +40,7 @@ pub fn settings_set_max_bubbles(
     value: u32,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
-    let path =
-        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    let path = settings_path_or_err()?;
     settings_set_max_bubbles_core(value, &path, &ctx)
 }
 
@@ -73,8 +78,7 @@ pub fn settings_set_bubble_hotkey(
     combo: String,
     ctx: State<'_, AppContext>,
 ) -> Result<String, CommandError> {
-    let path =
-        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    let path = settings_path_or_err()?;
     let old = settings_get_bubble_hotkey_core(&ctx)?;
     let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
     #[cfg(target_os = "windows")]
@@ -141,8 +145,7 @@ pub fn settings_set_always_on_top(
     window
         .set_always_on_top(on)
         .map_err(|err| CommandError::Window(format!("置顶切换失败：{err}")))?;
-    let path =
-        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    let path = settings_path_or_err()?;
     settings_set_always_on_top_core(on, &path, &ctx)?;
     emit_prefs_changed(&app, &ctx);
     Ok(())
@@ -180,8 +183,7 @@ pub fn settings_set_snap_to_edge(
     app: tauri::AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
-    let path =
-        crate::paths::settings_path().map_err(|err| CommandError::Settings(err.to_string()))?;
+    let path = settings_path_or_err()?;
     settings_set_snap_to_edge_core(on, &path, &ctx)?;
     emit_prefs_changed(&app, &ctx);
     Ok(())
@@ -201,7 +203,6 @@ pub(crate) struct PrefsSnapshot {
 /// 设置板/托盘菜单切换后各入口同步勾选态与回显。单锁取快照（消除 tray.rs 旧
 /// 实现两次取锁的半新半旧窗口）
 pub(crate) fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
-    use tauri::Emitter;
     let snapshot = match ctx.lock_settings() {
         Ok(s) => PrefsSnapshot {
             always_on_top: s.always_on_top,

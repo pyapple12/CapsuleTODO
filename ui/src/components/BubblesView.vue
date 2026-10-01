@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { BubbleCaptureOutcome, BubbleItem, BubbleSnapshot } from "../../types";
 import DelButton from "./DelButton.vue";
 import { rowMaskDead } from "../composables/useMaskDead";
+import { rowElById, pinLeaveHeight } from "../composables/useListRow";
 import { syncVeils } from "../composables/useVeils";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
@@ -199,6 +200,8 @@ async function onClearClick(): Promise<void> {
         await invoke("bubble_clear");
         await refresh();
       } catch (err) {
+        // FIX007.7 失败可见（行已塌缩"假空"，不提示则用户以为删成功）
+        error.value = `清空失败：${String(err)}`;
         console.error("清空失败", err);
       }
     }, 300);
@@ -208,6 +211,7 @@ async function onClearClick(): Promise<void> {
     await invoke("bubble_clear");
     await refresh();
   } catch (err) {
+    error.value = `清空失败：${String(err)}`;
     console.error("清空失败", err);
   }
 }
@@ -267,24 +271,13 @@ async function onRowDblClick(item: BubbleItem): Promise<void> {
   }
 }
 
-/** 罩死判定的行元素定位（null 安全：行不在 DOM 即不罩死） */
+// FIX007.9 收敛：rowEl 定位与退场钉高走 useListRow 共享件（boxSizing 钉 border-box
+// 已内聚——气泡行 9px 内距 content-box 膨胀 18px 教训 2026-09-28 一并带走）
 function rowEl(id: number): HTMLElement {
-  return (
-    (document.querySelector(`#page-bubbles [data-row-id="${id}"]`) as HTMLElement | null) ??
-    document.createElement("div")
-  );
+  return rowElById("#page-bubbles", id);
 }
 
 defineExpose({ refresh, cancelClearConfirm });
-
-/** 退场钉高（⑤ = design collapseRow 第一步，与清单同款）：单删/清空集体退场共用。
- * 必须同时锁 border-box——气泡行自带 9px 上下内距且默认 content-box，把 offsetHeight
- * 写进 content 高会瞬间膨胀 18px（单行"变两行再坍缩"，真窗口实测 2026-09-28） */
-function pinLeaveHeight(el: Element): void {
-  const h = el as HTMLElement;
-  h.style.boxSizing = "border-box";
-  h.style.height = `${h.offsetHeight}px`;
-}
 
 // 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 收场重拉）
 const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（同 TodoList）

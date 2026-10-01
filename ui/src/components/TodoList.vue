@@ -2,9 +2,11 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { TodoItem, TodoView } from "../../types";
+import { UI_TEXT_MAX_LEN } from "../../types";
 import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
 import { rowMaskDead, syncMaskDead } from "../composables/useMaskDead";
+import { rowElById, pinLeaveHeight } from "../composables/useListRow";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { useScrollKit } from "../composables/useScrollKit";
@@ -49,12 +51,9 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
 
 // —— 勾选 / 点击语义 ——
 
-/** 罩死判定的行元素定位（null 安全：行不在 DOM 即视为不罩死——塌缩离场中） */
+// FIX007.9 收敛：rowEl 定位走 useListRow 共享件（页选择器参数化）
 function rowEl(id: number): HTMLElement {
-  return (
-    (document.querySelector(`#page-todos [data-row-id="${id}"]`) as HTMLElement | null) ??
-    document.createElement("div")
-  );
+  return rowElById("#page-todos", id);
 }
 
 /** 勾选翻转（⑥ = design 勾选分支时序 1:1）。勾选视觉用 **DOM 直改**（input.checked
@@ -69,6 +68,9 @@ function rowEl(id: number): HTMLElement {
 const toggleTimers = new Map<number, number>();
 async function toggle(item: TodoItem): Promise<void> {
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行勾选失效（V0.022 定案）
+  // FIX007.4 in-flight 守卫：主拍在飞的同名行二次点击直接忽略（无守卫时第二次
+  // invoke 把落库翻回，拍子到点刷新行"弹回" = 勾选意图被静默撤销）
+  if (toggleTimers.has(item.id)) return;
   const wasUndone = item.done === false; // 未完成 → 勾选入档方向
   try {
     await invoke("todo_toggle", { id: item.id });
@@ -92,11 +94,7 @@ async function toggle(item: TodoItem): Promise<void> {
   }
 }
 
-/** 退场钉高（⑤ = design collapseRow 第一步 1:1）：height 从 auto 收 0 不可过渡，
- * leave 前先把实测高度钉成内联起点，塌缩动画才有过渡区间——缺失即"行直接消失" */
-function pinLeaveHeight(el: Element): void {
-  (el as HTMLElement).style.height = `${(el as HTMLElement).offsetHeight}px`;
-}
+// FIX007.9 收敛：退场钉高走 useListRow 共享件（pinLeaveHeight 导入名即模板绑定名）
 
 let clickTimer: number | undefined;
 function onRowClick(item: TodoItem, e: MouseEvent): void {
@@ -326,7 +324,7 @@ onUnmounted(() => {
             v-if="editingId === item.id"
             v-model="editDraft"
             class="t-edit"
-            maxlength="12"
+            :maxlength="UI_TEXT_MAX_LEN"
             @keydown.enter="commitEdit(item)"
             @blur="commitEdit(item)"
             @keydown.esc="editingId = null"

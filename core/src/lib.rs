@@ -33,6 +33,9 @@ use storage::Storage;
 // 慢速拖动都会造成 Moved 静默 >150ms，仅凭静默会在拖动中误吸（"还没松手就吸
 // 走又回到手里"）；左键按住 = 必在拖动，绝不吸附。启动恢复的单次程序性 Moved
 // 左键未按 → 不置位 → 默认落位 40px 不被吸
+/// 拖动静默阈值（FIX007.14 单源：置位判定与松手判定共用，两处必须同值否则
+/// 吸附手感错乱）
+const DRAG_QUIET_MS: u64 = 150;
 static LAST_MOVED_MS: AtomicU64 = AtomicU64::new(0);
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static DRAG_SNAP_PENDING: AtomicBool = AtomicBool::new(false);
@@ -63,7 +66,7 @@ mod win_input {
 }
 
 /// 贴边吸附判定与落位（PL017.4）：读开关（锁失败跳过——吸附是体验增强层，
-/// 容错白名单候选）→ 取所在显示器 → snap_position 算修正位 → 与当前位不同
+/// 容错白名单已登记 FIX006.14）→ 取所在显示器 → snap_position 算修正位 → 与当前位不同
 /// 才 set_position（幂等防环：吸附位仍在阈值内，不判等会 Moved→snap 死循环）。
 /// 坐标基准 = **视觉（client）矩形**：Windows 无边框窗口带不可见 resize 边
 /// （左右 ~8px、顶 0——用户截图像素实测右吸附落位 13px = 5+8），outer 矩形
@@ -136,7 +139,7 @@ fn default_position(
     // 300×400 字面量——conf 尺寸调整后落位偏移自动跟随，无双处漂移
     let inner = window.inner_size()?;
     let win_w = inner.width as i32;
-    let win_h = inner.height as i32; // 与实验场卡片 300×400 一致（用户定案复刻）
+    let win_h = inner.height as i32;
     Ok(PhysicalPosition::new(
         pos.x + size.width as i32 - win_w - MARGIN_PX,
         pos.y + size.height as i32 - win_h - MARGIN_PX,
@@ -528,7 +531,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // pending 单线程守到"左键已松 + 静默 ≥150ms"→ 吸附一次
                 let now = crate::tray::now_ms();
                 let last = LAST_MOVED_MS.swap(now, Ordering::Relaxed);
-                let dragging = now.saturating_sub(last) <= 150;
+                let dragging = now.saturating_sub(last) <= DRAG_QUIET_MS;
                 #[cfg(target_os = "windows")]
                 let dragging = dragging || win_input::left_down();
                 if dragging {
@@ -544,7 +547,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if crate::tray::now_ms()
                             .saturating_sub(LAST_MOVED_MS.load(Ordering::Relaxed))
-                            < 150
+                            < DRAG_QUIET_MS
                         {
                             continue; // 刚松手还在惯性/最后移动
                         }

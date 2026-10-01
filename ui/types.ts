@@ -1,5 +1,9 @@
 // IPC DTO 镜像类型：Rust serde 为契约单一来源（core/src/todo.rs、commands/todo.rs），防多处声明漂移
 
+/** UI 文本输入上限（FIX007.10 单源：三处 maxlength 引用；= Rust MAX_TEXT_LEN 24
+ * 的一半兼容余量，联动关系锚 core/src/todo.rs 注释——改上限两端同步） */
+export const UI_TEXT_MAX_LEN = 12;
+
 /** 龄期提醒档位（镜像 AgeLevel；裁决在 Rust，前端只读渲染） */
 export type AgeLevel = "None" | "Yellow" | "Red";
 

@@ -6,6 +6,7 @@ import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
+import { pinLeaveHeight } from "../composables/useListRow";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
@@ -220,11 +221,7 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
   },
 );
 
-/** 退场钉高（⑤ = design collapseRow 第一步 1:1，与清单同款）：height auto→0 不可
- * 过渡，leave 前钉实测高度作过渡起点，缺失即"行直接消失" */
-function pinLeaveHeight(el: Element): void {
-  (el as HTMLElement).style.height = `${(el as HTMLElement).offsetHeight}px`;
-}
+// FIX007.9 收敛：退场钉高走 useListRow 共享件（导入名即模板 @before-leave 绑定名）
 
 /** 勾选退回（⑥ = design 归档分支时序 1:1）：invoke 成功后**乐观置位**——勾选框
  * 熄灭 + 删除线摘除（design input.checked=false + 摘 is-done 的立即置位，退回视觉
@@ -234,6 +231,8 @@ function pinLeaveHeight(el: Element): void {
 const restoringIds = ref(new Set<number>());
 const restoreTimers = new Map<number, number>();
 async function restore(item: TodoItem): Promise<void> {
+  // FIX007.4 in-flight 守卫：主拍在飞二次点击忽略（与 TodoList toggle 同病同修）
+  if (restoreTimers.has(item.id)) return;
   try {
     await invoke("todo_toggle", { id: item.id });
     restoringIds.value.add(item.id);

@@ -123,11 +123,13 @@ function seed(): void {
   state.whiteboard = "白板草稿：玻璃质感是三层叠加的产物……（长文种子，验证板内滑杆与防抖保存）";
 }
 
-/** 文本校验（对齐 Rust TodoError 语义：trim 后非空、≤100 字符） */
+/** 文本校验（对齐 Rust TodoError 语义：trim 后非空、≤MAX_TEXT_LEN=24 字符
+ * [core/src/todo.rs 单一来源，UI maxlength 12 = 其 2 倍余量]——FIX007.8 原 100
+ * 为 PL002 旧值，IAB 测不到真机拒绝语义） */
 function validateText(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return "待办文本不能为空";
-  if (trimmed.length > 100) return "待办文本过长";
+  if (trimmed.length > 24) return "待办文本过长";
   return null;
 }
 

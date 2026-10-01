@@ -204,8 +204,10 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     use std::time::Duration;
 
     // 1. 杀旧线程（无旧线程则跳过）并轮询等待退出——旧线程退出循环时 Unregister
-    //    热键，保证新注册不被自己占位
-    let old = THREAD_ID.swap(0, Ordering::SeqCst);
+    //    热键并自行 CAS 清零 tid（:254-259 配套），父侧只投递 WM_QUIT 不代清
+    //    （FIX007.3：原 swap(0) 先行清零令等待条件恒假 = 死等待，且剥夺旧线程
+    //    CAS 成功权致 Unregister/Register 竞窗）
+    let old = THREAD_ID.load(Ordering::SeqCst);
     if old != 0 {
         // 投递失败短重试（目标线程消息队列未建时投递会失败，FIX004.7-②）
         for _ in 0..10 {

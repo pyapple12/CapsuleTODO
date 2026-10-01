@@ -35,6 +35,9 @@ pub const MENU_WIDTH: f64 = 100.0;
 /// 菜单窗高度（逻辑像素）：四项 × 行高 34 + 上下内距 10
 pub const MENU_HEIGHT: f64 = 146.0;
 
+/// 弹出物与托盘图标的锚定间距（物理 px，FIX007.13 单源：菜单窗/预览窗两锚定共用）
+const ANCHOR_MARGIN: i32 = 8;
+
 /// 守候相位（预览显隐状态机）：Idle 无事；Armed 已武装（Enter 已触发，图标上
 /// 持续停留满 500ms 才显示）；Shown 显示中（离开两区域 400ms 隐藏）；
 /// Suppressed 右键锁死（菜单活跃期，探测到菜单收起才解除，解除后需新 Enter
@@ -267,11 +270,10 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
     let Ok(size) = menu_win.outer_size() else {
         return;
     };
-    const MARGIN: i32 = 8;
     let mut px = rx + rw / 2; // 左缘 = 图标中轴
-    let mut py = ry - size.height as i32 - MARGIN; // 默认图标上方
+    let mut py = ry - size.height as i32 - ANCHOR_MARGIN; // 默认图标上方
     if py < 0 {
-        py = ry + rh + MARGIN; // 任务栏在顶部 → 翻下方
+        py = ry + rh + ANCHOR_MARGIN; // 任务栏在顶部 → 翻下方
     }
     // 先落位再取所在屏（窗口在屏外 -2000 时 monitor 判定不可靠），超右缘左移
     if let Err(err) = menu_win.set_position(tauri::PhysicalPosition::new(px, py)) {
@@ -279,8 +281,8 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
     }
     if let Ok(Some(mon)) = menu_win.current_monitor() {
         let screen_right = mon.position().x + mon.size().width as i32;
-        if px + size.width as i32 > screen_right - MARGIN {
-            px = screen_right - MARGIN - size.width as i32;
+        if px + size.width as i32 > screen_right - ANCHOR_MARGIN {
+            px = screen_right - ANCHOR_MARGIN - size.width as i32;
             if let Err(err) = menu_win.set_position(tauri::PhysicalPosition::new(px, py)) {
                 eprintln!("菜单窗贴边修正失败：{err}");
             }
@@ -305,11 +307,10 @@ fn anchor_preview(w: &tauri::WebviewWindow, tray_top: i32, tray_right: i32, tray
     let Ok(size) = w.outer_size() else {
         return;
     };
-    const MARGIN: i32 = 8;
     let px = tray_right - size.width as i32; // 右对齐托盘图标
-    let mut py = tray_top - size.height as i32 - MARGIN; // 默认托盘上方
+    let mut py = tray_top - size.height as i32 - ANCHOR_MARGIN; // 默认托盘上方
     if py < 0 {
-        py = tray_bottom + MARGIN; // 翻到下方
+        py = tray_bottom + ANCHOR_MARGIN; // 翻到下方
     }
     if let Err(err) = w.set_position(tauri::PhysicalPosition::new(px, py)) {
         eprintln!("预览窗定位失败：{err}");
@@ -370,6 +371,17 @@ pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
         };
         match action {
             WatchAction::Show => {
+                // FIX007.17 竞态复核：状态提交（锁内）与窗口执行（锁外）之间有毫秒级
+                // 空窗——主线程此间处理右键会置 Suppressed 并收窗，无复核则预览窗
+                // 伴菜单弹出且无人收走（滞留至下次 hover）。重入锁复核"仍 Shown 且
+                // 菜单未开"再显示，任一变了放弃（后续拍按当前相位处理）
+                let confirmed = {
+                    let st = lock_watch();
+                    matches!(st.phase, Phase::Shown { .. }) && !menu_is_open(&handle)
+                };
+                if !confirmed {
+                    continue;
+                }
                 anchor_preview(&w, anchors.0, anchors.1, anchors.2);
                 if let Err(err) = w.show() {
                     eprintln!("预览窗显示失败：{err}");

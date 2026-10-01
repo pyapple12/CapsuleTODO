@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { UI_TEXT_MAX_LEN } from "../../types";
 
 // 添加行（PL008.7 重构）：REC 按钮（average-swan-99 直引配方）+ plastic-parrot-88 输入框。
 // 回车/REC 双触发；空文本禁用；失败可见反馈（成功即清空并清除错误，沿 FIX001.5 模式）。
@@ -33,7 +34,7 @@ async function add(): Promise<void> {
         v-model="draft"
         class="input"
         type="text"
-        maxlength="12"
+        :maxlength="UI_TEXT_MAX_LEN"
         placeholder="添加一条待办…"
         @keydown.enter="add"
       />

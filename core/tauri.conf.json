@@ -4,7 +4,8 @@
   "identifier": "com.pyapple12.capsule-todo",
   "build": {
     "frontendDist": "../dist",
-    "beforeDevCommand": "npm run build"
+    "beforeDevCommand": "npm run build",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [

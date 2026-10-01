@@ -50,10 +50,14 @@ onMounted(async () => {
     root.style.background = "transparent";
   }
   await refresh();
-  // 开关事实源变化（任意入口切换）→ 勾选态回显
+  // 开关事实源变化（任意入口切换）→ 勾选态回显（FIX007.6 补 catch：注册失败落
+  // 日志不中断，常驻窗无自愈机会）
   unlistenPrefs = await listen<PrefsView>("prefs-changed", (event) => {
     snapOn.value = event.payload.snap_to_edge;
     topOn.value = event.payload.always_on_top;
+  }).catch((err) => {
+    console.error("prefs-changed 监听注册失败", err);
+    return undefined;
   });
 });
 
