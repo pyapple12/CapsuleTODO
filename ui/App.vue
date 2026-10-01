@@ -41,6 +41,8 @@ let unlistenClose: UnlistenFn | undefined;
 let unlistenBubbleChanged: UnlistenFn | undefined;
 // 托盘预览打勾同步句柄（PL018.6）：主窗随 todo-changed 刷新
 let unlistenTodoChanged: UnlistenFn | undefined;
+// 窗口偏好回显句柄（PL021）：托盘菜单切开关广播 prefs-changed → 设置板同步
+let unlistenPrefsChanged: UnlistenFn | undefined;
 const whiteboardRef = ref<InstanceType<typeof WhiteboardView> | null>(null);
 
 // 二期三页签（PL004）：清单（一期功能）/ 气泡（临时剪贴板）/ 白板（临时草稿）
@@ -224,6 +226,15 @@ onMounted(async () => {
   unlistenTodoChanged = await listen("todo-changed", () => {
     onListChanged();
   });
+  // 窗口偏好回显（PL021，补齐 PL018.3 三入口双向）：托盘菜单切开关落库后广播
+  // → 设置板 ref 同步刷新（托盘侧勾选态由 TrayMenu.vue 自身监听同款事件负责）
+  unlistenPrefsChanged = await listen<{ always_on_top: boolean; snap_to_edge: boolean }>(
+    "prefs-changed",
+    (event) => {
+      alwaysOnTop.value = event.payload.always_on_top;
+      snapToEdge.value = event.payload.snap_to_edge;
+    },
+  );
   getCurrentWindow()
     .isFocused()
     .then((focused) => {
@@ -259,6 +270,7 @@ onUnmounted(() => {
   unlistenClose?.();
   unlistenBubbleChanged?.();
   unlistenTodoChanged?.();
+  unlistenPrefsChanged?.();
 });
 </script>
 

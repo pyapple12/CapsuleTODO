@@ -375,3 +375,11 @@
 - [x] PL021.3 定位与宽度实调 —— 菜单窗锚定改**左缘对齐图标水平中轴向右展开**（用户定案，区别预览窗右对齐），纵向同预览窗规则（默认上方、屏上缘放不下翻下方），屏右缘放不下整体左移贴边（先落位再取 current_monitor，防屏外 monitor 误判）；宽度 150 → 100（用户两次定案）；**发现 WebView2 创建期 inner_size 宽度受最小 bounds 钳制**（60/100 均被抬至 136 逻辑/170 物理，高度精确不受影响；减法实验 + GetClientRect/DwmGetWindowAttribute 实测定案；预览窗 200 从未低于线故未暴露）——**创建后 set_size 重设绕过**（预览窗 resize 先例），实测 100 逻辑 = 125 物理 @125% 精确；验证：cargo test 131 绿 + DWM bounds 实测对账
 - [x] PL021.4 收口 —— AGENTS 状态头 V0.1.8.0（含 WebView2 宽度钳制实测注记）+ Cargo.toml 0.1.7→0.1.8（minor：菜单形态重做 + 新窗口）+ z.plan.md 补记 PL019/PL020/PL021 三段立项（此前三轮用户报告驱动漏立项，用户指正补齐）+ commit 待用户审阅；验证：门禁 fmt/clippy/test（131）/vue-tsc/build 全绿
 - [x] PL021.5 托盘"退出"未真正结束进程修复（收口时用户报"点退出后托盘图标没关闭"）—— **第一轮误诊教训**：未验证进程死活即断言"幽灵图标"（NIM_DELETE 未执行），ExitRequested 显式删托盘修后用户回执"图标依然健在"，tasklist 双确认**进程根本没退出**——真根因 = exit 动作只销毁主窗，tray-preview/tray-menu 两个隐藏窗撑住 tao 事件循环，进程持续存活，托盘图标健在恰是 app 活着的正确表现；且此缺陷自 PL019"退出入口"落地即存在（当时仅验证位置落盘未验证进程死活）；**修复** = tray_menu_action("exit") 销毁全部窗口：主窗 close() 走完整保存链（红线不破）+ 两托盘窗 destroy() → 全窗销毁事件循环自然退出 → App drop 删托盘；配套保留 RunEvent::ExitRequested 显式 remove_tray_by_id（双保险）+ 守候线程 5s 缺席自灭退出口；验证：cargo test 131 绿 + live 用户点退出后主窗消失/托盘图标消失/tasklist 确认进程死（三重闭环）
+
+### PL022: 设置板偏好同步与菜单文案 [2026-10-01 用户目验驱动]
+
+> 范围：PL021 收口验证两点——①托盘菜单切贴边/置顶后设置板开关不同步（根因 = 前端从未监听 prefs-changed，PL018.3"三入口双向"只实现了托盘勾选态方向，设置板回显缺失）②菜单首项"显示主窗"改"聚焦主窗"（show+focus 本就是聚焦语义，用户定案）。最小化不处理（app 无最小化入口，用户确认无法触发）。
+
+- [x] PL022.1 设置板偏好同步 —— ui/App.vue onMounted 加 listen("prefs-changed", { always_on_top, snap_to_edge }) → alwaysOnTop/snapToEdge ref 同步刷新（v-model 链自动回显设置板，补齐 PL018.3 三入口双向另一半）；unlistenPrefsChanged 句柄 + onUnmounted 清理（沿 todo-changed 先例）；验证：vue-tsc + build 绿 + live 托盘切开关设置板即时翻转（2026-10-01 已落，用户回执通过）
+- [x] PL022.2 菜单文案 —— TrayMenu.vue 首项"显示主窗"→"聚焦主窗"（用户定案：无论隐藏托盘/被程序遮挡/透明失焦态，点击 = 马上聚焦拉到最前；show+focus 现实现即此语义，纯文案）；验证：live 菜单文案生效（2026-10-01 已落）
+- [x] PL022.3 收口 —— AGENTS 状态头/版本线 V0.1.8.1（R+1 修订，Cargo.toml 0.1.8 不动）+ z.plan.md 补记 PL022 立项 + commit 待用户审阅；验证：门禁全绿（2026-10-01 收口）

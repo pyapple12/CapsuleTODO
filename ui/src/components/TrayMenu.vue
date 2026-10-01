@@ -68,7 +68,7 @@ onUnmounted(() => {
   <div class="tray-menu">
     <button class="tm-item" type="button" @click="onAction('show')">
       <span class="tm-check" aria-hidden="true"></span>
-      <span class="tm-text">显示主窗</span>
+      <span class="tm-text">聚焦主窗</span>
     </button>
     <button class="tm-item" type="button" @click="onAction('snap')">
       <span class="tm-check" aria-hidden="true">
