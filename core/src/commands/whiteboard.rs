@@ -24,7 +24,7 @@ pub fn whiteboard_save(content: String, ctx: State<'_, AppContext>) -> Result<()
 }
 
 /// whiteboard_save 核心实现：校验 + 落库（FIX007.16 校验 ? 直转——mod.rs
-/// From<WhiteboardError> 已有，删手写 map_err 对齐同文件其余命令）
+/// `From<WhiteboardError>` 已有，删手写 map_err 对齐同文件其余命令）
 pub fn whiteboard_save_core(content: &str, ctx: &AppContext) -> Result<(), CommandError> {
     validate_content(content)?;
     let storage = ctx.lock_storage()?;

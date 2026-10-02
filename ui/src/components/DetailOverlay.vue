@@ -141,17 +141,21 @@ let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
 /** 保存失败可见反馈（FIX007.7，对齐 AddBar 错误行模式；成功/新输入即清） */
 const saveError = ref("");
-/** 最近一次成功落库的标题基准（FIX007.5）：相等判定对基准比而非 props.todo——
- * App 刷新不回写 detailTodo，props 是陈旧快照，"改 A→B 再改回 A"对陈旧值恒相等
- * = 跳过保存 = UI/DB 静默分叉 */
-let lastSavedText: string | null = null;
+/** 最近一次成功落库的标题基准（FIX007.5 基准机制 + FIX008.2 带条目 id）：相等
+ * 判定对基准比而非 props.todo——App 刷新不回写 detailTodo，props 是陈旧快照，
+ * "改 A→B 再改回 A"对陈旧值恒相等 = 跳过保存 = UI/DB 静默分叉；id 锚定防跨
+ * 条目残留——基准只对所属条目生效，晚到的 flush 回调不污染新会话 */
+let lastSavedText: { id: number; text: string } | null = null;
 watch(titleDraft, (text) => {
   const todo = props.todo;
   saveError.value = ""; // 新输入即清（FIX007.7）
   // FIX004.1：相等分支必须清未决快照——只 return 会残留上一变更的定时器，
   // 300ms 内改回原文时到点仍把中间草稿写库（UI 原文 / DB 草稿分叉）。
-  // 基准取序：lastSaved（本会话已落库值）→ props（板打开时初值）
-  const savedBase = lastSavedText ?? todo?.text ?? null;
+  // 基准取序：lastSaved（id 匹配的已落库值，FIX008.2）→ props（板打开时初值）
+  const savedBase =
+    lastSavedText != null && lastSavedText.id === todo?.id
+      ? lastSavedText.text
+      : (todo?.text ?? null);
   if (todo == null || text === savedBase) {
     clearTimeout(renameTimer);
     renamePending = null;
@@ -165,7 +169,10 @@ watch(titleDraft, (text) => {
     if (pending == null) return;
     void invoke("todo_rename", { id: pending.id, text: pending.text })
       .then(() => {
-        lastSavedText = pending.text; // FIX007.5 基准随落库推进
+        // FIX008.2：基准只写当前板内条目——切条目后晚到的落库回调不污染新会话
+        if (props.todo?.id === pending.id) {
+          lastSavedText = { id: pending.id, text: pending.text };
+        }
         emit("changed");
       })
       .catch((err) => {
@@ -180,21 +187,31 @@ watch(titleDraft, (text) => {
 /** 笔记待保存快照（null = 无未决保存） */
 let notePending: { id: number; note: string } | null = null;
 let noteTimer: number | undefined;
-/** 最近一次成功落库的笔记基准（FIX007.5，同改名基准机制） */
-let lastSavedNote: string | null = null;
-// 切换条目时重置基准（lastSaved 属于上一条目，跨条目残留会误判相等/误建 pending）
+/** 最近一次成功落库的笔记基准（FIX007.5，同改名基准机制；FIX008.2 带条目 id） */
+let lastSavedNote: { id: number; note: string } | null = null;
+// 切换条目时重置基准与未决快照（FIX008.2）：基准属于上一条目，跨条目残留会误判
+// 相等/误建 pending；未决草稿的写回已由 props.todo watcher 的 flushPending 先行
+// 负责，此处作废安全——titleDraft/noteDraft 两个装载消费 watch 按创建序先于本
+// watch 执行，装载新文本时基准 id 不匹配回落 props 初值，不再以新文本误建无果写
 watch(
   () => props.todo?.id,
   () => {
     lastSavedText = null;
     lastSavedNote = null;
+    clearTimeout(renameTimer);
+    clearTimeout(noteTimer);
+    renamePending = null;
+    notePending = null;
   },
 );
 watch(noteDraft, (note) => {
   const todo = props.todo;
   saveError.value = ""; // 新输入即清（FIX007.7）
-  // FIX004.1 同构：相等分支清未决快照（同"改回原文"残留）
-  const savedBase = lastSavedNote ?? todo?.note ?? null;
+  // FIX004.1 同构：相等分支清未决快照（同"改回原文"残留）；基准 id 匹配才生效
+  const savedBase =
+    lastSavedNote != null && lastSavedNote.id === todo?.id
+      ? lastSavedNote.note
+      : (todo?.note ?? null);
   if (todo == null || note === savedBase) {
     clearTimeout(noteTimer);
     notePending = null;
@@ -208,7 +225,10 @@ watch(noteDraft, (note) => {
     if (pending == null) return;
     void invoke("todo_set_note", { id: pending.id, note: pending.note })
       .then(() => {
-        lastSavedNote = pending.note; // FIX007.5 基准随落库推进
+        // FIX008.2：基准只写当前板内条目（同改名侧）
+        if (props.todo?.id === pending.id) {
+          lastSavedNote = { id: pending.id, note: pending.note };
+        }
         emit("changed");
       })
       .catch((err) => {
@@ -232,7 +252,10 @@ async function flushPending(): Promise<void> {
     jobs.push(
       invoke("todo_rename", { id: rename.id, text: rename.text })
         .then(() => {
-          lastSavedText = rename.text; // FIX007.5 基准随落库推进
+          // FIX008.2：flush 晚于切条目时回调落在新会话——id 不匹配不写基准
+          if (props.todo?.id === rename.id) {
+            lastSavedText = { id: rename.id, text: rename.text };
+          }
           emit("changed");
         })
         .catch((err) => {
@@ -245,7 +268,10 @@ async function flushPending(): Promise<void> {
     jobs.push(
       invoke("todo_set_note", { id: note.id, note: note.note })
         .then(() => {
-          lastSavedNote = note.note; // FIX007.5 基准随落库推进
+          // FIX008.2：同 flush 改名侧，id 不匹配不写基准
+          if (props.todo?.id === note.id) {
+            lastSavedNote = { id: note.id, note: note.note };
+          }
           emit("changed");
         })
         .catch((err) => {

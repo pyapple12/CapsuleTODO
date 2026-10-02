@@ -1,6 +1,8 @@
 // ===== 列表行通用小工具（FIX007.9 收敛 FIX005.24 遗漏面）：rowEl 定位 /
-// pinLeaveHeight 退场钉高 / 180ms 单双击消歧。TodoList/BubblesView/ArchiveOverlay
-// 三列表组件共用
+// pinLeaveHeight 退场钉高。TodoList/BubblesView/ArchiveOverlay 三列表组件共用
+// （180ms 单双击消歧维持两组件本地实现——FIX007.9 裁量在案：迁移牵动
+// installDragHooks cancelPendingClick 签名收益低风险高；曾建的共享件零引用
+// 已随 FIX008.6 删除）
 
 /**
  * 按条目 id 定位行元素（罩死判定/视觉直改的取元素入口）
@@ -26,29 +28,4 @@ export function pinLeaveHeight(el: Element): void {
   const h = el as HTMLElement;
   h.style.boxSizing = "border-box";
   h.style.height = `${h.offsetHeight}px`;
-}
-
-/**
- * 单击/双击消歧计时器（design 单击延迟 180ms 等可能的双击）：双击语义的组件
- * 持有句柄，单击先起 180ms 拍子、双击到来自行 clearTimeout
- */
-export function useClickDisambiguate() {
-  let timer: number | undefined;
-
-  /** 起单击拍子：180ms 内无双击到来则执行 */
-  function arm(single: () => void): void {
-    timer = window.setTimeout(single, 180);
-  }
-
-  /** 双击到来：撤单击拍子 */
-  function cancel(): void {
-    clearTimeout(timer);
-  }
-
-  /** 卸载清理 */
-  function dispose(): void {
-    clearTimeout(timer);
-  }
-
-  return { arm, cancel, dispose };
 }

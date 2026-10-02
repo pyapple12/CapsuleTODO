@@ -467,3 +467,24 @@
 - [x] FIX007.16 [P3] whiteboard map_err 收敛 —— 校验改 `?` 直转（From<WhiteboardError> 已有）；验证：cargo test 绿（2026-10-02 已落）
 - [x] FIX007.17 [P3] Show/Suppressed 竞态复核 —— 守候线程 Show 动作执行前重入锁复核 `phase 仍 Shown && !menu_is_open`（决策/执行空窗从 100ms 压至微秒级），任一变放弃由后续拍按当前相位处理；验证：cargo test 133 绿 + live 右键与显示瞬间交替预览不伴菜单滞留（2026-10-02 已落，live 回执待用户）
 - [x] FIX007.18 [P3] 收尾验证 —— 全量门禁 fmt --check/clippy -D warnings/cargo test 133/vue-tsc/build/prettier/cargo build --examples 全绿 + app 重编拉起；live 回归清单交用户（双击勾选/换热键连打/详情板改名回退/气泡清空/托盘三件套）（2026-10-02 门禁已过，live 回执待用户；回执通过后 **FIX007 全组 18/18 闭环**）
+
+### FIX008: 第8轮审计修复 [audit#A008]
+
+> 范围：A008 P2 一条（FIX007.18 复核块锁内调窗死锁违规——修复引入回归，触发窗口恰是修复目标场景本身）+ P3 十四条（其中三条为 FIX007 修复未竟面：lastSaved 跨条目/消歧收敛/await 窗口；一条打包阻断：main.rs windows_subsystem）+ 收尾。观察项默认全不提升。连续两轮"修复引入/修复不完整"，本组收口时对各项做 diff 级互查。
+
+- [x] FIX008.1 [P2] tray.rs 复核块锁内调窗死锁违规 —— :378-381 拆两步：锁内只拷 `still_shown` bool（块表达式守卫即离），锁外 `if !still_shown || menu_is_open(&handle) { continue; }`（对齐主循环"锁外先算"形态，phase 已变时短路免一次主线程往返）；全文件 6 处 lock_watch 锁作用域复核零窗口调用残留；验证：cargo test 134 绿 + live hover 显示瞬间右键交替预览不挂死（2026-10-03 已落；live 回归用户豁免视作完成）
+- [x] FIX008.2 [P3] DetailOverlay lastSaved 跨条目残留 —— (a) id-watch 重置同时 clearTimeout×2 + renamePending/notePending 置 null（未决草稿写回由 props.todo watcher 的 flushPending 先行负责，作废安全）；(b) lastSavedText/lastSavedNote 改 `{ id, text|note }` 结构，savedBase 两处改 id 匹配才生效（不匹配回落 props 初值——装载新文本时旧基准自动失效，双保险防误建），:then 四处写基准前校验 `props.todo?.id === pending.id`（晚到 flush 回调不污染新会话）；diff 级互查九处改动联动 + 四场景推演（切换不误建/晚到不污染/FIX007.5 改回原名链保持/bubble 互斥切换 todo null 早退）；验证：vue-tsc 绿 + live 改 A 名点 B 行无多余 rename 请求 + 切 B 后输入恰为 A 旧名仍保存（2026-10-03 已落；live 回归用户豁免视作完成）
+- [x] FIX008.3 [P3] Suppressed 臂缺可见窗 Hide 兜底 —— step_watch Suppressed 臂改结算形态：先算相位去向 `next`（menu_open 保持/收了转 Idle），`window_visible` 一律 `return (next, Hide)`（"菜单开∧窗可见"与"解除瞬间残留"两形态同根顺手收）；补单测 锁死期_窗可见一律收走（两断言）；验证：cargo test 134 绿（133+1）+ live 右键后预览不滞留（2026-10-03 已落；live 回归用户豁免视作完成）
+- [x] FIX008.4 [P3] main.rs 缺 windows_subsystem —— 顶部补 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`（模块注释注记 debug 保留 stderr 日志通道、文件日志随打包三决策定）；验证：cargo build --release 绿 + `file` 实证 release exe PE 头 subsystem=GUI（debug 不受影响）；live 直启无黑窗随打包回归（2026-10-03 已落）
+- [x] FIX008.5 [P3] 白名单⑤措辞与实现边界对齐 —— AGENTS.md 白名单⑤场景收窄为"可解析为 u32 的越界整数"，负数/浮点/字符串等 serde 不可解析形态归严格报错主线（登记注记 FIX008.5）；零代码改动；验证：文档核对（2026-10-03 已落）
+- [x] FIX008.6 [P3] useClickDisambiguate 死代码处置 —— 删 useListRow.ts 死导出与文件头"180ms 消歧"字样（注记 FIX007.9 裁量在案、删除依据）；两组件本地实现维持现状；grep 验证零残留、180ms 归位两处活实现（TodoList:145/BubblesView:253）；验证：vue-tsc + build 绿（2026-10-03 已落；live 单双击行为零改动面，无回归可能）
+- [x] FIX008.7 [P3] in-flight 守卫覆盖 await 在飞窗口 —— TodoList toggle 与 ArchiveOverlay restore：守卫后同步 `set(item.id, 0)` 哨兵（clearTimeout(0) 为合法 no-op 与后续重挂幂等），catch 补 `delete`（失败摘哨兵防行永久锁死）；三流推演（正常/在飞二次点击拦截/失败摘除可再点）；验证：vue-tsc 绿 + live 双击勾选不弹回（2026-10-03 已落，live 用户已豁免本组回归）
+- [x] FIX008.8 [P3] bubble 校验 trim 口径对齐 —— validate_bubble_text 计数改 `text.trim().chars().count()`（对齐 todo::validate_text，文档措辞与实现同律）；新增用例 length_counted_after_trim（原文贴上限带空白放行 / trim 后真超限仍拒）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX008.9 [P3] 气泡行映射收敛 + trim 契约文档 —— storage.rs 抽 `fn row_to_bubble`（镜像 row_to_item 形态，list_bubbles/get_bubble 两点 Self:: 直传替换）；add_bubble 文档补"调用方须传 trim 后文本（trim 执行点在命令层）"；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX008.10 [P3] 热键锁读失败补日志 —— lib.rs unwrap_or_else 分支补 eprintln（`{err:?}` PoisonError Debug 串，对齐 parse 失败分支措辞，静默替换自定义热键可见化）；验证：cargo clippy/test 绿（2026-10-03 已落）
+- [x] FIX008.11 [P3] monitors 枚举失败补日志 —— position_on_monitor 的 `unwrap_or(false)` 改 `unwrap_or_else`（eprintln"显示器枚举失败，按越界回默认位"后回 false，越界判定语义一位不变）；文档补两态可分理由；验证：cargo clippy/test 绿（2026-10-03 已落）
+- [x] FIX008.12 [P3] emit_prefs_changed 降级登记 —— AGENTS.md 容错白名单补条目（FIX006.14 之后）：场景/降级/理由三要素齐（同族第三处：托盘勾选 FIX005.14、吸附 FIX006.14、广播本条）；零代码；验证：文档核对（2026-10-03 已落）
+- [x] FIX008.13 [P3] 热键超时孤儿线程处置 —— hotkey.rs 加 `REREGISTER_ABORTED: AtomicBool`：reregister 开头复位（上轮置位不污染本轮）；父侧 recv_timeout 超时分支置位；注册线程双查（落 tid 前 / 进消息循环前）命中自行 Unregister 退出（查二含 tid CAS 自清对齐退出路径形态）；三交错推演闭环（注册慢→查一拦 / send 与超时交错→查二拦 / 进循环后→不可达因查二未置⟹send 已达父）；验证：cargo test 热键组 135 绿 + live 换热键无残留响应（2026-10-03 已落；live 用户已豁免本组回归）
+- [x] FIX008.14 [P3] mock 热键回显序对齐 —— mock-invoke.ts 比较器反转为 `indexOf(a) - indexOf(b)` 升序（Ctrl→Alt→Shift→Win 同 Rust to_display，注释锚定测试断言）；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX008.15 [P3] .placeholder 死选择器清理 —— todos.css/bubbles.css 删联选保留 `.empty`（注释留删除依据）；grep 验证类选择器零残留（仅注释自指两处）；验证：build 绿（2026-10-03 已落）
+- [x] FIX008.16 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/vue-tsc/build/prettier 全绿）+ 全组 15 条 diff 级互查（三种纰漏模式对照：死代码 grep 零残留/哨兵三流推演/hotkey 三交错推演/关板 flush 时序解除/release PE GUI 实证）；live 回归用户豁免视作完成（2026-10-03 **FIX008 全组 16/16 闭环**）

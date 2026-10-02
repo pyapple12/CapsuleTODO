@@ -14,9 +14,9 @@
   flex: 1;
 }
 
-/* 空态（design bubbles.css 共享段同值） */
-.empty,
-.placeholder {
+/* 空态（design bubbles.css 共享段同值；.placeholder 为 design 迁移残留已随
+   FIX008.15 删除——Vue 空态统一 .empty） */
+.empty {
   margin: 24px 0;
   font-size: 13px;
   text-align: center;

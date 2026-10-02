@@ -205,11 +205,15 @@ fn step_watch(
             }
         }
         Phase::Suppressed => {
-            if menu_open {
-                (phase, WatchAction::None) // 菜单还开着：保持锁死
-            } else {
-                (Phase::Idle, WatchAction::None) // 菜单已收：解除（需新 Enter 重新武装）
+            let next = if menu_open { phase } else { Phase::Idle };
+            if window_visible {
+                // FIX008.3：Suppressed 期可见窗一律收走（复核通过到 show 落地间
+                // 右键竞入 → show 后到，预览伴菜单滞留至下次 hover 的根因）——
+                // "菜单开∧窗可见"与"解除瞬间残留"两形态同根，结算相位后顺手收
+                return (next, WatchAction::Hide);
             }
+            // 菜单开着保持锁死 / 菜单已收解除（需新 Enter 重新武装）
+            (next, WatchAction::None)
         }
     }
 }
@@ -373,13 +377,17 @@ pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
             WatchAction::Show => {
                 // FIX007.17 竞态复核：状态提交（锁内）与窗口执行（锁外）之间有毫秒级
                 // 空窗——主线程此间处理右键会置 Suppressed 并收窗，无复核则预览窗
-                // 伴菜单弹出且无人收走（滞留至下次 hover）。重入锁复核"仍 Shown 且
-                // 菜单未开"再显示，任一变了放弃（后续拍按当前相位处理）
-                let confirmed = {
+                // 伴菜单弹出且无人收走（滞留至下次 hover）。复核"仍 Shown 且菜单
+                // 未开"再显示，任一变了放弃（后续拍按当前相位处理）。
+                // FIX008.1：拆两步——锁内只拷相位 bool，menu_is_open（is_visible
+                // 同步等主线程）必须锁外调（复核块原写法持锁调窗 = 死锁铁律违规，
+                // 触发窗口恰是本复核的目标竞态本身）；phase 已变时 || 短路免一次
+                // 主线程往返。残余空窗由 step_watch Suppressed 臂窗可见 Hide 兜底
+                let still_shown = {
                     let st = lock_watch();
-                    matches!(st.phase, Phase::Shown { .. }) && !menu_is_open(&handle)
+                    matches!(st.phase, Phase::Shown { .. })
                 };
-                if !confirmed {
+                if !still_shown || menu_is_open(&handle) {
                     continue;
                 }
                 anchor_preview(&w, anchors.0, anchors.1, anchors.2);
@@ -640,6 +648,21 @@ mod tests {
         assert_eq!(
             step_watch(Phase::Suppressed, 5000, true, false, false, false),
             (Phase::Idle, WatchAction::None)
+        );
+    }
+
+    #[test]
+    fn 锁死期_窗可见一律收走() {
+        // FIX008.3：show 后到等线程交错致锁死期残留可见窗——菜单开着也收（预览
+        // 伴菜单滞留的兜底）
+        assert_eq!(
+            step_watch(Phase::Suppressed, 5000, true, false, true, true),
+            (Phase::Suppressed, WatchAction::Hide)
+        );
+        // 解除瞬间残留同根：结算 Idle 顺手收
+        assert_eq!(
+            step_watch(Phase::Suppressed, 5000, true, false, false, true),
+            (Phase::Idle, WatchAction::Hide)
         );
     }
 }

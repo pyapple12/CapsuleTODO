@@ -233,6 +233,8 @@ const restoreTimers = new Map<number, number>();
 async function restore(item: TodoItem): Promise<void> {
   // FIX007.4 in-flight 守卫：主拍在飞二次点击忽略（与 TodoList toggle 同病同修）
   if (restoreTimers.has(item.id)) return;
+  // FIX008.7：哨兵先行覆盖 await 在飞期（TodoList 同款）；失败摘哨兵防行锁死
+  restoreTimers.set(item.id, 0);
   try {
     await invoke("todo_toggle", { id: item.id });
     restoringIds.value.add(item.id);
@@ -246,6 +248,7 @@ async function restore(item: TodoItem): Promise<void> {
       }, 300), // 主拍 300ms（用户定案）
     );
   } catch (err) {
+    restoreTimers.delete(item.id); // FIX008.7：失败摘哨兵
     console.error("退回失败", err);
   }
 }

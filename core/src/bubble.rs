@@ -35,12 +35,14 @@ pub struct BubbleSnapshot {
     pub items: Vec<BubbleItem>,
 }
 
-/// 捕获文本校验：trim 后非空且不超过 MAX_BUBBLE_TEXT_LEN（按字符计）
+/// 捕获文本校验：trim 后非空且长度（trim 后按字符计，FIX008.8 对齐 todo
+/// validate_text 口径——入库形态即 trim 后文本，按原文计数会把"原文贴上限
+/// 且带首尾空白"的合规内容误拒）不超过 MAX_BUBBLE_TEXT_LEN
 pub fn validate_bubble_text(text: &str) -> Result<(), BubbleError> {
     if text.trim().is_empty() {
         return Err(BubbleError::EmptyText);
     }
-    if text.chars().count() > MAX_BUBBLE_TEXT_LEN {
+    if text.trim().chars().count() > MAX_BUBBLE_TEXT_LEN {
         return Err(BubbleError::TooLong);
     }
     Ok(())
@@ -75,5 +77,16 @@ mod tests {
             Err(BubbleError::TooLong)
         ));
         assert!(validate_bubble_text(&"字".repeat(MAX_BUBBLE_TEXT_LEN)).is_ok());
+    }
+
+    #[test]
+    fn length_counted_after_trim() {
+        // FIX008.8 口径锁定：计数对 trim 后文本——原文贴上限带空白不误拒，
+        // trim 后真超限仍拒（与入库形态一致，文档"trim 后"措辞即此语义）
+        assert!(validate_bubble_text(&format!(" {} ", "字".repeat(MAX_BUBBLE_TEXT_LEN))).is_ok());
+        assert!(matches!(
+            validate_bubble_text(&format!(" {} ", "长".repeat(MAX_BUBBLE_TEXT_LEN + 1))),
+            Err(BubbleError::TooLong)
+        ));
     }
 }

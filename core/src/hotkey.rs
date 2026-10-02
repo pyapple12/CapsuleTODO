@@ -144,6 +144,13 @@ const WM_QUIT: u32 = 0x0012;
 #[cfg(target_os = "windows")]
 static THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 注册放弃标志（FIX008.13）：父侧 500ms 等待超时置位，注册线程在落 tid 前 /
+/// 进消息循环前双查——命中自行 Unregister 退出，消除"UI 已回退、迟到注册的
+/// 新键实际生效"的状态分叉；每轮 reregister 开头复位
+#[cfg(target_os = "windows")]
+static REREGISTER_ABORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 热键触发回调（捕获流程，热键线程直调——线程模型见运行时段实现注记）；spawn 时设置，reregister 复用
 #[cfg(target_os = "windows")]
 static ON_HOTKEY: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> = std::sync::Mutex::new(None);
@@ -207,6 +214,8 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     //    热键并自行 CAS 清零 tid（:254-259 配套），父侧只投递 WM_QUIT 不代清
     //    （FIX007.3：原 swap(0) 先行清零令等待条件恒假 = 死等待，且剥夺旧线程
     //    CAS 成功权致 Unregister/Register 竞窗）
+    // 0. 复位放弃标志（FIX008.13）：上一轮超时的置位不得污染本轮新线程
+    REREGISTER_ABORTED.store(false, Ordering::SeqCst);
     let old = THREAD_ID.load(Ordering::SeqCst);
     if old != 0 {
         // 投递失败短重试（目标线程消息队列未建时投递会失败，FIX004.7-②）
@@ -239,8 +248,27 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                     ));
                     return;
                 }
+                // FIX008.13 双查之一：父侧等待超时已置放弃标志——自行注销退出，
+                // 不落 tid 不进循环（"父已回退"与"新键生效"互斥）
+                if REREGISTER_ABORTED.load(Ordering::SeqCst) {
+                    let _ = win::UnregisterHotKey(0, HOTKEY_ID);
+                    let _ = tx.send(Err("父侧等待超时已放弃，注册线程自行注销".to_string()));
+                    return;
+                }
                 THREAD_ID.store(win::GetCurrentThreadId(), Ordering::SeqCst);
                 let _ = tx.send(Ok(()));
+                // FIX008.13 双查之二：覆盖"send 与父超时交错"的微秒窗——tid 已
+                // 落位须自清（对齐消息循环退出路径的 CAS 形态）
+                if REREGISTER_ABORTED.load(Ordering::SeqCst) {
+                    let _ = win::UnregisterHotKey(0, HOTKEY_ID);
+                    let _ = THREAD_ID.compare_exchange(
+                        win::GetCurrentThreadId(),
+                        0,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    return;
+                }
                 let mut msg = win::Msg::zeroed();
                 // >0 = 收到消息；0 = WM_QUIT；<0 = 错误（错误时退出兜底防死循环）
                 while win::GetMessageW(&mut msg, 0, 0, 0) > 0 {
@@ -263,9 +291,12 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
         })
         .map_err(|err| format!("热键线程启动失败：{err}"))?;
 
-    // 3. 同步等注册结果（FIX004.7-④：超时返回 Err，不带病推进）
-    rx.recv_timeout(Duration::from_millis(500))
-        .map_err(|_| "热键注册结果等待超时".to_string())?
+    // 3. 同步等注册结果（FIX004.7-④：超时返回 Err，不带病推进）；超时即置放弃
+    //    标志（FIX008.13）——迟到注册成功的线程双查命中自行注销，状态不分叉
+    rx.recv_timeout(Duration::from_millis(500)).map_err(|_| {
+        REREGISTER_ABORTED.store(true, Ordering::SeqCst);
+        "热键注册结果等待超时".to_string()
+    })?
 }
 
 #[cfg(test)]

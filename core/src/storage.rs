@@ -330,8 +330,18 @@ impl Storage {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验；重复文本拒入库
-    /// 返回 Duplicate——PL015.5 去重裁决，手动捕获与热键捕获两入口天然同规）；
+    /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）
+    fn row_to_bubble(row: &rusqlite::Row<'_>) -> rusqlite::Result<BubbleItem> {
+        Ok(BubbleItem {
+            id: row.get(0)?,
+            text: row.get(1)?,
+        })
+    }
+
+    /// 新增气泡（文本须先经 bubble::validate_bubble_text 校验，且调用方须传
+    /// **trim 后**文本——trim 执行点在命令层，直调本方法绕过命令层即失守此契约，
+    /// FIX008.9 显形；重复文本拒入库返回 Duplicate——PL015.5 去重裁决，手动捕获
+    /// 与热键捕获两入口天然同规）；
     /// sort_order = 现存最小值 − 1（**排头插入**——design captureBubble unshift 语义：
     /// 新捕获的气泡永远在最上，升序输出即新在前；拖拽重排后取 MIN−1 依然排头）
     pub fn add_bubble(&self, text: &str) -> Result<BubbleAddOutcome, StorageError> {
@@ -360,12 +370,7 @@ impl Storage {
         let mut stmt = self
             .conn
             .prepare("SELECT id, text FROM bubbles ORDER BY sort_order ASC, id ASC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(BubbleItem {
-                id: row.get(0)?,
-                text: row.get(1)?,
-            })
-        })?;
+        let rows = stmt.query_map([], Self::row_to_bubble)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -449,12 +454,7 @@ impl Storage {
             .query_row(
                 "SELECT id, text FROM bubbles WHERE id = ?1",
                 rusqlite::params![id],
-                |row| {
-                    Ok(BubbleItem {
-                        id: row.get(0)?,
-                        text: row.get(1)?,
-                    })
-                },
+                Self::row_to_bubble,
             )
             .map_err(|err| match err {
                 rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(id),

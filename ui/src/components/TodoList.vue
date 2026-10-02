@@ -72,6 +72,10 @@ async function toggle(item: TodoItem): Promise<void> {
   // invoke 把落库翻回，拍子到点刷新行"弹回" = 勾选意图被静默撤销）
   if (toggleTimers.has(item.id)) return;
   const wasUndone = item.done === false; // 未完成 → 勾选入档方向
+  // FIX008.7：哨兵先行——await 在飞期（IPC 往返本地 1~10ms，被杀软/高载拖长时
+  // 可被人手双击命中）也受上方守卫保护；失败路径必须摘哨兵，否则该行永久
+  // has=true 再也点不动
+  toggleTimers.set(item.id, 0);
   try {
     await invoke("todo_toggle", { id: item.id });
     // 乐观视觉置位（DOM 直改，绕开响应式——见上注）
@@ -90,6 +94,7 @@ async function toggle(item: TodoItem): Promise<void> {
       }, 300), // 勾选动效主拍 300ms（用户定案）
     );
   } catch (err) {
+    toggleTimers.delete(item.id); // FIX008.7：失败摘哨兵防行锁死
     console.error("勾选失败", err);
   }
 }

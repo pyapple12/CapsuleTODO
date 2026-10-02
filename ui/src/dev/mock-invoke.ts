@@ -321,7 +321,9 @@ const handlers: Record<string, CommandHandler> = {
     if (!modOk || !mainOk) throw `热键组合不合法：${combo}`;
     if (mockBubbleHotkeyBusy) throw "热键注册失败（热键可能被其它程序占用）";
     MOCK_BUBBLE_HOTKEY = parts
-      .sort((a, b) => mods.indexOf(b) - mods.indexOf(a) || (a < b ? -1 : 1))
+      // FIX008.14：升序 = Ctrl→Alt→Shift→Win，对齐 Rust to_display 固定序（有测试
+      // 断言锚定）——回显序漂移会让 IAB 断言锁死与真机不同的假形态
+      .sort((a, b) => mods.indexOf(a) - mods.indexOf(b) || (a < b ? -1 : 1))
       .map((p) => (p === "CTRL" ? "Ctrl" : p.charAt(0) + p.slice(1).toLowerCase()))
       .join("+");
     return MOCK_BUBBLE_HOTKEY;

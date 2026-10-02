@@ -146,7 +146,9 @@ fn default_position(
     ))
 }
 
-/// 保存的位置是否落在任一显示器范围内（越界兜底：显示器拓扑变化后回默认位）
+/// 保存的位置是否落在任一显示器范围内（越界兜底：显示器拓扑变化后回默认位）。
+/// 枚举失败与真越界同回 false（判定语义不变），但失败落日志——静默回默认位
+/// 不可归因（拓扑变化属预期、枚举异常需排查，两态必须可分，FIX008.11）
 fn position_on_monitor(window: &WebviewWindow, x: i32, y: i32) -> bool {
     window
         .available_monitors()
@@ -160,7 +162,10 @@ fn position_on_monitor(window: &WebviewWindow, x: i32, y: i32) -> bool {
                     && y < pos.y + size.height as i32
             })
         })
-        .unwrap_or(false)
+        .unwrap_or_else(|err| {
+            eprintln!("显示器枚举失败，按越界回默认位：{err}");
+            false
+        })
 }
 
 /// 保存窗口位置到 configs/config.json；失败落日志不阻断关闭（容错白名单④，退出意图优先）。
@@ -292,7 +297,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .state::<AppContext>()
                     .lock_settings()
                     .map(|s| s.bubble_hotkey.clone())
-                    .unwrap_or_else(|_| settings::DEFAULT_BUBBLE_HOTKEY.to_string());
+                    .unwrap_or_else(|err| {
+                        // FIX008.10：锁中毒回默认热键可见化（对齐下方 parse 失败
+                        // 分支——静默替换用户自定义热键属不可诊断面）
+                        eprintln!(
+                            "气泡热键设置锁读失败（{err:?}），回默认 {} 注册",
+                            settings::DEFAULT_BUBBLE_HOTKEY
+                        );
+                        settings::DEFAULT_BUBBLE_HOTKEY.to_string()
+                    });
                 // FIX006.15 去 expect（A005 P3-11 同族末颗）：默认热键 parse 也走
                 // 可失败路径——失败跳过热键注册（白名单⑧"注册失败不阻断"同规），
                 // 不得中断 setup 后续托盘装配

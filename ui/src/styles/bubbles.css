@@ -3,9 +3,8 @@
    （宽度动画 + confirming 50% 红 + 0 气泡灰染 disabled）/ 满仓警告红字（age-alert 同款）/
    容器两档偏移 / 气泡行（b-text 两行截断 + 罩死过渡落常态）。数值全部沿实测定案 ===== */
 
-/* 空态（与清单共享 design 共享段同值） */
-.empty,
-.placeholder {
+/* 空态（与清单共享 design 共享段同值；.placeholder 迁移残留已随 FIX008.15 删除） */
+.empty {
   margin: 24px 0;
   font-size: 13px;
   text-align: center;
