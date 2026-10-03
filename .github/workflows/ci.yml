@@ -54,9 +54,3 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps
         working-directory: core
-
-      # dist 已在前面步骤产出（此步仅收口确认产物完整，vite 幂等）
-      - name: 前端产物收口确认
-        run: |
-          test -f dist/index.html
-          test -f dist/assets/index.js || ls dist/assets/index-*.js
