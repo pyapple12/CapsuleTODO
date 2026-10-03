@@ -66,6 +66,11 @@ function rowEl(id: number): HTMLElement {
  * 后行拍子。每行各自 300ms 到点互不取消；changed 由末拍收口一次（提前收口的
  * 全量重拉会把其他行在飞的主拍截断，"勾选瞬间坍缩"换入口复活） */
 const toggleTimers = new Map<number, number>();
+// FIX010.12 登记维持现状：本函数与 ArchiveOverlay.restore 约 30 行同构状态机
+// （哨兵先行→await→乐观视觉→300ms 拍子→末拍收口→catch 摘+收口）——FIX007.4/
+// 008.7/009.2 三轮修复均双写同构补丁（漂移成本实证）。收敛 useToggleBeat 需注入
+// archived 上抛 vs restoringIds 视觉集差异，收益与 FIX007.9 消歧件裁量同级（收益
+// 低风险高）；第三处同构出现时再做（rule of three）
 async function toggle(item: TodoItem): Promise<void> {
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行勾选失效（V0.022 定案）
   // FIX007.4 in-flight 守卫：主拍在飞的同名行二次点击直接忽略（无守卫时第二次
@@ -149,13 +154,20 @@ function onRowClick(item: TodoItem, e: MouseEvent): void {
     const r = row.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   })();
-  clickTimer = window.setTimeout(() => emit("openDetail", item, anchor), 180);
+  clickTimer = window.setTimeout(() => {
+    // FIX010.1：拍子到点复核——click 时刻校验 ≠ 180ms 后的事实（武装期间条目
+    // 可被删，如删除二态第二击与单击拍子窗口重叠），已删则静默放弃不开幽灵板
+    if (!props.items.some((it) => it.id === item.id)) return;
+    emit("openDetail", item, anchor);
+  }, 180);
 }
 
 function onRowDblClick(item: TodoItem): void {
+  // FIX010.1：掐已武装拍子前置——条目已删早退发生在 clearTimeout 之后会留下
+  // 未掐的开板拍子（同窗口同后果）
+  clearTimeout(clickTimer);
   // FIX009.4：离场塌缩窗口双击防幽灵编辑——已删条目不进行内编辑态
   if (!props.items.some((it) => it.id === item.id)) return;
-  clearTimeout(clickTimer); // 掐掉未决的开板定时器
   startInlineEdit(item);
 }
 

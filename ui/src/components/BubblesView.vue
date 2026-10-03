@@ -258,14 +258,19 @@ async function onRowClick(item: BubbleItem, e: MouseEvent): Promise<void> {
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       })()
     : { x: 0, y: 0 };
-  clickTimer = window.setTimeout(() => emit("openBubble", item, anchor), 180);
+  clickTimer = window.setTimeout(() => {
+    // FIX010.1：拍子到点复核（TodoList 同款）——武装期间气泡可被清空/删除
+    if (!items.value.some((it) => it.id === item.id)) return;
+    emit("openBubble", item, anchor);
+  }, 180);
 }
 
 async function onRowDblClick(item: BubbleItem): Promise<void> {
+  // FIX010.1：掐已武装拍子前置（同 TodoList）
+  clearTimeout(clickTimer);
   // FIX009.4：离场塌缩窗口双击防幽灵复制——已删 id 的 bubble_copy 必然 NotFound
   if (!items.value.some((it) => it.id === item.id)) return;
   if (isSuppressed()) return; // 拖拽收场落点双击不当作复制（A6，detail.js:145 同款）
-  clearTimeout(clickTimer); // 掐掉未决的开板定时器：双击只复制不开板
   if (rowMaskDead(rowEl(item.id))) return;
   try {
     await invoke("bubble_copy", { id: item.id });
@@ -287,7 +292,8 @@ function rowEl(id: number): HTMLElement {
   return rowElById("#page-bubbles", id);
 }
 
-defineExpose({ refresh, cancelClearConfirm });
+// FIX010.13：原 defineExpose({ refresh, cancelClearConfirm }) 已删——App 不持本
+// 组件模板 ref（数据自拉 + changed 事件上抛），零外部调用方
 
 // 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 收场重拉）
 const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（同 TodoList）

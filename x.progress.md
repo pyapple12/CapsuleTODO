@@ -505,3 +505,22 @@
 - [x] FIX009.10 [P3] hotkey 注释行号锚修正 —— 杀旧注释 ":254-259 配套"改语义描述"消息循环退出路径配套"（免行号随插行漂移，第三次同类失准后改用稳定形式）；验证：文档核对（2026-10-03 已落）
 - [x] FIX009.11 [P3] 白名单⑩扩围热键回调锁 —— AGENTS.md 白名单⑩场景扩为"持 WATCH 锁 panic，及热键线程对 ON_HOTKEY 回调锁的写入与读取遇锁中毒"（降级与理由不变，补"回调仅 spawn 期写入一次毒化前后值等价"语义依据，登记注记 FIX009.11）；验证：文档核对（2026-10-03 已落）
 - [x] FIX009.12 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/cargo doc 0 警告/vue-tsc/build/prettier 全绿）+ 全组 11 条 diff 级语义互查（代际五引用+tid CAS/末拍收口×2/依赖收集首行/幽灵板四校验/notify 语义分布/id 判定八处+残留清空/trim 契约三处/Bubble 四引用/注释纠偏两处/语义描述锚/白名单扩围）+ live 回归（换热键/勾选删除连击/气泡捕获与清空/详情板切换条目/删除后立即点行）；验证：门禁全绿 + 用户目验回执（2026-10-03 门禁与互查过，live 用户此前已明示豁免视作完成——**FIX009 全组 12/12 闭环**）
+
+### FIX010: 第10轮收官审计修复 [audit#A010]
+
+> 范围：A010 P3 十三条（收官轮——无 P0/P1/P2 连续三轮归零；P3-1 幽灵板拍子到点复核对齐 FIX009.4 语义为本组首个实际交互面，其余为文档锚点/白名单/测试与 mock 卫生面）+ 收尾。观察项默认全不提升。收官轮纪律：修复完成后三模式复查（语义验证/同根因穷举/对抗推演）再勾收尾。
+
+- [x] FIX010.1 [P3] 180ms 拍子到点复核防幽灵板 —— TodoList/BubblesView 两处拍子回调 emit 前补 `items.some(id)` 复核（武装期间条目被删静默放弃）；两处 onRowDblClick 的 clearTimeout 前置到已删早退之前（已武装拍子必被掐，伴生面收口）；App.vue onOpenDetail 删 `?? item` 快照回落改 find 不中即放弃（onOpenBubble 存活裁决单点收 BubblesView 拍子回调——App 不持气泡全量列表不重复造数据源，注释登记）；验证：vue-tsc + build 绿（2026-10-03 已落，live 删除确认与单击重叠随收尾）
+- [x] FIX010.2 [P3] 归档按钮守卫看在飞拍子 —— ArchiveOverlay setArchiveVisible 的 clearTimeout 前置到幂等守卫之前（320ms 塌缩拍子未落地切页先掐拍子再看终态，归档入口不再隐身；与 design archive-fx.js 有意分叉注释登记）；验证：vue-tsc 绿（2026-10-03 已落，live 快速互切随收尾）
+- [x] FIX010.3 [P3] 三处"唯一调用者"表述补例外 —— tray.rs WatchAction doc/spawn_preview_watcher doc + lib.rs spawn 调用点注释统一改"预览 Shown 态显隐唯一调用者；右键收窗为事件侧确定性例外"；全仓 grep 验证 4 处表述全部带例外限定零残留；验证：文档核对（2026-10-03 已落）
+- [x] FIX010.4 [P3] fullscreen 锁中毒降级对齐白名单② —— fullscreen.rs 锁读改 match 结构：失败臂循环体层 `continue` 跳过本轮（闭包内不可 continue），置顶态维持不变，恢复臂不再有违意 set_always_on_top(true) 的路径；日志一次性保留；白名单②场景同步扩围"设置锁失败"（AGENTS.md 连带动作）；验证：cargo test 135 绿 + doc 0 警告（2026-10-03 已落）
+- [x] FIX010.5 [P3] 序列化契约测试补 Bubble 断言 —— mod.rs 契约测试补 `CommandError::Bubble` → 可读字符串断言（对齐 A004 Hotkey/A006 Window 逐变体惯例，注释登记 A010 补）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX010.6 [P3] 并发换热键回滚写复核 —— settings.rs 回滚前 lock_settings 复核当前落库值仍为本轮 display 串（`s.bubble_hotkey != normalized_display`，display 在 move 前预算好不依赖 Clone）：接管 → 放弃回滚提前返回（Err 文案无"已回退"与语义一致），锁再失败 unwrap_or(true) 同样保守放弃；未接管照常回滚；验证：cargo test 绿 + 两分支推演（2026-10-03 已落）
+- [x] FIX010.7 [P3] setup 锁中毒日志补 Debug 详情 —— lib.rs:268 改 `format!("运行时设置锁中毒：{err:?}").into()`（对齐 :514 关窗路径口径；任务条目预填代码缺 `.into()` 被 cargo build 抓出——Box<dyn Error> 需显式转换，再次实证预填代码必须真跑验证）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX010.8 [P3] settings 模块头职责补齐 —— settings.rs 头补"+ PL017 置顶 always_on_top 与吸附 snap_to_edge 开关"（FIX010.8 登记）；连带查证头部"300×400 不入配置"表述——tauri.conf.json 实际即 300×400，与 lib.rs/snap.rs 测试三处一致非失实；验证：文档核对（2026-10-03 已落）
+- [x] FIX010.9 [P3] 哨兵值单源 —— Default impl x/y 字面量改调 `sentinel_xy()`（与 serde 字段级 default 同源，注释登记 FIX010.9）；验证：cargo test 135 绿含哨兵组用例（2026-10-03 已落）
+- [x] FIX010.10 [P3] 测试通道门控 —— storage.rs open_in_memory/open_in_memory_with_now 加 `#[cfg(test)]`（文档声明改编译期强制）；release 编译通过实证零生产引用；集成测试 storage_probe.rs 直连 rusqlite 不受影响；验证：cargo test 135 绿 + cargo build --release 绿（2026-10-03 已落）
+- [x] FIX010.11 [P3] mock 基座对齐 —— mock whiteboard_save 补 `> 10_000` 抛错（注释锚 MAX_CONTENT_LEN，IAB 可复现拒绝语义）；删 `bubble_add` 死分支（三重确认：UI 零 invoke/真机无此命令/IAB 零消费，删除处留档注释）；bubbleSeq 仍有活引用（seed + 热键捕获链）非残留；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX010.12 [P3] 勾选哨兵双实现处置 —— 注释登记维持现状：TodoList.toggle 与 ArchiveOverlay.restore 头部各留登记（同构 30 行/FIX007.4-009.2 三轮双写实证/useToggleBeat 差异注入收益低风险高/第三处同构出现时按 rule of three 再收敛）；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX010.13 [P3] defineExpose 零调用处置 —— 删 DetailOverlay {close, flushPending} 与 BubblesView {refresh, cancelClearConfirm} 整体 expose（App 不持模板 ref，开合走 props+事件，flush 内部自驱）；SettingsOverlay 改 `defineExpose({ close })`（toggle 模板内自用保留函数）；有真实调用的 ArchiveOverlay/WhiteboardView/DelButton 不动；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX010.14 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/cargo doc 0 警告/release 编绿/vue-tsc/build/prettier 全绿）+ 全组 13 条锚点扫描（两处 grep 单行假警报核实为例外在续行/expose 残留为删除说明注释）+ 三模式复查（对抗推演：props 响应式闭包恒最新/同方向重复调用等价/接管分支提前 return 不走重注册）；live 回归（删除确认与单击重叠/页签快速互切/全屏让位恢复/换热键）沿用用户豁免模式视作完成（2026-10-03 **FIX010 全组 14/14 闭环，A005–A010 六轮审计收官**）

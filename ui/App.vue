@@ -100,15 +100,21 @@ function closeDetail(): void {
   detailBubble.value = null;
 }
 
-/** 行单击开详情板：以最新视图中的条目为数据源（防陈旧）+ 行中心作飞出原点 */
+/** 行单击开详情板：以最新视图中的条目为数据源（防陈旧）+ 行中心作飞出原点。
+ * FIX010.1：find 不中（拍子武装期间条目已删）不再用快照回落——回落 = 复活死
+ * 条目开幽灵板，直接放弃开板 */
 function onOpenDetail(item: TodoItem, anchor: { x: number; y: number }): void {
+  const live = items.value.find((it) => it.id === item.id);
+  if (!live) return;
   archiveRef.value?.close();
   settingsRef.value?.close();
   detailAnchor.value = anchor;
-  detailTodo.value = items.value.find((it) => it.id === item.id) ?? item;
+  detailTodo.value = live;
 }
 
-/** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读）+ 行中心原点 */
+/** 气泡行单击开全文板：置 detailBubble（bubble-mode 单层玻璃只读）+ 行中心原点。
+ * 存活复核单点在 BubblesView 拍子回调（FIX010.1）——App 不持气泡全量列表
+ * （仅徽章计数），事件唯一来源已复核，此处不重复造数据源 */
 function onOpenBubble(item: BubbleItem, anchor: { x: number; y: number }): void {
   archiveRef.value?.close();
   settingsRef.value?.close();

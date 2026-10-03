@@ -265,7 +265,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 设置自 builder 前加载进 AppContext（PL014.2），此处直接读运行时副本
             let saved: settings::WindowSettings = match app.state::<AppContext>().lock_settings() {
                 Ok(guard) => guard.clone(), // WindowSettings 含 String 字段（热键），clone 取副本
-                Err(_) => return Err("运行时设置锁中毒".into()),
+                Err(err) => return Err(format!("运行时设置锁中毒：{err:?}").into()),
             };
             let position = match position_on_monitor(&window, saved.x, saved.y) {
                 true => PhysicalPosition::new(saved.x, saved.y),
@@ -418,7 +418,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         _ => {}
                     })
                     .build(app)?;
-                // 预览守候线程（单一常驻）：状态机驱动显隐，show/hide 唯一调用者
+                // 预览守候线程（单一常驻）：状态机驱动显隐，预览 Shown 态
+                // show/hide 唯一调用者（右键收窗例外见 tray 模块注记）
                 crate::tray::spawn_preview_watcher(app.handle());
                 // 菜单窗点外收起守候（PL021）：右键弹出期间监听点外左/右键
                 // spawn 点在 on_tray_right_button——此处无预启动

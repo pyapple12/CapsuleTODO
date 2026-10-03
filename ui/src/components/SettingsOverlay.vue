@@ -69,7 +69,8 @@ function close(): void {
   syncVeils();
 }
 
-defineExpose({ toggle, close });
+// FIX010.13：toggle 成员已从 expose 移除（模板内自用 @click，App 仅用 close）
+defineExpose({ close });
 
 /** 点板空白收板；点板外任何位置收板（panels.js 同款 document 级） */
 function onOverlayDown(e: MouseEvent): void {

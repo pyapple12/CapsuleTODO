@@ -98,12 +98,16 @@ impl Storage {
         Ok(storage)
     }
 
-    /// 打开内存库（测试专用通道，禁触真实用户数据；系统时钟）
+    /// 打开内存库（测试专用通道，禁触真实用户数据；系统时钟）。
+    /// FIX010.10：#[cfg(test)] 门控（A004 收敛先例）——文档声明改编译期强制，
+    /// release 二进制不再携带；集成测试 storage_probe.rs 直连 rusqlite 不受影响
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, StorageError> {
         Self::open_in_memory_with_now(Arc::new(system_now))
     }
 
-    /// 打开内存库并注入时间源（龄期/done_at 测试用）
+    /// 打开内存库并注入时间源（龄期/done_at 测试用）；门控同上（FIX010.10）
+    #[cfg(test)]
     pub fn open_in_memory_with_now(now: NowFn) -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory()?;
         let storage = Self { conn, now };

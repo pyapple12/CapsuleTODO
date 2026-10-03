@@ -59,7 +59,8 @@ enum Phase {
     Suppressed,
 }
 
-/// 守候单步的窗口动作（只由守候线程执行——显隐的唯一调用者；Debug 供测试）
+/// 守候单步的窗口动作（预览 Shown 态显隐的唯一调用者 = 守候线程；右键收窗为
+/// 事件侧确定性例外，见模块注记；Debug 供测试）
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum WatchAction {
     None,
@@ -336,9 +337,9 @@ pub fn reanchor_to_tray(w: &tauri::WebviewWindow) {
 }
 
 /// 预览守候线程（单一常驻，setup 启动；预览窗连续 5s 取不到即自灭退出）：100ms
-/// 步进驱动状态机，是 show/hide 的唯一调用者——事件处理只写状态，杜绝多线程
-/// 换代的孤儿窗。窗口查询与动作全在锁外执行（见循环内注释），锁内只做纯 FFI
-/// 与状态结算
+/// 步进驱动状态机，是预览 Shown 态 show/hide 的唯一调用者——事件处理只写状态
+/// （右键收窗例外见模块注记），杜绝多线程换代的孤儿窗。窗口查询与动作全在锁外
+/// 执行（见循环内注释），锁内只做纯 FFI 与状态结算
 pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || loop {

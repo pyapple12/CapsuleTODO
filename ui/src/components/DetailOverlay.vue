@@ -299,7 +299,8 @@ async function flushPending(): Promise<void> {
   }
   await Promise.all(jobs);
 }
-defineExpose({ close, flushPending });
+// FIX010.13：原 defineExpose({ close, flushPending }) 已删——App 不持本组件模板
+// ref（开合走 props + close 事件，flush 由内部 watcher/onBeforeUnmount 自驱），零外部调用方
 
 // 板外收板（design 定案语义）：mousedown 落在 overlay 外即收板——capture 挂 window，
 // 停止于 overlay 内部的交互不受影响；overlay 为 null（未挂载）时跳过

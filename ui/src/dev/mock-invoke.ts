@@ -247,15 +247,8 @@ const handlers: Record<string, CommandHandler> = {
     if (!item) throw `气泡条目不存在：${id}`;
     return null;
   },
-  bubble_add: (args) => {
-    const text = String(args.text ?? "").trim();
-    if (!text) throw "气泡文本不能为空";
-    if (text.length > 2000) throw "气泡内容过长（上限 2000 字符）";
-    const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
-    const item: MockBubble = { id: ++state.bubbleSeq, text, sort_order: min - 1 };
-    state.bubbles.push(item);
-    return item;
-  },
+  // FIX010.11：bubble_add 死分支已删除——UI 零 invoke、真机 generate_handler 无此
+  // 命令、IAB 零消费（气泡捕获走 Rust 内部热键链，不经前端命令面）
   bubble_remove: (args) => {
     const id = Number(args.id);
     const idx = state.bubbles.findIndex((x) => x.id === id);
@@ -337,7 +330,11 @@ const handlers: Record<string, CommandHandler> = {
     return state.whiteboard;
   },
   whiteboard_save: (args) => {
-    state.whiteboard = String(args.content ?? "");
+    const content = String(args.content ?? "");
+    // FIX010.11：对齐真机拒绝语义（whiteboard.rs MAX_CONTENT_LEN=10_000 超长拒绝），
+    // IAB 可复现校验分支——mock 落后真机契约的校验面反向同构
+    if (content.length > 10_000) throw "白板内容过长（上限 10000 字符）";
+    state.whiteboard = content;
     return null;
   },
 };

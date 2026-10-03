@@ -1,4 +1,5 @@
-//! 运行时设置持久化（PL003 窗口位置 + PL014.2 气泡提醒上限 + PL015 气泡热键）：
+//! 运行时设置持久化（PL003 窗口位置 + PL014.2 气泡提醒上限 + PL015 气泡热键 +
+//! PL017 置顶 always_on_top 与吸附 snap_to_edge 开关，FIX010.8 补齐职责清单）：
 //! JSON 原子写（同目录 .tmp 写入 + rename 替换，失败清理临时文件）。尺寸固定
 //! 300×400 不入配置，仅记位置；文件不存在 = 首启正常态（白名单③回默认位）。
 
@@ -87,9 +88,10 @@ impl Default for WindowSettings {
         Self {
             // FIX006.3 哨兵语义：x/y = i32::MIN 表示"首启未落位"（屏幕坐标不可达
             // 值，position_on_monitor 必判 false → 走 default_position 主屏右下
-            // 默认位）。原 0,0 恰在主屏内被误判有效位 = 首启贴左上角
-            x: i32::MIN,
-            y: i32::MIN,
+            // 默认位）。原 0,0 恰在主屏内被误判有效位 = 首启贴左上角。
+            // FIX010.9：值单源走 sentinel_xy()（与 serde 字段级 default 同源）
+            x: sentinel_xy(),
+            y: sentinel_xy(),
             max_bubbles: DEFAULT_MAX_BUBBLES,
             bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
             always_on_top: default_always_on_top(),

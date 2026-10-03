@@ -81,8 +81,20 @@ pub fn settings_set_bubble_hotkey(
     let path = settings_path_or_err()?;
     let old = settings_get_bubble_hotkey_core(&ctx)?;
     let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
+    let normalized_display = crate::hotkey::to_display(&normalized);
     #[cfg(target_os = "windows")]
     if let Err(err) = crate::hotkey::reregister(normalized) {
+        // FIX010.6：回滚写前复核当前落库值仍为本轮——reregister 失败若因并发后
+        // 发轮接管（代际失配致本线线程自灭），无条件回滚会覆盖后发轮已落库的新值
+        // （UI 显新值磁盘为旧值的分叉）；接管则放弃回滚，锁再失败同样保守放弃
+        let taken_over = ctx
+            .lock_settings()
+            .map(|s| s.bubble_hotkey != normalized_display)
+            .unwrap_or(true);
+        if taken_over {
+            eprintln!("热键设置已被并发请求接管，放弃回滚落库（err：{err}）");
+            return Err(CommandError::Hotkey(format!("热键注册失败：{err}")));
+        }
         // 回滚：恢复旧热键落库 + 重注册（FIX005.16 去 expect：parse 失败属异常态，
         // 落日志跳过重注册——热键是"失败不阻断"容错域，禁业务 panic）
         if let Err(rollback_err) = settings_set_bubble_hotkey_core(&old, &path, &ctx) {

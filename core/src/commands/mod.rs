@@ -187,5 +187,13 @@ mod tests {
                 .expect("序列化必须成功"),
             "\"主窗口不存在\""
         );
+        // A010 补：FIX009.8 新增 Bubble 变体纳入契约锁死
+        assert_eq!(
+            serde_json::to_string(&CommandError::Bubble(
+                "气泡内容过长（上限 2000 字符）".into()
+            ))
+            .expect("序列化必须成功"),
+            "\"气泡内容过长（上限 2000 字符）\""
+        );
     }
 }

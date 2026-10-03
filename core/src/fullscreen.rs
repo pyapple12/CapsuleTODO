@@ -93,18 +93,22 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(WATCH_INTERVAL_MS));
             // 置顶开关休眠（PL017.5）：置顶关 = 普通窗口，全屏画面自然盖住，
-            // 无让位可做——跳过本轮（锁失败按白名单②维持前态单次落日志）
-            let always_on_top = app
+            // 无让位可做——跳过本轮。锁失败同跳过（白名单②"维持不变"语义，
+            // FIX010.4：原假定置顶开后继续行动，恢复臂会把用户已关的置顶违意打开）
+            let always_on_top = match app
                 .state::<crate::commands::AppContext>()
                 .lock_settings()
                 .map(|s| s.always_on_top)
-                .unwrap_or_else(|err| {
+            {
+                Ok(v) => v,
+                Err(err) => {
                     if polling {
-                        eprintln!("全屏监视设置锁失败（维持当前置顶态）：{err:?}");
+                        eprintln!("全屏监视设置锁失败（跳过本轮，维持当前置顶态）：{err:?}");
                         polling = false;
                     }
-                    true
-                });
+                    continue;
+                }
+            };
             if !always_on_top {
                 continue;
             }

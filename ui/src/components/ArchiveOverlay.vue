@@ -91,10 +91,13 @@ function spawnParticles(mode: "in" | "out"): void {
   }
 }
 
-/** 按钮显隐编排：离场 = 吸气塌缩 320ms → 隐藏 + 迸裂；入场 = 汇聚 240ms → 回弹弹出 */
+/** 按钮显隐编排：离场 = 吸气塌缩 320ms → 隐藏 + 迸裂；入场 = 汇聚 240ms → 回弹弹出。
+ * FIX010.2：掐在飞拍子必须前置到幂等守卫之前——守卫只读终态标志，320ms 塌缩
+ * 拍子未落地时切页，守卫命中早退够不着拍子 → 拍子照发把按钮藏进清单页（入口
+ * 隐身需再切一轮自愈）。与 design archive-fx.js 同构守卫有意分叉（其只顾粒子面） */
 function setArchiveVisible(visible: boolean): void {
-  if (btnHidden.value === !visible) return; // 幂等守卫：防互切误喷粒子
   window.clearTimeout(animTimer);
+  if (btnHidden.value === !visible) return; // 幂等守卫：防互切误喷粒子
   btnLeaving.value = false;
   btnEntering.value = false;
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -230,6 +233,7 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
  * 拍子被 clearTimeout 掐死（TodoList toggleTimer 同根）——改 Set + Map<id, handle> */
 const restoringIds = ref(new Set<number>());
 const restoreTimers = new Map<number, number>();
+// FIX010.12 登记维持现状：与 TodoList.toggle 同构状态机（登记理由见彼处注释）
 async function restore(item: TodoItem): Promise<void> {
   // FIX007.4 in-flight 守卫：主拍在飞二次点击忽略（与 TodoList toggle 同病同修）
   if (restoreTimers.has(item.id)) return;
