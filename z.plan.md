@@ -100,6 +100,19 @@
 >
 > 状态：✅ 已完成（2026-10-03 11/11 闭环；CSP live 复验随打包回归执行）
 
+## 附录 FIX012：打包发布里程碑批（2026-10-03 立项，V0.2.0.0）
+
+> 背景：A005–A010 审计收官 + 观察项清账后进入发布里程碑。打包三决策用户定案：**正式图标 = 用户设计胶囊稿**、**分发形态 = 绿色单 exe**（zip 内 exe + 使用说明，非安装器）、**数据落址 = exe 同级**（双落址基线 release 形态，零代码）。首启默认四项同步定案：置顶关/吸附关/主题跟随系统/默认落位主屏右上。
+> 方案要点：
+>
+> - **图标管线**：2048 RGBA 设计源入库（source.png）→ `tauri icon` 生成 → 裁剪 Windows 五件套（单 exe 分发不需要 icns/UWP/移动端）→ bundle.icon 对齐；托盘经 default_window_icon 自动跟随
+> - **首启默认**：serde 钩子 + tauri.conf alwaysOnTop 双层改 false；主题种子 0（跟随，与 design 手动播种有意分叉）；default_position y 顶对齐改右上；tray 锁失败回退值/白名单措辞/测试断言全连带同步
+> - **pop 根治**：四变体隔离实验（V0 基线/V1 去过冲/V2 will-change/V3 去阴影）→ 唯 V2 消除 = transform 过渡结束合成层重光栅；三板 `.board-glass` 加 will-change: transform（诊断页 .temp/switch-pop-diag/ 留档）
+> - **双击标题缩回托盘**：main_hide_to_tray 命令复用 Alt+F4 关窗链（保存位置 + 隐藏），真退仍只走托盘菜单
+> - **发布链路**（待办尾部）：release/README.md（绿色包使用说明，非 GitHub README）→ commit V0.2.0.0 → tag v0.2.0 → 干净 staging 打 zip（.temp/release-pack/，严禁直压 target/release/）→ gh release create → 发布自查
+>
+> 状态：🚧 执行中（.1–.7 已落；.8–.11 = commit/tag/zip/发布，等用户逐级指令）
+
 ---
 
 ## 附录 PL001：玻璃壳与最小清单闭环（2026-09-17 立项）

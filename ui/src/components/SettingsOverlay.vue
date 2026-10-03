@@ -85,10 +85,13 @@ function onDocClick(e: MouseEvent): void {
   close();
 }
 
-// —— 主题三态（theme.js 1:1）：0 跟随系统 / 1 浅色 / 2 暗色；默认手动模式取系统当前深浅 ——
-
+// —— 主题三态（theme.js 1:1）：0 跟随系统 / 1 浅色 / 2 暗色 ——
+// FIX011 后默认值（用户定案 2026-10-03）：首启 = 跟随系统（0）。原为 design 原型
+// 的"手动模式按系统当前值播种"（systemDark.matches ? 2 : 1），视觉与跟随无异但
+// 三态开关语义脱离跟随——现改种子 0，watch immediate 走删 data-theme 分支交还
+// CSS media query 跟随（与 design 有意分叉，登记）
 const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
-const themeIdx = ref<0 | 1 | 2>(systemDark.matches ? 2 : 1);
+const themeIdx = ref<0 | 1 | 2>(0);
 // 跟随模式下系统深浅变化的刷新触发器：matchMedia.matches 不是响应式源，
 // computed 里读它不会自动重算——onSystemChange 里 bump 一次驱动档位显示跟随
 const systemTick = ref(0);
@@ -284,7 +287,7 @@ async function toggleSnapToEdge(e: Event): Promise<void> {
         d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm70-80h79l14-106q31-8 57.5-23.5T639-327l99 41 39-68-86-65q5-14 7-29.5t2-31.5q0-16-2-31.5t-7-29.5l86-65-39-68-99 42q-22-23-48.5-38.5T533-694l-13-106h-79l-14 106q-31 8-57.5 23.5T321-633l-99-41-39 68 86 64q-5 15-7 30t-2 32q0 16 2 31t7 30l-86 65 39 68 99-42q22 23 48.5 38.5T427-266l13 106Zm42-180q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Zm-2-140Z"
       ></path>
     </svg>
-    <span class="tooltip">settings</span>
+    <span class="tooltip">设置</span>
   </button>
 
   <div ref="overlay" class="settings-overlay" :class="{ open: isOpen }" @mousedown="onOverlayDown">

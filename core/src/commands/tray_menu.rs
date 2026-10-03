@@ -66,3 +66,18 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
         other => Err(CommandError::Window(format!("未知菜单动作：{other}"))),
     }
 }
+
+/// 双击标题缩回托盘（用户需求 2026-10-03）：复用 Alt+F4 关窗链——main.close()
+/// 触发 CloseRequested，EXITING 未置位即走既有"保存位置 + 隐藏到托盘"分支
+/// （零逻辑重复；真退仍只走托盘菜单 exit）
+#[tauri::command]
+pub fn main_hide_to_tray(app: tauri::AppHandle) -> Result<(), CommandError> {
+    if let Some(w) = app.get_webview_window("main") {
+        if let Err(err) = w.close() {
+            eprintln!("缩回托盘主窗关闭失败：{err}");
+        }
+    } else {
+        eprintln!("缩回托盘失败：主窗不存在（异常态）");
+    }
+    Ok(())
+}

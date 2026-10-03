@@ -35,16 +35,16 @@ fn default_bubble_hotkey() -> String {
     DEFAULT_BUBBLE_HOTKEY.to_string()
 }
 
-/// serde default 挂钩：旧 config.json 缺 always_on_top 字段时回填 true（PL017——
-/// 现状即置顶，老配置零迁移）
+/// serde default 挂钩：config.json 缺 always_on_top 字段时回填 false（V0.2.0.0
+/// 用户定案首启默认关——原 true 为"现状即置顶"过渡语义，置顶改由用户显式开启）
 fn default_always_on_top() -> bool {
-    true
+    false
 }
 
-/// serde default 挂钩：旧 config.json 缺 snap_to_edge 字段时回填 true（PL017——
-/// 新功能默认开，开箱即用）
+/// serde default 挂钩：config.json 缺 snap_to_edge 字段时回填 false（V0.2.0.0
+/// 用户定案首启默认关——原 true 为 PL017"默认开箱即用"语义，吸附改由用户显式开启）
 fn default_snap_to_edge() -> bool {
-    true
+    false
 }
 
 /// serde default 挂钩：config.json 缺 x/y 字段时回填哨兵（FIX007.1——字段级
@@ -87,8 +87,9 @@ impl Default for WindowSettings {
     fn default() -> Self {
         Self {
             // FIX006.3 哨兵语义：x/y = i32::MIN 表示"首启未落位"（屏幕坐标不可达
-            // 值，position_on_monitor 必判 false → 走 default_position 主屏右下
-            // 默认位）。原 0,0 恰在主屏内被误判有效位 = 首启贴左上角。
+            // 值，position_on_monitor 必判 false → 走 default_position 主屏右上
+            // 默认位，FIX011 后默认位右上）。原 0,0 恰在主屏内被误判有效位 =
+            // 首启贴左上角。
             // FIX010.9：值单源走 sentinel_xy()（与 serde 字段级 default 同源）
             x: sentinel_xy(),
             y: sentinel_xy(),
@@ -309,11 +310,12 @@ mod tests {
     #[test]
     fn window_prefs_missing_fields_backfill_defaults() {
         // PL017.1：旧 config.json 缺 always_on_top/snap_to_edge → serde default 回填
+        // （V0.2.0.0 用户定案首启默认关，回填值随缺省语义同步）
         let path = temp_path("prefs-missing.json");
         std::fs::write(&path, r#"{"x": 1, "y": 2}"#).expect("写入必须成功");
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
-        assert!(loaded.always_on_top, "置顶缺字段回填 true");
-        assert!(loaded.snap_to_edge, "吸附缺字段回填 true");
+        assert!(!loaded.always_on_top, "置顶缺字段回填 false");
+        assert!(!loaded.snap_to_edge, "吸附缺字段回填 false");
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 

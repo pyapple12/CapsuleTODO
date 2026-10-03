@@ -41,6 +41,12 @@
      --glass-bg-strong 补偿档（glass.css 头部③） */
   -webkit-backdrop-filter: blur(40px) saturate(1.6);
   backdrop-filter: blur(40px) saturate(1.6);
+  /* 开板末帧 pop 根治（V0.2.0.0 定案）：transform 过渡结束时合成器撤销动画层、
+     按 1:1 重光栅化整层——开启态开关大圆等高对比硬边读作"末帧突然放大一帧"。
+     will-change 让板全程持有独立合成层，动画结束不再重光栅。四变体隔离实验定案
+     （.temp/switch-pop-diag/）：去过冲/去阴影皆无效，唯 will-change 消除。
+     显存代价趋零——backdrop-filter 本就强制各板独立成层 */
+  will-change: transform;
   transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
   transform: scale(0);
   transition: transform 0.35s ease;

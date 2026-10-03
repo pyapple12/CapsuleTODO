@@ -148,12 +148,13 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
     crate::commands::settings::emit_prefs_changed(app, &ctx);
 }
 
-/// 贴边吸附当前值（锁失败按默认开——与托盘构建缺省语义一致）
+/// 贴边吸附当前值（锁失败按缺省关——与首启缺省语义一致，V0.2.0.0 缺省改关后
+/// 回退值同步；FIX005.14 登记的自愈语义不变）
 fn snap_current(app: &tauri::AppHandle) -> bool {
     app.state::<AppContext>()
         .lock_settings()
         .map(|s| s.snap_to_edge)
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 /// 窗口置顶当前值
@@ -161,7 +162,7 @@ fn top_current(app: &tauri::AppHandle) -> bool {
     app.state::<AppContext>()
         .lock_settings()
         .map(|s| s.always_on_top)
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 /// 守候状态机单步（纯函数，单测直测）：输入当前相位/时刻/光标位置/菜单存亡/

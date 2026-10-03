@@ -37,6 +37,9 @@
   /* blur 3→40px + saturate（2026-09-28 目验定案）：同归档板——板下内容糊到不可辨认 */
   -webkit-backdrop-filter: blur(40px) saturate(1.6);
   backdrop-filter: blur(40px) saturate(1.6);
+  /* 开板末帧 pop 根治（同归档板，定案依据见 archive.css 注释——四变体实验唯
+     will-change 消除） */
+  will-change: transform;
   transform-origin: var(--origin-x, 6px) var(--origin-y, -34px);
   transform: scale(0);
   transition: transform 0.35s ease;

@@ -339,23 +339,24 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("capsule-prefs-cmd-{}.json", std::process::id()));
         let ctx = test_context();
+        // V0.2.0.0 缺省改关：默认断言翻转，set 改写 true 验证开方向可写
         assert!(
-            settings_get_always_on_top_core(&ctx).expect("读必须成功"),
-            "默认置顶开"
+            !settings_get_always_on_top_core(&ctx).expect("读必须成功"),
+            "默认置顶关"
         );
         assert!(
-            settings_get_snap_to_edge_core(&ctx).expect("读必须成功"),
-            "默认吸附开"
+            !settings_get_snap_to_edge_core(&ctx).expect("读必须成功"),
+            "默认吸附关"
         );
-        settings_set_always_on_top_core(false, &tmp, &ctx).expect("写必须成功");
-        settings_set_snap_to_edge_core(false, &tmp, &ctx).expect("写必须成功");
-        assert!(!settings_get_always_on_top_core(&ctx).expect("读必须成功"));
-        assert!(!settings_get_snap_to_edge_core(&ctx).expect("读必须成功"));
+        settings_set_always_on_top_core(true, &tmp, &ctx).expect("写必须成功");
+        settings_set_snap_to_edge_core(true, &tmp, &ctx).expect("写必须成功");
+        assert!(settings_get_always_on_top_core(&ctx).expect("读必须成功"));
+        assert!(settings_get_snap_to_edge_core(&ctx).expect("读必须成功"));
         // 落盘重读确认持久化
         let loaded = crate::settings::load(&tmp)
             .expect("读取必须成功")
             .expect("文件必须存在");
-        assert!(!loaded.always_on_top && !loaded.snap_to_edge);
+        assert!(loaded.always_on_top && loaded.snap_to_edge);
         std::fs::remove_file(&tmp).expect("清理必须成功");
     }
 }

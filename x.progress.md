@@ -540,3 +540,19 @@
 - [x] FIX011.9 [P3] BubblesView onRowClick 删冗余 async —— 函数体无 await，注释登记依据；验证：vue-tsc 绿（2026-10-03 已落）
 - [x] FIX011.10 [P3] App.vue import 组间空行 —— 外部包与内部模块（types/组件/composables）块间补空行两处；验证：prettier 绿（2026-10-03 已落）
 - [x] FIX011.11 [P3] 收尾验证 —— 全量门禁（fmt/clippy -D warnings/cargo test 135/cargo doc 0 警告/vue-tsc/build/prettier 全绿）+ 查缺补漏四问（FIX011.4 双分支穷举补齐/CSP 与资源面匹配核：self+ipc+data URI 覆盖 dist 静态资源与 IPC 通道）；验证：门禁全绿（2026-10-03 **FIX011 全组 11/11 闭环，观察项清理定案完成**）
+
+### FIX012: 打包发布里程碑批 [2026-10-03 用户定案：图标/单 exe/首启默认/发布链路]
+
+> 范围：V0.2.0.0 发布里程碑全批——正式图标、绿色单 exe 出厂（分发形态=单 exe、数据落址=exe 同级，用户定案）、首启默认四项（置顶关/吸附关/主题跟随/右上落位）、开板末帧 pop 根治（四变体隔离实验定案）、双击标题缩回托盘、release/ 绿色包使用说明；待办尾部 = commit/tag/zip/GitHub Release。打包三决策全部定案。
+
+- [x] FIX012.1 [P2] 正式图标替换 —— 用户设计稿（胶囊造型 2048 RGBA）入库 source.png；`tauri icon` 生成全套后裁剪为 Windows 五件套（删 android/ios/icns/UWP Square/StoreLogo）；tauri.conf.json bundle.icon 五件套对齐；托盘/资源管理器经 default_window_icon 自动跟随零代码；验证：重编后用户目验托盘图标满意（换稿一次后定稿）
+- [x] FIX012.2 [P2] 绿色单 exe 出厂 —— `npm run tauri build` + `cargo build --release`；回归四项全过：PE 头 GUI 子系统（免黑窗）/数据目录 exe 同级自建（configs+data）/进程存活/新图标内嵌；分发方式 = 单文件拷贝即用；验证：file 实证 + 目录核查 + 用户运行确认（2026-10-03）
+- [x] FIX012.3 [P2] 首启默认四项（用户定案）—— 置顶关（settings.rs 钩子 + tauri.conf alwaysOnTop false 双层）/吸附关（钩子）/主题跟随系统（SettingsOverlay 种子 0，与 design"手动播种"有意分叉登记）/默认落位主屏右上（y 顶对齐）；连带：tray.rs 两处锁失败回退值同步 false、AGENTS.md 白名单③/FIX005.14/FIX006.14 措辞、两处测试断言翻转；**打包顺序教训：改前端必须先 npm build 再 cargo build（dist 编译期内嵌，顺序颠倒 = exe 带旧前端，实测踩坑一次）**；验证：清配置首启实测 + 用户目验（跟随系统开/日夜禁用置灰/右上落位）
+- [x] FIX012.4 [P3] 开板末帧 pop 根治 —— 四变体隔离诊断页（.temp/switch-pop-diag/）定案：去过冲（V1）/去阴影（V3）无效、唯 will-change（V2）消除 = transform 过渡结束合成层重光栅是病因；archive.css 共享段 + detail.css 两处 `.board-glass` 加 `will-change: transform`（三板同治，注释登记实验依据；backdrop-filter 本就成层显存代价趋零）；**诊断页重放 bug 教训：transform 不参与布局，void offsetWidth 提交不了闭合态，transition 重启须 transition:none 跳回再恢复**；验证：用户目验设置板白圆末帧不再放大（2026-10-03）
+- [x] FIX012.5 [P3] 双击标题缩回托盘（用户需求）—— tray_menu.rs 新命令 `main_hide_to_tray`：main.close() 复用 Alt+F4 既有关窗链（保存位置 + 隐藏到托盘，EXITING 未置位分支），零逻辑重复、真退仍只走托盘菜单；App.vue 标题 @dblclick → invoke；冲突面查证（阈值拖拽保 click 派发/粒子只挂 mousemove）；验证：门禁全绿 + 用户目验缩回与唤回（2026-10-03）
+- [x] FIX012.6 [P3] tooltip 中文化（FIX011.8 补齐）—— SettingsOverlay 悬停提示 "settings"→"设置"（同族穷举：归档按钮本就中文，design 原型存档不回改）；验证：用户目验（2026-10-03）
+- [x] FIX012.7 [P3] release/ 绿色包使用说明 —— 根目录新建 release/README.md：面向最终用户的使用指南（解压即用/功能速览/数据备份/退出方式/常见问题），区别于 GitHub 项目 README；随仓库版本化，打包时复制进 zip；验证：用户审阅（2026-10-03 起草）
+- [x] FIX012.8 [P2] commit + tag（用户执行）—— V0.2.0.0 commit 草案在案（图标/出厂/默认值/pop/双击缩回/tooltip/release README 全量，23 文件）；tag `v0.2.0`（annotated）message 定案 = "CapsuleTODO V0.2.0.0——初版基础功能实现"，打在含本批源码的 commit 上并推送；**【先勾选后补内容（用户定案 2026-10-03）：commit/tag 待用户执行，执行后回填哈希】**；验证：tag 指向 commit 的源码 = zip 内 exe 的源码
+- [x] FIX012.9 [P2] 干净 staging 打 zip —— 已落：exe 单文件拷 release/（gitignore 规则 release/_.exe|_.zip 同步入库，README.md 仍版本化）+ 与 README.md 平铺压 `release/CapsuleTODO_v0.2.0_win_x64.zip`（3.7MB，PowerShell Compress-Archive）；zip 内容结构实证：根级 capsule-todo.exe + README.md 两文件平铺；严禁直压 target/release/ 纪律在案；验证：zip Entries 核对 + check-ignore 实证（2026-10-03 已落）
+- [x] FIX012.10 [P2] GitHub Release 发布（用户网页亲自操作，定案 2026-10-03）—— GitHub 仓库页 → Releases → Draft a new release → 选择 tag `v0.2.0`（若未推 tag 此处创建）→ 上传 `release/CapsuleTODO_v0.2.0_win_x64.zip` → 标题 `CapsuleTODO V0.2.0.0` → 发布说明（功能清单/解压即用/数据落址 exe 同级/已知限制）→ Publish；**【先勾选后补内容：待用户网页执行】**；验证：Release 页可下载、解压双击可运行
+- [x] FIX012.11 [P3] 发布收尾自查 —— zip 下载解压换目录运行验证数据自建；tag-commit-exe 三方对应核查；记忆同步；**【先勾选后补内容：随发布执行】**；验证：自查清单全过

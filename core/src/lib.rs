@@ -125,7 +125,8 @@ fn snap_if_needed(window: &tauri::Window) {
     }
 }
 
-/// 默认落位：主屏右下距边 40px（窗口物理尺寸按当前缩放比换算）
+/// 默认落位：主屏右上距边 40px（窗口物理尺寸按当前缩放比换算；FIX011 后由
+/// 右下改右上，用户定案 2026-10-03）
 fn default_position(
     window: &WebviewWindow,
 ) -> Result<PhysicalPosition<i32>, Box<dyn std::error::Error>> {
@@ -139,10 +140,9 @@ fn default_position(
     // 300×400 字面量——conf 尺寸调整后落位偏移自动跟随，无双处漂移
     let inner = window.inner_size()?;
     let win_w = inner.width as i32;
-    let win_h = inner.height as i32;
     Ok(PhysicalPosition::new(
         pos.x + size.width as i32 - win_w - MARGIN_PX,
-        pos.y + size.height as i32 - win_h - MARGIN_PX,
+        pos.y + MARGIN_PX,
     ))
 }
 
@@ -255,12 +255,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_snap_to_edge,
             commands::tray_preview::tray_preview_resize,
             commands::tray_menu::tray_menu_action,
+            commands::tray_menu::main_hide_to_tray,
         ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
                 .expect("主窗口必须在 tauri.conf.json 中存在");
-            // 位置记忆（PL003）：有存档且未越界 → 恢复；否则默认主屏右下距边 40px
+            // 位置记忆（PL003）：有存档且未越界 → 恢复；否则默认主屏右上距边 40px
             //（文件不存在回默认 = 白名单③；损坏 JSON 严格报错不在此列）。
             // 设置自 builder 前加载进 AppContext（PL014.2），此处直接读运行时副本
             let saved: settings::WindowSettings = match app.state::<AppContext>().lock_settings() {

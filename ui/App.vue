@@ -102,6 +102,16 @@ function closeDetail(): void {
   detailBubble.value = null;
 }
 
+/** 双击标题缩回托盘（用户需求 2026-10-03）：复用关窗链（Rust 侧保存位置 +
+ * 隐藏到托盘，与 Alt+F4 同语义；真退仍只走托盘菜单） */
+async function onTitleDblClick(): Promise<void> {
+  try {
+    await invoke("main_hide_to_tray");
+  } catch (err) {
+    console.error("缩回托盘失败", err);
+  }
+}
+
 /** 行单击开详情板：以最新视图中的条目为数据源（防陈旧）+ 行中心作飞出原点。
  * FIX010.1：find 不中（拍子武装期间条目已删）不再用快照回落——回落 = 复活死
  * 条目开幽灵板，直接放弃开板 */
@@ -304,7 +314,7 @@ onUnmounted(() => {
        拖动收敛 topbar：交互区（页签/行/输入）不再依赖白名单排除，误触面归零 -->
   <main id="board" class="glass-card" :class="{ focused: windowFocused }">
     <header ref="topbarEl" class="topbar">
-      <h1 ref="titleEl" class="title">
+      <h1 ref="titleEl" class="title" @dblclick="onTitleDblClick">
         CapsuleTODO<canvas class="title-canvas" aria-hidden="true"></canvas>
       </h1>
     </header>
