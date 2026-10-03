@@ -32,6 +32,11 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      # 前端产物必须先建：generate_context! 宏在编译期读取 frontendDist(../dist)，
+      # 本地 dist 常在从未暴露，云端无产物则 clippy/test 直接 panic（首跑实证）
+      - name: 前端类型检查与构建（vue-tsc + vite，产出 dist/）
+        run: npm run build
+
       - name: cargo fmt --check
         run: cargo fmt --check
         working-directory: core
@@ -50,5 +55,8 @@ jobs:
         run: cargo doc --no-deps
         working-directory: core
 
-      - name: 前端类型检查与构建（vue-tsc + vite）
-        run: npm run build
+      # dist 已在前面步骤产出（此步仅收口确认产物完整，vite 幂等）
+      - name: 前端产物收口确认
+        run: |
+          test -f dist/index.html
+          test -f dist/assets/index.js || ls dist/assets/index-*.js
