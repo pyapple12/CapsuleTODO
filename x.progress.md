@@ -524,3 +524,19 @@
 - [x] FIX010.12 [P3] 勾选哨兵双实现处置 —— 注释登记维持现状：TodoList.toggle 与 ArchiveOverlay.restore 头部各留登记（同构 30 行/FIX007.4-009.2 三轮双写实证/useToggleBeat 差异注入收益低风险高/第三处同构出现时按 rule of three 再收敛）；验证：vue-tsc 绿（2026-10-03 已落）
 - [x] FIX010.13 [P3] defineExpose 零调用处置 —— 删 DetailOverlay {close, flushPending} 与 BubblesView {refresh, cancelClearConfirm} 整体 expose（App 不持模板 ref，开合走 props+事件，flush 内部自驱）；SettingsOverlay 改 `defineExpose({ close })`（toggle 模板内自用保留函数）；有真实调用的 ArchiveOverlay/WhiteboardView/DelButton 不动；验证：vue-tsc 绿（2026-10-03 已落）
 - [x] FIX010.14 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/cargo doc 0 警告/release 编绿/vue-tsc/build/prettier 全绿）+ 全组 13 条锚点扫描（两处 grep 单行假警报核实为例外在续行/expose 残留为删除说明注释）+ 三模式复查（对抗推演：props 响应式闭包恒最新/同方向重复调用等价/接管分支提前 return 不走重注册）；live 回归（删除确认与单击重叠/页签快速互切/全屏让位恢复/换热键）沿用用户豁免模式视作完成（2026-10-03 **FIX010 全组 14/14 闭环，A005–A010 六轮审计收官**）
+
+### FIX011: 观察项清理批 [源=A001–A010 观察项整合定案（2026-10-03 用户定案）]
+
+> 范围：A001–A010 十轮观察项整合定案后的清理批——CSP 活化（打包必办，条件豁免中唯一必达条目）+ 九条轻松修（文档/命名/测试面，半小时级）。永久豁免 39 条与条件豁免 7 条已写入 z.plan.md §四豁免定案清单（A001–A010 各报告观察项节同步清理为指向，单一事实源）。
+
+- [x] FIX011.1 [P2] CSP 配置（打包必办）—— core/tauri.conf.json 补 `"app": { "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'" } }`（style-src unsafe-inline = tauri/wry 注入样式所需；dev 无 HMR 静态产物同 CSP 生效）；验证：cargo test 编译期解析 conf 合法 + 135 绿（2026-10-03 已落；拉起渲染正常与打包回归三页/托盘窗 live 复验随打包执行）
+- [x] FIX011.2 [P3] whiteboard 测试常量化 —— 测试改 `"长".repeat(crate::whiteboard::MAX_CONTENT_LEN + 1)`（super::* 不覆盖业务模块常量，用 crate 全路径）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX011.3 [P3] storage sort 注释措辞 —— 改"非 NULL 同值按 id 次级排序（SQLite ASC 中 NULL 恒排最前，迁移满射回填后无 NULL）"；验证：cargo doc 0 警告（2026-10-03 已落）
+- [x] FIX011.4 [P3] hotkey abort 路径补日志 —— 双查自注销**两分支**均补 eprintln（gen={my_gen} 落底账；勾结复查抓到初版只补查一，按同族穷举补查二）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX011.5 [P3] storage tests use 风格统一 —— mod tests 顶部统一导入 `{AtomicI64, Ordering}`，删三处 fn 内散装 use（任务原方向"统一全路径"落地时修正：签名处全路径是位置必然，真混杂源是 fn 内按需 use 与签名并存——mod 级导入一次收全）；验证：cargo test 135 绿（2026-10-03 已落）
+- [x] FIX011.6 [P3] 拖动静默阈值注释语义化 —— lib.rs 两处注释散文"≤150ms/≥150ms/>150ms"改引用 DRAG_QUIET_MS 常量名表述；验证：文档核对（2026-10-03 已落）
+- [x] FIX011.7 [P3] BUBBLE_MAX_LIMIT ref 命名 —— ref 改 `bubbleMaxLimit`（UPPER_CASE 留给真常量），script 两处 + 模板 :disabled 同步；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX011.8 [P3] SettingsOverlay tooltip 中文化 —— 设置按钮 aria-label "Settings" 改"设置"；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX011.9 [P3] BubblesView onRowClick 删冗余 async —— 函数体无 await，注释登记依据；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX011.10 [P3] App.vue import 组间空行 —— 外部包与内部模块（types/组件/composables）块间补空行两处；验证：prettier 绿（2026-10-03 已落）
+- [x] FIX011.11 [P3] 收尾验证 —— 全量门禁（fmt/clippy -D warnings/cargo test 135/cargo doc 0 警告/vue-tsc/build/prettier 全绿）+ 查缺补漏四问（FIX011.4 双分支穷举补齐/CSP 与资源面匹配核：self+ipc+data URI 覆盖 dist 静态资源与 IPC 通道）；验证：门禁全绿（2026-10-03 **FIX011 全组 11/11 闭环，观察项清理定案完成**）

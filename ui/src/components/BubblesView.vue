@@ -242,7 +242,8 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
   },
 );
 
-async function onRowClick(item: BubbleItem, e: MouseEvent): Promise<void> {
+// FIX011.9：删冗余 async（函数体无 await，开板经拍子回调 emit）
+function onRowClick(item: BubbleItem, e: MouseEvent): void {
   if (isSuppressed()) return; // 拖拽落点抑制（useDragReorder 350ms 窗口）
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行禁交互
   // FIX009.4：离场塌缩窗口点击防幽灵板（气泡全文板 readonly 无写入防御，死

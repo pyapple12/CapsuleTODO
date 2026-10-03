@@ -222,13 +222,13 @@ async function saveHotkey(combo: string): Promise<void> {
 
 // 步进上限（FIX005.25 单一来源）：启动自 Rust settings_get_bubble_max_limit 拉取
 //（默认 20 先行，拉取失败沿用），替代本地硬编码——上限调整只改 Rust 一处
-const BUBBLE_MAX_LIMIT = ref(20);
+const bubbleMaxLimit = ref(20); // FIX011.7：ref 用常规驼峰名（UPPER_CASE 留给真常量）
 let settingBusy = false; // 落库请求防抖：进行中忽略连点
 
 /** 拉取气泡上限（挂载时调用；失败沿用默认 20） */
 async function refreshBubbleLimit(): Promise<void> {
   try {
-    BUBBLE_MAX_LIMIT.value = await invoke<number>("settings_get_bubble_max_limit");
+    bubbleMaxLimit.value = await invoke<number>("settings_get_bubble_max_limit");
   } catch (err) {
     console.error("气泡上限拉取失败", err);
   }
@@ -237,7 +237,7 @@ async function refreshBubbleLimit(): Promise<void> {
 /** 步进：先落库（settings_set_max_bubbles，Rust 钳制 1~上限），成功后经 v-model
  * 更新父级（PL014.2 持久化——重启后仍生效）；失败静默回退保持原值并落控制台 */
 async function step(delta: -1 | 1): Promise<void> {
-  const next = Math.min(BUBBLE_MAX_LIMIT.value, Math.max(1, props.maxBubbles + delta));
+  const next = Math.min(bubbleMaxLimit.value, Math.max(1, props.maxBubbles + delta));
   if (next === props.maxBubbles || settingBusy) return;
   settingBusy = true;
   try {
@@ -277,7 +277,7 @@ async function toggleSnapToEdge(e: Event): Promise<void> {
 
 <template>
   <!-- 右上角设置按钮：开板保色（.open），与归档按钮同款几何表现 -->
-  <button class="settingsButton" :class="{ open: isOpen }" aria-label="Settings" @click="toggle">
+  <button class="settingsButton" :class="{ open: isOpen }" aria-label="设置" @click="toggle">
     <svg class="settings-btn" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960">
       <path
         fill="#B5BAC1"
@@ -383,7 +383,7 @@ async function toggleSnapToEdge(e: Event): Promise<void> {
           <button
             class="stepper-btn"
             aria-label="增加"
-            :disabled="maxBubbles >= BUBBLE_MAX_LIMIT"
+            :disabled="maxBubbles >= bubbleMaxLimit"
             @click="step(1)"
           >
             +

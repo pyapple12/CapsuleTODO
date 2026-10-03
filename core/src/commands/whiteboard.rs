@@ -57,7 +57,8 @@ mod tests {
     #[test]
     fn save_overlong_is_visible_error() {
         let ctx = test_context();
-        let overlong = "长".repeat(10_001);
+        // FIX011.2：上限常量化（A009 观察项）——对齐 commands/todo.rs 用 MAX_*_LEN + 1 形态
+        let overlong = "长".repeat(crate::whiteboard::MAX_CONTENT_LEN + 1);
         let err = whiteboard_save_core(&overlong, &ctx).expect_err("超长必须被拒");
         assert!(matches!(err, CommandError::Whiteboard(_)));
     }

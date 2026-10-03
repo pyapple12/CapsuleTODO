@@ -27,8 +27,78 @@
 ## 四、审计观察项豁免定案清单
 
 > 豁免唯一权威源：已定案项审计时（audit-project）不再重复报告。新定案条目由归档环节（audit-report）经用户确认后追加。分级：①**永久豁免**——不再报告不再讨论；②**条件豁免**——标注触发条件，条件变化时重新评估。
+> **2026-10-03 定案**（FIX011 观察项清理批，用户定案）：A001–A010 十轮观察项整合去重后定案如下——永久豁免 39 条（含原条件豁免 9 条经评估条件不可达性高升格）、条件豁免 7 条、活化修复 1 条（CSP → FIX011.1）。A001–A010 各报告观察项节已同步清理为指向本清单，本节为唯一事实源。
 
-（暂无定案条目）
+### ① 永久豁免（39 条——不可达/设计固有/装饰层/收益低于成本/用户定案）
+
+| #   | 观察项                                                             | 出处           | 永久理由                                  |
+| --- | ------------------------------------------------------------------ | -------------- | ----------------------------------------- |
+| P1  | todo_list 失败冻结旧清单无反馈                                     | A001           | 有意降级——冻结优于报错打断                |
+| P2  | setup 期 expect（lib.rs:262/:349）                                 | A001/A003      | 装配期不变量断言，架构保证不可达          |
+| P3  | db 路径进启动错误消息                                              | A003           | 本地桌面应用助排障                        |
+| P4  | 轮询 1000ms/热键常量/武装 500ms/miss 4×100ms 内联字面量            | A003/A004/A010 | 有注释依据或测试锚定的算法参数            |
+| P5  | fullscreen 轮询线程不随窗关退出                                    | A003           | 进程生命周期线程                          |
+| P6  | 最小化 -32000 坐标入 config                                        | A003           | 启动越界兜底自愈                          |
+| P7  | bubble.rs 双锁 SQLite 读                                           | A003           | 低频 UI 读锁内耗时微小                    |
+| P8  | 无虚拟化/类名 camelCase 混用                                       | A003           | 300×400 数据量小/uiverse 保形             |
+| P9  | 录制态按旧热键触发一次捕获                                         | A004           | 系统 RegisterHotKey 固有时序              |
+| P10 | Win10 pre-22H2 玻璃日志刷屏                                        | A004           | 平台基线 Win11 定案                       |
+| P11 | capture 合成 keyup 清修饰键残留                                    | A005           | 有注释依据的定案权衡                      |
+| P12 | 托盘菜单动作失败仅 console.error                                   | A005           | 点项先收窗架构下无反馈可行面              |
+| P13 | 预览窗首拉失败与真空态不可区分                                     | A005           | 冻结豁免同族                              |
+| P14 | R3 迟到 destroy 竞态日志                                           | A005           | 定案行为                                  |
+| P15 | mock max_bubbles 0 值漂移                                          | A005           | 前端钳制后不可达                          |
+| P16 | 置顶反向残留（窗口已切落库失败）                                   | A006/A007      | 采纳方案固有，IO 错误才触发               |
+| P17 | fullscreen 三类失败共享日志旗标                                    | A006           | 微瑕，白名单②语义内                       |
+| P18 | TrayPreview listen 在 await refresh 之后                           | A007           | refresh 有 catch 不会 reject              |
+| P19 | DRAG_THRESHOLD 5/6 同名异值                                        | A007           | 不同域有注释                              |
+| P20 | seed_data expect+exit 并存/MOD_* pub 过宽                          | A007           | 工具不出货/历史面                         |
+| P21 | 双 epoch 时钟并存                                                  | A008           | 语义隔离清晰，登记非问题                  |
+| P22 | Idle 拍每 100ms 一次主线程往返                                     | A008           | 开销可忽略                                |
+| P23 | mock Number\|\|5 漂移                                              | A008           | UI 永不发 0                               |
+| P24 | 四 DTO Clone derive 零调用                                         | A009           | 防未来惯例，零代价                        |
+| P25 | AgeLevel Deserialize 占位                                          | A010           | 注释自证防未来对称                        |
+| P26 | format! 表名插值两处                                               | A010           | SQLite 设计限制，已裁决无注入面           |
+| P27 | paths data_dir 备份接缝                                            | A010           | 九轮既有形态                              |
+| P28 | fullscreen hwnd 启动期一次捕获                                     | A010           | hide 语义主窗永不重建                     |
+| P29 | theme() 失败深色缺省                                               | A010           | 一次性装饰层                              |
+| P30 | system_now unwrap_or(0)                                            | A008           | 时钟回拨纯理论不可达                      |
+| P31 | ★ settings 原子写无 fsync                                          | A001           | 断电+写入瞬间双条件，数据仅窗口位置       |
+| P32 | ★ fullscreen 容差 8px 自动隐藏任务栏误判                           | A001           | 当前实机无此环境配置                      |
+| P33 | ★ toggle/remove 失败无用户可见反馈                                 | A001/A008      | 本地 IPC 架构性极低，行保持原状即自然反馈 |
+| P34 | ★ 气泡去重 COUNT+INSERT 非原子/无 UNIQUE 索引/全表扫/list 无 LIMIT | A005/A008/A010 | Mutex 串行+单实例+小量级锁死不可达        |
+| P35 | ★ 预览/菜单窗 -2000 首绘副屏闪现/py<0 虚拟屏顶                     | A005           | 特定多屏拓扑，当前环境不存在              |
+| P36 | ★ 菜单 toggle 100ms 竞窗/current_monitor 失败/守候慢盘 5s 缺席     | A005           | 极端时序理论缺口                          |
+| P37 | ★ settings 读路径合法非规范热键串不收敛                            | A009           | 用户手改才触发，仅回显外观面              |
+| P38 | ★ EXITING 无复位                                                   | A009           | close 失败极端路径，语义偏转仍合用户意图  |
+| P39 | ★ tray_preview 预览窗缺失静默 Ok                                   | A010           | 创建失败 setup 即中止，不可达             |
+
+（P31–P39 = 原条件豁免经 2026-10-03 评估"条件不可达性高"升格永久。）
+
+### ② 条件豁免（7 条——触发条件到达时重评）
+
+| #   | 观察项                                                    | 出处           | 触发条件与重评指引                                    |
+| --- | --------------------------------------------------------- | -------------- | ----------------------------------------------------- |
+| T1  | OS 关机等非常规退出不落位置 + WM_QUERYENDSESSION 行为     | A001/A007      | 需实机关机验证；丢失代价小，产品定位升级时评估双保险  |
+| T2  | 剪贴板错误文案含英文技术细节                              | A002           | 用户目验反馈文案问题时打磨                            |
+| T3  | TrayMenu/TrayPreview 及 origin 链路零 IAB 覆盖            | A005/A007      | 补 mock 事件源时同步补断言（真机 live 已验）          |
+| T4  | 归档板 450ms settle 快速双击中间态 + 无 isOpen 守卫       | A004/A009      | 快速双击/早关板可见问题时修（重开自愈）               |
+| T5  | 代际计数残余：stall 占键窗口内回滚轮注册失败 → 无热键自愈 | A010           | 实测复现时评估；自愈收敛无双幽灵（白名单⑧语义内）     |
+| T6  | 换热键失败路径主线程冻结最坏 ~2.2s                        | A004/A009/A010 | 用户反馈卡顿或改 async 命令架构时重评（同步取舍在案） |
+| T7  | capture 300ms 等待窗并发复制被覆盖                        | A009           | 静默族设计定案变更时重评                              |
+
+（活化条目 CSP 不在本清单——已列 FIX011.1 修复，打包回归 live 验证。）
+
+## 附录 FIX011：观察项清理批（2026-10-03，用户定案）
+
+> 背景：A005–A010 收官后，A001–A010 十轮观察项（约 90 条原始条目）整合去重定案（见 §四）——永久豁免 39、条件豁免 7、活化修复 CSP，另有九条早期轮次遗留的轻松修（文档/命名/测试面）与 CSP 一并组成 FIX011 清理批，一次性清账。
+> 方案要点：
+>
+> - **CSP 配置（FIX011.1，打包必办活化）**：`app.security.csp` = `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'`——self 覆盖 dist 静态资源、ipc 两协议覆盖 Tauri IPC 通道、data: 覆盖图标数据 URI、unsafe-inline 限定 style-src（tauri/wry 运行时注入样式所需）、object-src none 加固；dev 无 HMR 静态产物同 CSP 生效，打包回归时三页/托盘窗 live 复验
+> - **九条轻松修**：whiteboard 测试上限常量化（对齐 todo.rs 同族形态）/ storage sort 注释 NULL 排序措辞精确化 / hotkey 代际失配自注销双分支补日志（错误串底账）/ storage 测试域 use 统一 mod 级导入 / 拖动静默阈值注释引用常量名 / BUBBLE_MAX_LIMIT ref 驼峰命名 / 设置按钮 aria-label 中文化 / BubblesView onRowClick 删冗余 async / App.vue import 组间空行
+> - **定案纪律**：A001–A010 各报告观察项节同步清理为指向 §四（本清单唯一事实源，杜绝单一文件两处描述漂移）
+>
+> 状态：✅ 已完成（2026-10-03 11/11 闭环；CSP live 复验随打包回归执行）
 
 ---
 
@@ -95,20 +165,9 @@
 
 无 P0/P1/P2（安全维度 SQL 全参数化、无路径拼接、无秘钥面；并发维度 Mutex 单写者、锁序单向；防御维度损坏 db/损坏 JSON 均严格报错——未发现确定性可复现的中高危缺陷）。
 
-### 二、参考级观察项（记录不修；用户定案保留观察）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-| 文件:行号                                                                              | 描述                                                                                                                       | 回落理由                                                                                             |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| TodoList.vue:21,31                                                                     | toggle/remove 失败仅 console.error，无用户可见反馈                                                                         | 本地 IPC 毫秒回程失败概率架构性极低且已记录（沿 Pulse 同款）——条件豁免（需求演进统一错误通道时重评） |
-| App.vue:23-24                                                                          | todo_list 失败冻结旧清单、无可见反馈                                                                                       | 有意降级——冻结优于报错打断——永久豁免                                                                 |
-| lib.rs:134                                                                             | setup 内 expect（业务代码禁 expect 的白名单外硬校验）                                                                      | 架构保证不可达（窗口在 conf 定义且从不销毁；沿 Pulse A002 豁免同款）——永久豁免候选                   |
-| settings.rs:47-48                                                                      | 原子写无 fsync，断电窗口可能旧内容                                                                                         | 纯理论；数据仅窗口位置非关键数据——条件豁免（产品定位升级时重评）                                     |
-| tauri.conf.json / lib.rs:113,133 / fullscreen.rs:76 / capabilities:5 / main.rs / icons | 打包期一组：未配 CSP；窗口 label 依赖默认 "main"；main.rs 无 windows_subsystem（release 弹控制台）；占位图标；诊断仅控制台 | 打包分发时统一处理——条件豁免（触发 = 打包）                                                          |
-| fullscreen.rs:16                                                                       | 容差 8px：自动隐藏任务栏环境（条约 2px）下最大化窗可能误判全屏 → 误让位                                                    | 需特定环境（当前实机非此配置，目验已过）——条件豁免（触发 = 该环境实测；需验证）                      |
-| lib.rs:152                                                                             | 位置仅存于 CloseRequested，OS 关机等非常规退出可能不落位置                                                                 | 常规路径（×/Alt+F4）全覆盖，丢失代价小——条件豁免（需求演进时评估双保险）                             |
-| x.progress PL002.4 注记                                                                | "坏路径启动失败"未实测（破坏性测试禁触真实 db）                                                                            | 代码路径经单测层错误传播覆盖；live 需备份-损坏-恢复流程——条件豁免（下轮审计或打包前实测；需验证）    |
-| storage.rs:91-97,121-127                                                               | TodoItem 行映射闭包两处重复                                                                                                | 3 行小闭包，收敛收益低于抽象成本（KISS）——永久豁免                                                   |
-| vite.config.ts:9                                                                       | envPrefix 前瞻键                                                                                                           | 有意保留（沿 Pulse 豁免先例）——永久豁免                                                              |
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -194,13 +253,9 @@
 
 无 P0/P1。说明：SQL 全参数化、clipboard 仅 Rust 侧不经 ACL、单行表 CHECK 约束、锁序单向——未发现确定性可复现的高危缺陷。
 
-### 二、参考级观察项（记录不修；用户定案延续保留观察）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-| 文件:行号                                       | 描述                                                                              | 回落理由                                                                   |
-| ----------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| core/src/commands/bubble.rs:19                  | 非文本/异常剪贴板的错误文案为"剪贴板读取失败：{插件原始错误}"，可能含英文技术细节 | 功能正确、前缀可读；需 live 确认实际文案后定是否打磨——条件豁免（目验后定） |
-| ui/components/BubblesView.vue:13-14,43-44,66-67 | copiedTimer/confirmTimer 不随组件卸载清理，切页后单次 ref 写入                    | Vue 3 下无 DOM 写、零危害——永久豁免（无可达危害路径）                      |
-| ——                                              | A001 观察项 10 条继续保留观察（本轮代码未触及其触发条件），不重复罗列             | 见附录 A001 第二节                                                         |
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -355,23 +410,9 @@
 | core/src/commands/todo.rs:19 vs :48                                                                                                 | 4 重复           | todo_add 存原文不 trim（rename/bubble 均 trim 落库）——同字段两套落库语义，API 直调可绕前端 trim                             | add 统一 trim 落库                                        |
 | core/src/commands/todo.rs:218-232                                                                                                   | 10 可测试性      | age_level 命令层测试断言力≈0（自陈无法构造跨阈值场景）                                                                      | open_with_now 双时钟补真断言                              |
 
-### 二、参考级观察项（豁免，含回落理由）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-1. lib.rs default_position 300×400 与 tauri.conf.json 双处——有注释依据且"尺寸固定不入配置"定案在位（改尺寸须两处同步）。
-2. lib.rs:90 {db:?} 路径进启动错误消息——本地桌面应用助排障，豁免。
-3. fullscreen.rs 轮询 1000ms——有注释依据。
-4. fullscreen 轮询线程不随窗口关闭退出——进程生命周期线程。
-5. lib.rs:133 setup 内 expect——装配期配置不变量断言，非业务散落。
-6. 最小化 -32000 坐标入 config.json——启动越界兜底自愈。
-7. bubble.rs 双锁 SQLite 读——低频 UI 读锁内耗时微小。
-8. BubbleError → CommandError::Clipboard 复用——气泡文本唯一来源即剪贴板，语义可容。
-9. examples/seed_data.rs 写真实 data/todo.db——注释完备的开发期注入工具。
-10. 单实例 window.show() 对最小化窗行为——需验证，路径实际不可达。
-11. 常驻三板 nextTick 挂载未持 composable destroy——无卸载语义（改 v-if 须补）。
-12. DelButton pulse 强制回流连点重播——需验证，理论缺口。
-13. 主题三态不持久化——产品决策观察（与 max_bubbles 已持久化不对称）。
-14. remind >= 与前端警告 > 语义分歧——remind 前端不消费，未来接横幅须统一。
-15. 300×400 数据量小列表无虚拟化、类名 camelCase/kebab 混用（uiverse 保形）——豁免。
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -443,18 +484,9 @@ SQL 全参数化零拼接；迁移逐列幂等可断点续迁；时间源全注�
 
 P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前端状态机/录制态边界/mock 漂移——新功能引入面典型形态）；两条为 **A003/FIX003 漏派遗留**；其余为规范/文档卫生。
 
-### 二、参考级观察项（豁免，含回落理由；完整版见三路子代理原始输出）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-1. 假行 leave 模拟证归档/气泡动画 CSS 链路健康——两个已修 bug 的机制层无恙。
-2. useThresholdDrag 的 mousedown preventDefault 对 titleParticles mousemove 无影响——理论缺口经实测排除。
-3. types.ts ↔ serde tagged 契约（BubbleCaptureOutcome）零漂移——真实链路健康，漂移仅在 mock 与内联用法。
-4. 录制态按旧热键组合会同时触发一次捕获（系统 RegisterHotKey 先于 webview）——系统级固有，行为怪但无害。
-5. 热键线程/500ms 等待常量/单次使用模块常量——有注释依据或单次使用，豁免。
-6. glass_backdrop Win10 pre-22H2 聚焦翻转日志刷屏——平台基线 Win11 定案，失败维持前态即白名单①行为。
-7. ON_HOTKEY 锁中毒静默恢复 / 启动读设置锁中毒回默认热键——装配期不可达理论缺口（需验证）。
-8. TodoList 删末条若定案"清单保留原行为"请落注释豁免——否则按 P2 修复（见清单）。
-9. BubblesView/ArchiveOverlay 快速双击归档钮 450ms settle 提前取中间态几何（≤中，需验证）。
-10. 热键 reregister 命令同步阻塞 ≤1s——设置动作低频可接受。
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -589,20 +621,11 @@ P2 七条与 P3 多条为 **PL015 新增代码引入**（热键线程/去重前�
 | 24  | AGENTS.md:47-58                                                 | 6    | 目录树漂移：settings.rs 职责行缺两开关、commands 缺 tray_menu/tray_preview、缺 capture.rs/snap.rs/tray.rs 行                                                                              |
 | 25  | storage.rs:38-40                                                | 5    | is_duplicate 常驻 pub 零生产调用（added_item 同族漏网）。cfg(test) 收敛                                                                                                                   |
 
-### 二、参考级观察项（豁免，含回落理由；用户复核 2026-10-01 全部不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-1. 三态主题不持久化（SettingsOverlay.vue:90）——重启回系统深浅；产品语义向，用户定案不提升
-2. capture.rs 合成 keyup 清修饰键残留——有注释依据的定案权衡
-3. 热键 reregister 500ms 超时残余注册 / add_bubble 去重 TOCTOU / bubbles COUNT 无索引——理论缺口（需验证）与量级豁免
-4. 全屏让位 set_always_on_top 持续失败约 1s 一条日志——白名单②未覆盖此路径，触发面极窄
-5. 预览/菜单窗 -2000 首绘负坐标副屏闪现 / py<0 翻转以 0 为虚拟屏顶——需特定多屏拓扑验证
-6. 菜单 toggle 100ms 竞窗 / current_monitor 失败跳过钳制 / 守候慢盘 5s 缺席——理论（需验证）
-7. 托盘菜单动作失败仅 console.error——Rust 点项先收窗架构下无反馈可行面
-8. TrayMenu/TrayPreview 零 IAB 覆盖——mock label 固定恒走主窗分支，测试性缺口登记
-9. 预览窗首拉失败"暂无待办"与真空态不可区分——冻结豁免同族
-10. tauri.conf 未设 CSP——仅本地资源；**打包发布前必补**（挂打包待办）
-11. R3 迟到 destroy 竞态日志（定案行为）/ MARGIN=8 双函数重复
-12. mock settings_set_max_bubbles 0 值语义漂移（前端钳制后不可达）；A004 观察项保留项不重复报
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
+
+### 三、亮点
 
 ### 三、亮点
 
@@ -655,16 +678,9 @@ grep 级 31 项全命中；diff/语义级复核抓出 3 项"修复无效或改�
 | 13  | examples/seed_data.rs:108                                              | 13    | unwrap_or(0) 静默吞读库错误（同文件其他路径均 exit(1)）——对齐                                                                                                                  |
 | 14  | tray.rs:216-227                                                        | 1     | Enter 重置武装打断"预览窗→图标"连续性（Shown 被重置 Armed → 预览闪没 0.5s 重停）——Shown 态仅更新锚点不重武装                                                                   |
 
-### 二、参考级观察项（豁免，含回落理由；用户默认全不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-1. settings_set_always_on_top 反向残留（窗口已切、落库失败不回滚不广播）——采纳方案固有，IO 错误才触发
-2. reorder_in_transaction COMMIT 失败无显式 ROLLBACK——本地库近乎不可达（需验证）
-3. **tauri match_any_or_filter 语义是工程级陷阱**（Any target 无视 emit_filter）——建议 FIX006 录入 AGENTS 环境陷阱节
-4. fullscreen 三类失败共享日志旗标；hotkey ON_HOTKEY into_inner 恢复式（既有模式）
-5. capabilities start-dragging 授三窗实际仅 main 用——粒度残留
-6. 组合式在 onMounted 异步上下文调用内部 onUnmounted 失效（App 根生产不卸载无后果；P2-4 同机制首次产生实际后果）
-7. BUBBLE_MAX_LIMIT ref 用常量命名；tooltip "settings" 英文文案；defineExpose 零调用（预留面）
-8. A005 观察项保留项全部延续（CSP 打包前必补、录制态旧热键、-2000 首绘等）
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -708,16 +724,9 @@ SQL 全参数化、锁序单向、tray.rs 窗口调用零锁内违规（专项�
 | 17  | commands/whiteboard.rs:28                                   | 4    | 手写 map_err 与 mod.rs 既有 From<WhiteboardError> 重复——? 直转                                                                                                                                           |
 | 18  | tray.rs:357-384                                             | 1/8  | Show/Suppressed 跨线程竞态（需验证）：守候锁内提交 Show 后锁外执行前右键可完成 Suppressed+hide → 预览伴菜单弹出且滞留至下次 hover。Show 执行前重入锁复核 phase 仍为 Shown                                |
 
-### 二、参考级观察项（豁免，含回落理由；用户默认全不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-1. 置顶反向残留（窗口已切落库失败）——A006 保留延续
-2. fullscreen yielded 跳过期间不清零——重开置顶必经交互自愈（理论）
-3. TrayPreview listen 注册在 await refresh 之后——refresh 已有 catch 不会 reject（回落）
-4. FIX006.1 origin 自判链路 IAB 零覆盖（mock 无事件源）——真机 live 已验，登记测试性缺口
-5. TrayPreview ?? 164 回退魔法数；onRowClick async 无 await；DRAG_THRESHOLD 5/6 同名异值（不同域有注释）
-6. seed_data 存量 expect 与新 exit(1) 并存（工具不出货）；hotkey MOD_*/Rect pub 过宽（历史面）
-7. 系统关机时主窗 prevent_close+hide 的 WM_QUERYENDSESSION 行为——需实机关机验证（超出静态审计）
-8. A005/A006 保留项全部延续（CSP 打包前必补、装配期 expect、锚点哨兵 0,0 等）
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -759,11 +768,9 @@ A006 全部 20 项修复语义级在位零冲掉（上轮"grep≠语义"教训�
 | P3-13 | mock-invoke.ts:324 vs hotkey.rs:102-116                    | 10/11 | **mock 热键回显序与 Rust 漂移**：Rust to_display 固定 Ctrl→Alt→Shift→Win（有测试断言），mock 比较器 indexOf(b)-indexOf(a) 降序 = Win→Shift→Alt→Ctrl，同输入回显形态不同，IAB 断言可能锁死假形态。修法：mock 比较器反转                                                                                                                                                                                                                                                                                                                                  | 新增                    | Vue 前端（仅 DEV）       |
 | P3-14 | todos.css:19 + bubbles.css:8                               | 5     | **.placeholder 空态选择器零引用**（模板统一用 .empty，design 1:1 迁移残留）。修法：删除或加"design 对齐保留"注释                                                                                                                                                                                                                                                                                                                                                                                                                                        | 新增                    | Vue 前端                 |
 
-### 二、参考级观察项（豁免，含回落理由；默认全不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-**本轮新增**：① storage reorder 事务 COMMIT 失败无显式 ROLLBACK（本地库近乎不可达，A006 延续）；② storage.rs:70 system_now 的 unwrap_or(0) 纯理论；③ 气泡 COUNT 去重全表扫/list 无 LIMIT（量级小）；④ tray.rs Idle 拍每 100ms 一次 menu_is_open 主线程往返（开销可忽略）；⑤ tray.rs:227/254 五行锚点赋值重复（DRY 边界）；⑥ hotkey 双 reregister 理论竞窗（不可达）；⑦ 注释散文"150ms"与 DRAG_QUIET_MS 双写（文档性）；⑧ mock `Number||5` 理论漂移（UI 永不发 0）；⑨ 删除/勾选失败仅 console.error（行保持原状构成自然反馈，与"假空"不同级）。
-**延续项**：A005/A006/A007 保留项全部延续（App.vue 两组合式 onUnmounted 失效区但生产零后果、?? 164、DRAG_THRESHOLD 5/6 同名异值、装配期 expect、CSP 打包前必补等）。
-**跨组登记**：双 epoch 时钟并存（tray now_ms u64 / storage system_now 注入式 i64）不构成违例，防未来"时钟单点"误解。
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -801,10 +808,9 @@ FIX005/FIX006 全部修复面保持完好零冲掉；死锁铁律的模块文档
 | P3-10 | hotkey.rs:214                                             | 6     | **注释行号锚失准**（FIX008.13 插行漏改）：":254-259 配套"实际 CAS 已移 :264/:284。修法：更新行号或改语义描述免行号                                                                                                                                                                                                                                                                                                                                                                         | 新增（FIX008.13 漏改）      | 文档                   |
 | P3-11 | hotkey.rs:199/:276                                        | 13    | **ON_HOTKEY 锁中毒 `into_inner` 恢复未登记白名单**（WATCH 锁同款已登记⑩，此处两处漏登；语义实际安全——回调 spawn 期一次写入）。修法：白名单⑩措辞扩围覆盖热键回调锁（零代码）                                                                                                                                                                                                                                                                                                                | 新增（存量）                | 错误策略               |
 
-### 二、参考级观察项（豁免，含回落理由；默认全不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-**本轮新增**：① 四个 DTO 的 Clone derive 全仓零调用（防未来惯例，零代价）；② whiteboard 测试硬编码 10001 未用常量（测试内单处）；③ settings 读路径对"合法非规范热键串"不收敛、写路径规范化（回显外观面，需验证 parse 大小写行为）；④ TrayPreview 380ms 定时器不随卸载清理 / 1000ms 占字时长两处散装；⑤ settings_set_bubble_hotkey 失败路径最坏 ~1s 主线程冻结（FIX004.7 同步取舍既有，失败面未在案仅补记）；⑥ capture 300ms 等待窗并发复制被覆盖（设计固有，纯理论）；⑦ EXITING 无复位（close 失败极端路径语义偏转，需验证级）。
-**延续项**：A005–A008 保留项全部延续（Idle 拍主线程往返 / 五行锚点重复 / 装配期 expect / App.vue 失效区卸载 / 180ms 双活裁量 / show 复核残余空窗已接受等）。
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 
@@ -844,10 +850,9 @@ FIX008 16/16 diff 级零回退；死锁铁律 6 锁点全检零违规（FIX008.1
 | P3-12 | TodoList.vue:68-103 + ArchiveOverlay.vue:231-256                     | 4    | 勾选/退回哨兵状态机约 30 行双实现——FIX007.4/008.7/009.2 三轮修复均双写同构补丁，漂移成本实证。修法：收敛 useToggleBeat composable（差异注入），或注释登记维持现状                                                                                                                                                                                                                                            | 新增（存量暴露）              | Vue 前端               |
 | P3-13 | DetailOverlay.vue:302 + BubblesView.vue:290 + SettingsOverlay.vue:72 | 5    | 三处 defineExpose 零调用（App 不持模板 ref 或仅用部分面）。修法：删除或注释登记 API 预留                                                                                                                                                                                                                                                                                                                     | 新增                          | Vue 前端               |
 
-### 二、参考级观察项（豁免，含回落理由；默认全不提升）
+### 二、参考级观察项 → 已定案归档（FIX011）
 
-**本轮新增**：① 代际计数残余固有面——stall 线程占键窗口内回滚轮 RegisterHotKey 失败 → 终态"无热键"自愈（白名单⑧语义内）；② hotkey abort 路径 tx.send 接收端已析构错误串不可观测；③ GetCursorPos FFI 与 Point 结构两份就近声明（6 行级重复）；④ 武装 500ms/miss 4×100ms 内联字面量（测试锚定）；⑤ tray_preview 预览窗缺失静默 Ok（正常态不可达）；⑥ theme() 失败深色缺省（装饰层）；⑦ default_position 以 inner_size 参与 outer 落位致右/下余量少 ~8px（FIX006.16 知情选择）；⑧ settings_set_bubble_hotkey 失败路径主线程冻结实测上限修正 ~2.2s；⑨ add_bubble COUNT+INSERT 非原子（Mutex 串行下不可达）；⑩ age_level 对手改极端 created_at 溢出（product 不可达）；⑪ storage sort 注释 NULL 排序措辞不精确（纯文档性）。
-**延续项**：A005–A009 保留项全部延续（COMMIT 无显式 ROLLBACK / system_now unwrap_or(0) / 气泡全表扫 / Clone derive / 180ms 双活裁量 / App.vue 失效区卸载 / settings 热键串不收敛等）。
+> 明细已整合至 §四《审计观察项豁免定案清单》（永久 39 / 条件 7 / CSP 活化 FIX011.1），本节不再保留（2026-10-03 用户定案，本清单为唯一事实源）。
 
 ### 三、亮点
 

@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
 // IPC DTO 镜像类型统一收敛在 types.ts（单一来源 = Rust serde 结构，防多处声明漂移）
 import type { BubbleItem, BubbleSnapshot, PrefsView, TodoItem, TodoView } from "./types";
 import AddBar from "./src/components/AddBar.vue";
@@ -13,6 +14,7 @@ import ArchiveOverlay from "./src/components/ArchiveOverlay.vue";
 import SettingsOverlay from "./src/components/SettingsOverlay.vue";
 import BubblesView from "./src/components/BubblesView.vue";
 import WhiteboardView from "./src/components/WhiteboardView.vue";
+
 import { initTitleParticles } from "./src/composables/titleParticles";
 import { useThresholdDrag } from "./src/composables/useThresholdDrag";
 import { useDragReorder } from "./src/composables/useDragReorder";

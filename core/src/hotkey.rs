@@ -257,6 +257,8 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                 // ——自行注销退出，不登记 tid 不进循环（"父已回退"与"新键生效"互斥）
                 if REREGISTER_GEN.load(Ordering::SeqCst) != my_gen {
                     let _ = win::UnregisterHotKey(0, HOTKEY_ID);
+                    // FIX011.4：接收端（父侧）在常见触发序已超时析构，错误串经日志留底账
+                    eprintln!("热键注册线程代际失配，自行注销（gen={my_gen}）");
                     let _ = tx.send(Err("父侧等待超时已放弃，注册线程自行注销".to_string()));
                     return;
                 }
@@ -280,6 +282,8 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                 // 落位须自清（对齐消息循环退出路径的 CAS 形态）
                 if REREGISTER_GEN.load(Ordering::SeqCst) != my_gen {
                     let _ = win::UnregisterHotKey(0, HOTKEY_ID);
+                    // FIX011.4：同查一，send(Ok) 后父侧超时的场景接收端不再收，日志留底账
+                    eprintln!("热键注册线程代际失配（send 后），自行注销并清 tid（gen={my_gen}）");
                     let _ = THREAD_ID.compare_exchange(
                         win::GetCurrentThreadId(),
                         0,

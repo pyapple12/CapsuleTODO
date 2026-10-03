@@ -30,9 +30,9 @@ use storage::Storage;
 
 // —— 贴边吸附状态机（PL017.4，A 案松手吸附）——
 // 松手判定（用户实测三轮修正）：**左键状态为准，Moved 静默为辅**——鼠标悬停/
-// 慢速拖动都会造成 Moved 静默 >150ms，仅凭静默会在拖动中误吸（"还没松手就吸
-// 走又回到手里"）；左键按住 = 必在拖动，绝不吸附。启动恢复的单次程序性 Moved
-// 左键未按 → 不置位 → 默认落位 40px 不被吸
+// 慢速拖动都会造成 Moved 静默超过 DRAG_QUIET_MS 阈值，仅凭静默会在拖动中误吸
+// （"还没松手就吸走又回到手里"）；左键按住 = 必在拖动，绝不吸附。启动恢复的
+// 单次程序性 Moved 左键未按 → 不置位 → 默认落位 40px 不被吸
 /// 拖动静默阈值（FIX007.14 单源：置位判定与松手判定共用，两处必须同值否则
 /// 吸附手感错乱）
 const DRAG_QUIET_MS: u64 = 150;
@@ -541,8 +541,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
                 // 贴边吸附状态机（PL017.4）：Moved 更新时间戳；左键按住（真拖动，
-                // 含悬停/慢速——静默判定会误吸）或间隔 ≤150ms 置 DRAG_ACTIVE；
-                // pending 单线程守到"左键已松 + 静默 ≥150ms"→ 吸附一次
+                // 含悬停/慢速——静默判定会误吸）或间隔不超 DRAG_QUIET_MS 置
+                // DRAG_ACTIVE；pending 单线程守到"左键已松 + 静默满
+                // DRAG_QUIET_MS"→ 吸附一次
                 let now = crate::tray::now_ms();
                 let last = LAST_MOVED_MS.swap(now, Ordering::Relaxed);
                 let dragging = now.saturating_sub(last) <= DRAG_QUIET_MS;

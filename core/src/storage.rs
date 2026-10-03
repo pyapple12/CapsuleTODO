@@ -315,7 +315,8 @@ impl Storage {
 
     /// 清单排序视图：未完成在前按 sort_order 升序（拖拽序）、已完成在后按 sort_order
     /// 升序（done 段 sort_order 沿勾选前快照，归档序另由 list_done 的 done_at 裁决；
-    /// 次级键 id 兜底 NULL/同值——迁移回填已满射，此处为防御）
+    /// 非 NULL 同值按 id 次级排序——SQLite ASC 中 NULL 恒排最前，迁移满射回填后无
+    /// NULL，此处为防御，FIX011.3 措辞精确化）
     pub fn list(&self) -> Result<Vec<TodoItem>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, text, done, created_at, done_at, note FROM todos
@@ -511,6 +512,8 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // FIX011.5：测试域时钟原子量统一 mod 级导入（取代各测试 fn 内散装 use）
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     fn storage() -> Storage {
         Storage::open_in_memory().expect("内存库必须可开")
@@ -745,7 +748,6 @@ mod tests {
 
     #[test]
     fn toggle_sets_done_at_forward_and_nulls_backward() {
-        use std::sync::atomic::{AtomicI64, Ordering};
         let step = Arc::new(AtomicI64::new(1_700_000_000_000));
         let step2 = Arc::clone(&step);
         let st = Storage::open_in_memory_with_now(Arc::new(move || step2.load(Ordering::SeqCst)))
@@ -767,7 +769,6 @@ mod tests {
 
     /// 注入可步进时钟的存储（归档排序断言：逐条勾选落不同 done_at）
     fn stepped_storage() -> (Storage, Arc<std::sync::atomic::AtomicI64>) {
-        use std::sync::atomic::{AtomicI64, Ordering};
         let clock = Arc::new(AtomicI64::new(1_700_000_000_000));
         let clock2 = Arc::clone(&clock);
         let st = Storage::open_in_memory_with_now(Arc::new(move || clock2.load(Ordering::SeqCst)))
@@ -777,7 +778,6 @@ mod tests {
 
     #[test]
     fn list_done_orders_by_done_at_desc() {
-        use std::sync::atomic::Ordering;
         let (st, clock) = stepped_storage();
         // 依次勾选 a、b、c（done_at 递增）→ 归档视图应 c、b、a（最新完成在最上）
         let a = st.add("甲").expect("写入必须成功");
