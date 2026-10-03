@@ -112,15 +112,20 @@ async function toggle(item: TodoItem): Promise<void> {
 let clickTimer: number | undefined;
 function onRowClick(item: TodoItem, e: MouseEvent): void {
   // 编辑态点击抑制（用户定案）：编辑中点任何位置都只是结束编辑，绝不开详情——
-  // 点自己行 = 光标聚焦回输入框（换输入位置）；点其他行 = 提交后离开。
+  // 点自己行 = 收回输入框焦点（仅行内空白区；点输入框本体保留原生光标落点）；
+  // 点其他行 = 提交后离开。
   // 判据含 pendingExit（已提交待切回）态：rename IPC 极快，blur 提交后主窗 refresh
   // 可在 click 事件前清掉 editingId（用户实测 bug 复发根因）
   if (editingId.value !== null || pendingExitId.value !== null) {
     const editingNow = editingId.value ?? pendingExitId.value;
     if (editingNow === item.id) {
-      // FIX005.19：聚焦走 focusEditEnd 同款 DOM 直查——v-for 模板 ref 被 Vue
-      // 收集为数组，editEl.value?.focus() 恒静默失效（本文件同款坑自记）
-      focusEditEnd();
+      // 点输入框本体不调 focusEditEnd：click 自输入框冒泡而来，原生光标刚落到
+      // 点击处，重聚焦会把位置重钉行尾（用户实测 bug）；只拦行内空白区/勾选框
+      // 的点击。FIX005.19：聚焦走 DOM 直查——v-for 模板 ref 被 Vue 收集为数组，
+      // editEl.value?.focus() 恒静默失效（本文件同款坑自记）
+      if (!(e.target as HTMLElement).closest(".t-edit")) {
+        focusEditEnd();
+      }
     } else if (editingId.value !== null) {
       // 仍有未提交编辑（pendingExit 态则 rename 已落库，无需二次提交）
       const editing = props.items.find((t) => t.id === editingId.value);
@@ -168,6 +173,10 @@ function onRowDblClick(item: TodoItem): void {
   clearTimeout(clickTimer);
   // FIX009.4：离场塌缩窗口双击防幽灵编辑——已删条目不进行内编辑态
   if (!props.items.some((it) => it.id === item.id)) return;
+  // 已在编辑本条（含 pendingExit 态）= 双击选词/双击行内的原生行为，不重启
+  // 编辑流程——startInlineEdit 会把 editDraft 复位回已存文本（丢未保存草稿）
+  // 并把光标重钉行尾（与单击同根：行级处理器截胡输入框内操作）
+  if ((editingId.value ?? pendingExitId.value) === item.id) return;
   startInlineEdit(item);
 }
 

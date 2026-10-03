@@ -4,7 +4,9 @@
 use tauri::{Emitter, State};
 
 use super::{AppContext, CommandError};
-use crate::todo::{age_level, validate_note, validate_text, AgeLevel, TodoItem};
+use crate::todo::{
+    age_level, validate_note, validate_text, AgeLevel, TodoItem, ARCHIVE_RETENTION_MS,
+};
 
 /// 变更广播（PL018.6 问题一修复；FIX006.1 载荷 origin 方案）：清单数据任何变更后
 /// 由命令层发 todo-changed，载荷 = 发起窗 label——**前端自判早退**（发起窗刷新走
@@ -155,9 +157,17 @@ pub fn todo_archive_list(ctx: State<'_, AppContext>) -> Result<Vec<TodoItem>, Co
     todo_archive_list_core(&ctx)
 }
 
-/// todo_archive_list 核心实现：出归档视图
+/// todo_archive_list 核心实现：归档读路径惰性清扫（PATCH001）+ 出归档视图。
+/// 清扫挂读路径 = 打卡软件模式在常驻板上的等价形态：本命令调用点天然覆盖 App 挂载
+/// （App.vue 启动拉归档）与每次清单变更（onListChanged 三源齐拉），超期条目在出视图
+/// 前已删、前端永无中间态，零新线程零定时器；删除数 > 0 落一行日志对账。
 pub fn todo_archive_list_core(ctx: &AppContext) -> Result<Vec<TodoItem>, CommandError> {
     let storage = ctx.lock_storage()?;
+    let cutoff = storage.now_ms() - ARCHIVE_RETENTION_MS;
+    let purged = storage.purge_expired_done(cutoff)?;
+    if purged > 0 {
+        eprintln!("归档回收：清理 {purged} 条超期条目");
+    }
     Ok(storage.list_done()?)
 }
 
@@ -286,6 +296,31 @@ mod tests {
         let view = todo_list_core(&ctx).expect("读命令必须成功");
         assert_eq!(view[0].age_level, AgeLevel::Red, "超 48h 升 Red");
         let _ = item;
+    }
+
+    #[test]
+    fn archive_list_purges_expired_before_view() {
+        // PATCH001：归档读路径惰性清扫全链——超期条目在出视图前已删，前端永无中间态
+        let t0 = 1_700_000_000_000i64;
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(t0));
+        let ctx = AppContext {
+            storage: Mutex::new(
+                Storage::open_in_memory_with_now(Arc::new({
+                    let clock = Arc::clone(&clock);
+                    move || clock.load(std::sync::atomic::Ordering::SeqCst)
+                }))
+                .expect("内存库必须可开"),
+            ),
+            settings: Mutex::new(crate::settings::WindowSettings::default()),
+        };
+        let item = todo_add_core("老条目", &ctx).expect("合法文本必须成功");
+        todo_toggle_core(item.id, &ctx).expect("勾选必须成功"); // done_at = t0
+        clock.store(
+            t0 + crate::todo::ARCHIVE_RETENTION_MS + 1,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let view = todo_archive_list_core(&ctx).expect("归档读必须成功");
+        assert!(view.is_empty(), "超期条目在出视图前已回收");
     }
 
     // —— PL013.2 重排命令 ——

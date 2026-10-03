@@ -16,6 +16,11 @@ pub const AGE_YELLOW_MS: i64 = 24 * 3600 * 1000;
 /// 龄期提醒红字阈值：48 小时（毫秒）
 pub const AGE_RED_MS: i64 = 48 * 3600 * 1000;
 
+/// 归档保留期（PATCH001，用户定案固定 7 天、不做设置项）：已完成条目 done_at
+/// 距 now 超过该时长即由归档读路径回收；恰好等于阈值不回收（沿 age_level
+/// "等于阈值不升级"先例）
+pub const ARCHIVE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// Todo 业务错误：文本/笔记非法
 #[derive(Debug, Error)]
 pub enum TodoError {

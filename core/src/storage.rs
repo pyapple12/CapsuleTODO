@@ -338,6 +338,19 @@ impl Storage {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// 归档回收（PATCH001）：删除已完成且 done_at 早于 cutoff 的条目，返回删除行数。
+    /// `done_at IS NOT NULL` 谓词 = 迁移遗留 NULL 行永不回收（PL010"不模拟历史时间"
+    /// 先例）；未完成条目（done = 0）不在谓词内。cutoff 由调用方按业务常量
+    /// todo::ARCHIVE_RETENTION_MS 计算——存储层不持保留期策略。
+    pub fn purge_expired_done(&self, cutoff: i64) -> Result<usize, StorageError> {
+        let changed = self.conn.execute(
+            "DELETE FROM todos
+             WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1",
+            rusqlite::params![cutoff],
+        )?;
+        Ok(changed)
+    }
+
     /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）
     fn row_to_bubble(row: &rusqlite::Row<'_>) -> rusqlite::Result<BubbleItem> {
         Ok(BubbleItem {
@@ -824,6 +837,123 @@ mod tests {
         let a = st.add("未完成").expect("写入必须成功");
         let _ = a;
         assert!(st.list_done().expect("读取必须成功").is_empty());
+    }
+
+    // ===== PATCH001 归档 7 天自动回收（TDD） =====
+
+    #[test]
+    fn purge_deletes_only_expired_done_items() {
+        let (st, clock) = stepped_storage();
+        let t0 = clock.load(Ordering::SeqCst);
+        let old = st.add("老条目").expect("写入必须成功");
+        let fresh = st.add("新条目").expect("写入必须成功");
+        // old 勾选于 T0；fresh 勾选于 T0 + 3 天
+        st.toggle(old.id).expect("勾选必须成功");
+        clock.store(t0 + 3 * 24 * 3600 * 1000, Ordering::SeqCst);
+        st.toggle(fresh.id).expect("勾选必须成功");
+        // 推进到恰好 T0 + 7 天：cutoff = T0，old 的 done_at == cutoff 不回收（< 才删）
+        clock.store(t0 + crate::todo::ARCHIVE_RETENTION_MS, Ordering::SeqCst);
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            0,
+            "恰好满 7 天不回收"
+        );
+        // 再 +1ms：old 超期 1ms 回收；fresh（done_at = T0+3d）差近 3 天保留
+        clock.store(clock.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            1,
+            "超期 1ms 回收 1 条"
+        );
+        let rest = st.list_done().expect("读取必须成功");
+        assert_eq!(rest.len(), 1, "未满期条目保留在归档");
+        assert_eq!(rest[0].id, fresh.id);
+        assert!(
+            !st.list()
+                .expect("读取必须成功")
+                .iter()
+                .any(|it| it.id == old.id),
+            "回收条目从库中消失"
+        );
+    }
+
+    #[test]
+    fn purge_skips_null_done_at_and_unchecked() {
+        let (st, clock) = stepped_storage();
+        let a = st.add("迁移遗留").expect("写入必须成功");
+        let b = st.add("未完成").expect("写入必须成功");
+        // 直改 SQL 模拟迁移遗留形态：done = 1 且 done_at = NULL（PL010"不模拟历史
+        // 时间"回填语义）——正常路径 toggle 勾选必带 done_at，此形态只能来自存量
+        st.conn
+            .execute(
+                "UPDATE todos SET done = 1, done_at = NULL WHERE id = ?1",
+                rusqlite::params![a.id],
+            )
+            .expect("模拟存量必须成功");
+        // 推进远超 7 天：NULL 行与未完成条目均不在回收谓词内
+        clock.store(
+            clock.load(Ordering::SeqCst) + 100 * 24 * 3600 * 1000,
+            Ordering::SeqCst,
+        );
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            0,
+            "NULL done_at 与未完成条目均不回收"
+        );
+        assert_eq!(
+            st.list_done().expect("读取必须成功").len(),
+            1,
+            "迁移遗留归档行保留"
+        );
+        assert!(
+            st.list()
+                .expect("读取必须成功")
+                .iter()
+                .any(|it| it.id == b.id),
+            "未完成条目不受回收影响"
+        );
+    }
+
+    #[test]
+    fn recheck_restarts_retention_clock() {
+        let (st, clock) = stepped_storage();
+        let t0 = clock.load(Ordering::SeqCst);
+        let item = st.add("任务").expect("写入必须成功");
+        st.toggle(item.id).expect("勾选必须成功"); // done_at = T0
+                                                   // 6 天后退回：done_at 清 NULL，计时清零
+        clock.store(t0 + 6 * 24 * 3600 * 1000, Ordering::SeqCst);
+        st.toggle(item.id).expect("退回必须成功");
+        // 推进到 T0 + 7 天 + 500ms：若按首次勾选计时早已超期，重计时则未满
+        clock.store(
+            t0 + crate::todo::ARCHIVE_RETENTION_MS + 500,
+            Ordering::SeqCst,
+        );
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            0,
+            "退回后计时清零不回收"
+        );
+        // 重勾于此刻 → 新 done_at，要到 T0 + 14 天 + 500ms 才到期
+        st.toggle(item.id).expect("重勾必须成功");
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            0,
+            "重勾按新 done_at 计时"
+        );
+        clock.store(
+            t0 + 2 * crate::todo::ARCHIVE_RETENTION_MS + 600,
+            Ordering::SeqCst,
+        );
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(
+            st.purge_expired_done(cutoff).expect("回收必须成功"),
+            1,
+            "新计时满 7 天后回收"
+        );
     }
 
     #[test]
