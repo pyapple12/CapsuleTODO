@@ -5,6 +5,30 @@
 
 ## 一、已完成 ✅
 
+（从新到旧；版本号 = 提交四段式，详见 AGENTS.md 版本线）
+
+- **FIX012 打包发布里程碑批**（2026-10-04 闭环 11/11，**V0.2.0.0 首个正式版发布上线**：commit 49f88a3 + tag v0.2.0 + GitHub Release；正式图标/绿色单 exe 出厂/首启默认四项[置顶关·吸附关·主题跟随·右上落位]/开板末帧 pop 根治/双击标题缩回托盘/release 使用说明与 MIT）→ 附录 FIX012
+- **FIX011 观察项清理批**（2026-10-03 闭环 11/11，V0.1.9.1：CSP 落地 + 九条轻松修；**§四豁免定案清单建立[永久 39/条件 7]，A001–A010 报告观察项节归并为指向**）→ 附录 FIX011
+- **FIX010 第 10 轮收官审计修复**（2026-10-03 闭环 14/14，V0.1.8.9：拍子到点复核防幽灵板/归档按钮守卫前置/注释例外补齐/白名单②扩围/契约断言/回滚写复核/哨兵单源/测试通道门控/expose 清理；**A005–A010 六轮审计收官，实现面零新缺陷**）→ 附录 A010
+- **FIX009 第 9 轮审计修复**（2026-10-03 闭环 12/12，V0.1.8.8：热键放弃标志换代际计数[双热键幽灵根除]/详情板错误归因随 id 四处+残留清空/勾选末拍收口/watchEffect 依赖收集先于早退/幽灵板四入口/bubble-changed 三跑收敛/Bubble 变体归位）→ 附录 A009
+- **FIX008 第 8 轮审计修复**（2026-10-03 闭环 16/16，V0.1.8.7：**上轮修复引入的死锁违规根除**[复核块拆两步]/Suppressed 期窗可见一律 Hide/保存基准携带条目 id/哨兵先行覆盖在飞窗口/trim 口径对齐/行映射收敛/windows_subsystem）→ 附录 A008
+- **FIX007 第 7 轮审计修复**（2026-10-02 闭环 18/18，V0.1.8.6：哨兵字段级/beforeBuildCommand/hotkey 死等待/in-flight 守卫/lastSaved 基准/单源四连/Show 竞态复核）→ 附录 A007
+- **FIX006 第 6 轮审计修复**（2026-10-02 闭环 20/20，V0.1.8.5：origin 载荷方案等——本轮核心 = 抓出 FIX005 三项修复无效，确立"grep 在位 ≠ 语义生效"方法论）→ 附录 A006
+- **FIX005 第 5 轮审计修复**（2026-10-01 闭环 31/31，V0.1.8.2–.4 三批：emit 修正/listen 防线/三组件 composable 收敛等）→ 附录 A005
+- **PL022 设置板偏好同步与菜单文案**（2026-10-01，V0.1.8.1）→ 附录 PL022
+- **PL021 托盘菜单自绘化**（2026-10-01，V0.1.8.0：HTML 菜单窗替代原生菜单 + 幽灵图标退出链修复）→ 附录 PL021
+- **PL020 预览延迟出现与显隐状态机重构**（2026-10-01，V0.1.7.2：单一守候线程四态状态机；死锁铁律两轮实证）→ 附录 PL020
+- **PL019 托盘交互四修与退出入口**（2026-10-01，V0.1.7.1）→ 附录 PL019
+- **PL018 托盘图标与悬浮预览**（2026-10-01，V0.1.7.0）→ 附录 PL018
+- **PL017 置顶开关与贴边吸附**（2026-09-30，V0.1.6.0）→ 附录 PL017
+- **PL016 热键捕获两改进**（2026-09-30，V0.1.5.0：失焦实时刷新 + 圈选直达）→ 附录 PL016
+- **FIX004 第 4 轮审计修复**（2026-09-30 闭环，V0.1.4.1–.2 两批）→ 附录 A004
+- **PL015 全局气泡热键**（2026-09-30，V0.1.4.0：Win32 RegisterHotKey 直连 + 重复捕获去重）→ 附录 PL015
+- **FIX003 第 3 轮审计修复 + 总目验缺陷五批**（2026-09-28，V0.1.2.3：APP 回归总验收后的修复收口）→ 附录 A003
+- **PL008–PL014 APP 回归七组**（2026-09-26 起直干 main，V0.1.1.5 → V0.1.2.2：玻璃基座/横切工厂/清单页/归档板/气泡页/拖拽排序/白板设置收口——用户总目视验收过，问题走 FIX003）→ 附录 PL008–PL014
+- **PL007 界面实验场并入**（2026-09-26，V0.1.1.4：ui-1.0-feature 分支 squash 合并，标签 ui1.0-final 钉存，分支保留归档）→ 附录 PL007
+- **A003–A010 第 3–10 轮全量审计归档**（修复对应上列 FIX003–FIX010，不另立条）
+- **PL006 二期收口 + FIX002**（2026-09-17，V0.1.1.1：二期功能全量提交）→ 附录 PL006 / A002
 - **A002 第 2 轮全量代码审计**（2026-09-17 归档；修复走 FIX002）→ 附录 A002
 - **PL005 白板**（2026-09-17 代码落地勾结；live 移交统一目验；提交随二期收口统一执行）→ 附录 PL005
 - **PL004 页签导航与气泡**（2026-09-17 代码落地勾结；live 移交统一目验；提交随二期收口统一执行）→ 附录 PL004
@@ -16,9 +40,14 @@
 
 ## 二、待完成
 
-**APP 回归执行中（2026-09-26 立项）**：PL008–PL014 七组直干 main（不开分支——用户定案 2026-09-26）；每 PL 自验三道闸（Rust TDD / IAB 冒烟断言 / 截图比对 design 忠实）+ 一条 feat 提交推送（V0.1.1.5 起 R+1）；**中间不请用户目验，PL014 后一次总目视验收**，问题走 FIX003；方案见附录 PL008–PL014，任务组见 x.progress.md 未完成区。
-历史收口备忘：二期 PL004–PL006 + FIX002 已收口（2026-09-17，V0.1.1.1）；设计实验场 UI 初版已并入（2026-09-26，V0.1.1.4，分支 ui-1.0-feature 保留归档、标签 ui1.0-final）。
-一期定案要点：置顶、全屏应用盖住板子（让位）、位置记忆、任务栏/Alt+Tab 暂不隐藏；开机自启一期不做（y.problems#4）。
+**下一件大事：macOS/Linux 适配**（2026-10-04 用户定案——取代原三期位置提前；三期 AI 暂缓仅记录见计划书 §6；适配方案待立项讨论：玻璃材质分平台分支已有 cfg 骨架，托盘/热键/吸附的 Win32 直连模块需平台等价层）。
+
+近期小项：
+
+- **工作区 4 文件随下版本提交**：FIX012 回填（x.progress.md/z.plan.md）+ CI 工作流（.github/workflows/ci.yml）+ README CI 徽章——push 即触发 CI 首跑上线
+- **README 顶部截图 + Social preview**：等用户实际使用一段时间积累真实内容后再截（活数据界面），上传仓库 Settings → Social preview；Release 说明可 Edit 补图
+
+历史收口备忘：APP 回归模式（PL008–PL014 直干 main + 终验收制）已完结归档；一期定案要点（置顶、全屏让位、位置记忆、任务栏不隐藏、开机自启不做 y.problems#4）与二期定案已全部落入实现，后续以豁免定案清单（§四）与 y.problems.md 为准。
 
 ## 三、主题规划
 
@@ -88,32 +117,6 @@
 | T7  | capture 300ms 等待窗并发复制被覆盖                        | A009           | 静默族设计定案变更时重评                              |
 
 （活化条目 CSP 不在本清单——已列 FIX011.1 修复，打包回归 live 验证。）
-
-## 附录 FIX011：观察项清理批（2026-10-03，用户定案）
-
-> 背景：A005–A010 收官后，A001–A010 十轮观察项（约 90 条原始条目）整合去重定案（见 §四）——永久豁免 39、条件豁免 7、活化修复 CSP，另有九条早期轮次遗留的轻松修（文档/命名/测试面）与 CSP 一并组成 FIX011 清理批，一次性清账。
-> 方案要点：
->
-> - **CSP 配置（FIX011.1，打包必办活化）**：`app.security.csp` = `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'`——self 覆盖 dist 静态资源、ipc 两协议覆盖 Tauri IPC 通道、data: 覆盖图标数据 URI、unsafe-inline 限定 style-src（tauri/wry 运行时注入样式所需）、object-src none 加固；dev 无 HMR 静态产物同 CSP 生效，打包回归时三页/托盘窗 live 复验
-> - **九条轻松修**：whiteboard 测试上限常量化（对齐 todo.rs 同族形态）/ storage sort 注释 NULL 排序措辞精确化 / hotkey 代际失配自注销双分支补日志（错误串底账）/ storage 测试域 use 统一 mod 级导入 / 拖动静默阈值注释引用常量名 / BUBBLE_MAX_LIMIT ref 驼峰命名 / 设置按钮 aria-label 中文化 / BubblesView onRowClick 删冗余 async / App.vue import 组间空行
-> - **定案纪律**：A001–A010 各报告观察项节同步清理为指向 §四（本清单唯一事实源，杜绝单一文件两处描述漂移）
->
-> 状态：✅ 已完成（2026-10-03 11/11 闭环；CSP live 复验随打包回归执行）
-
-## 附录 FIX012：打包发布里程碑批（2026-10-03 立项，V0.2.0.0）
-
-> 背景：A005–A010 审计收官 + 观察项清账后进入发布里程碑。打包三决策用户定案：**正式图标 = 用户设计胶囊稿**、**分发形态 = 绿色单 exe**（zip 内 exe + 使用说明，非安装器）、**数据落址 = exe 同级**（双落址基线 release 形态，零代码）。首启默认四项同步定案：置顶关/吸附关/主题跟随系统/默认落位主屏右上。
-> 方案要点：
->
-> - **图标管线**：2048 RGBA 设计源入库（source.png）→ `tauri icon` 生成 → 裁剪 Windows 五件套（单 exe 分发不需要 icns/UWP/移动端）→ bundle.icon 对齐；托盘经 default_window_icon 自动跟随
-> - **首启默认**：serde 钩子 + tauri.conf alwaysOnTop 双层改 false；主题种子 0（跟随，与 design 手动播种有意分叉）；default_position y 顶对齐改右上；tray 锁失败回退值/白名单措辞/测试断言全连带同步
-> - **pop 根治**：四变体隔离实验（V0 基线/V1 去过冲/V2 will-change/V3 去阴影）→ 唯 V2 消除 = transform 过渡结束合成层重光栅；三板 `.board-glass` 加 will-change: transform（诊断页 .temp/switch-pop-diag/ 留档）
-> - **双击标题缩回托盘**：main_hide_to_tray 命令复用 Alt+F4 关窗链（保存位置 + 隐藏），真退仍只走托盘菜单
-> - **发布链路**（待办尾部）：release/README.md（绿色包使用说明，非 GitHub README）→ commit V0.2.0.0 → tag v0.2.0 → 干净 staging 打 zip（.temp/release-pack/，严禁直压 target/release/）→ gh release create → 发布自查
->
-> 状态：🚧 执行中（.1–.7 已落；.8–.11 = commit/tag/zip/发布，等用户逐级指令）
-
----
 
 ## 附录 PL001：玻璃壳与最小清单闭环（2026-09-17 立项）
 
@@ -871,3 +874,29 @@ FIX008 16/16 diff 级零回退；死锁铁律 6 锁点全检零违规（FIX008.1
 
 FIX009 12/12 diff 级零回退；代际计数三段联动四交错推演全部收敛（A009 P3-1 双热键幽灵已根除）；死锁铁律全组锁点零违规；类型镜像逐字段核对零漂移（TodoItem 六字段 / BubbleCaptureOutcome snake_case / PrefsView / mock 归档排序）；FFI 签名全组核对无误；SQL 全参数化、v-html 零注入、零 any 维持；capabilities 与前端窗口 API 面匹配无缺权。
 **收官态势**：P2 连续三轮归零；P3 18→14→11→13（本轮微升系 FIX009 三组未竟面 + 存量暴露集中清点，无行为级新缺陷——最高条目仍是体验/文档面）；五轮审计主线索（死锁铁律/哨兵时序/错误归因/线程模型）全部闭合。**实现面（SQL/事务/校验/状态机/退出链/FFI）零新缺陷——达成收官条件。**
+
+## 附录 FIX011：观察项清理批（2026-10-03，用户定案）
+
+> 背景：A005–A010 收官后，A001–A010 十轮观察项（约 90 条原始条目）整合去重定案（见 §四）——永久豁免 39、条件豁免 7、活化修复 CSP，另有九条早期轮次遗留的轻松修（文档/命名/测试面）与 CSP 一并组成 FIX011 清理批，一次性清账。
+> 方案要点：
+>
+> - **CSP 配置（FIX011.1，打包必办活化）**：`app.security.csp` = `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'`——self 覆盖 dist 静态资源、ipc 两协议覆盖 Tauri IPC 通道、data: 覆盖图标数据 URI、unsafe-inline 限定 style-src（tauri/wry 运行时注入样式所需）、object-src none 加固；dev 无 HMR 静态产物同 CSP 生效，打包回归时三页/托盘窗 live 复验
+> - **九条轻松修**：whiteboard 测试上限常量化（对齐 todo.rs 同族形态）/ storage sort 注释 NULL 排序措辞精确化 / hotkey 代际失配自注销双分支补日志（错误串底账）/ storage 测试域 use 统一 mod 级导入 / 拖动静默阈值注释引用常量名 / BUBBLE_MAX_LIMIT ref 驼峰命名 / 设置按钮 aria-label 中文化 / BubblesView onRowClick 删冗余 async / App.vue import 组间空行
+> - **定案纪律**：A001–A010 各报告观察项节同步清理为指向 §四（本清单唯一事实源，杜绝单一文件两处描述漂移）
+>
+> 状态：✅ 已完成（2026-10-03 11/11 闭环；CSP live 复验随打包回归执行）
+
+## 附录 FIX012：打包发布里程碑批（2026-10-03 立项，V0.2.0.0）
+
+> 背景：A005–A010 审计收官 + 观察项清账后进入发布里程碑。打包三决策用户定案：**正式图标 = 用户设计胶囊稿**、**分发形态 = 绿色单 exe**（zip 内 exe + 使用说明，非安装器）、**数据落址 = exe 同级**（双落址基线 release 形态，零代码）。首启默认四项同步定案：置顶关/吸附关/主题跟随系统/默认落位主屏右上。
+> 方案要点：
+>
+> - **图标管线**：2048 RGBA 设计源入库（source.png）→ `tauri icon` 生成 → 裁剪 Windows 五件套（单 exe 分发不需要 icns/UWP/移动端）→ bundle.icon 对齐；托盘经 default_window_icon 自动跟随
+> - **首启默认**：serde 钩子 + tauri.conf alwaysOnTop 双层改 false；主题种子 0（跟随，与 design 手动播种有意分叉）；default_position y 顶对齐改右上；tray 锁失败回退值/白名单措辞/测试断言全连带同步
+> - **pop 根治**：四变体隔离实验（V0 基线/V1 去过冲/V2 will-change/V3 去阴影）→ 唯 V2 消除 = transform 过渡结束合成层重光栅；三板 `.board-glass` 加 will-change: transform（诊断页 .temp/switch-pop-diag/ 留档）
+> - **双击标题缩回托盘**：main_hide_to_tray 命令复用 Alt+F4 关窗链（保存位置 + 隐藏），真退仍只走托盘菜单
+> - **发布链路**（待办尾部）：release/README.md（绿色包使用说明，非 GitHub README）→ commit V0.2.0.0 → tag v0.2.0 → 干净 staging 打 zip（.temp/release-pack/，严禁直压 target/release/）→ gh release create → 发布自查
+>
+> 状态：✅ 已完成（2026-10-04 发布上线：commit 49f88a3 + tag v0.2.0 + GitHub Release 首个正式版；后续排期 = macOS/Linux 适配提为下一件大事、三期 AI 暂缓）
+
+---
