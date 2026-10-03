@@ -249,6 +249,8 @@ async function restore(item: TodoItem): Promise<void> {
     );
   } catch (err) {
     restoreTimers.delete(item.id); // FIX008.7：失败摘哨兵
+    // FIX009.2：失败路径参与末拍收口（TodoList 同构）
+    if (restoreTimers.size === 0) emit("changed");
     console.error("退回失败", err);
   }
 }

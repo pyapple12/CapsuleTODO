@@ -47,6 +47,9 @@ pub enum CommandError {
     Storage(String),
     /// 剪贴板读写失败或剪贴板内容不可用，承载错误说明
     Clipboard(String),
+    /// 气泡捕获校验失败（空文本/超长，FIX009.8 从 Clipboard 错桶归位——业务规则
+    /// 拒绝非剪贴板不可用，对齐 Todo/Whiteboard 专属变体形态），承载错误说明
+    Bubble(String),
     /// 白板内容非法，承载错误说明
     Whiteboard(String),
     /// 设置持久化失败（JSON/IO），承载错误说明
@@ -68,6 +71,7 @@ impl serde::Serialize for CommandError {
             CommandError::Todo(msg)
             | CommandError::Storage(msg)
             | CommandError::Clipboard(msg)
+            | CommandError::Bubble(msg)
             | CommandError::Whiteboard(msg)
             | CommandError::Settings(msg)
             | CommandError::Window(msg)
@@ -83,6 +87,7 @@ impl std::fmt::Display for CommandError {
             CommandError::Todo(msg)
             | CommandError::Storage(msg)
             | CommandError::Clipboard(msg)
+            | CommandError::Bubble(msg)
             | CommandError::Whiteboard(msg)
             | CommandError::Settings(msg)
             | CommandError::Window(msg)
@@ -106,7 +111,9 @@ impl From<StorageError> for CommandError {
 
 impl From<BubbleError> for CommandError {
     fn from(err: BubbleError) -> Self {
-        CommandError::Clipboard(err.to_string())
+        // FIX009.8：业务规则拒绝归 Bubble 专属变体（原错投 Clipboard 与变体文档
+        // "剪贴板读写失败"定义不符）
+        CommandError::Bubble(err.to_string())
     }
 }
 

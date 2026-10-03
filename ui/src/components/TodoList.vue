@@ -95,6 +95,9 @@ async function toggle(item: TodoItem): Promise<void> {
     );
   } catch (err) {
     toggleTimers.delete(item.id); // FIX008.7：失败摘哨兵防行锁死
+    // FIX009.2：失败路径参与末拍交接——摘到 0 时收口（否则行 1 主拍到点 size
+    // 已非首发态，本轮 changed 整体丢失，行滞留"视觉已勾"）
+    if (toggleTimers.size === 0) emit("changed");
     console.error("勾选失败", err);
   }
 }
@@ -120,6 +123,10 @@ function onRowClick(item: TodoItem, e: MouseEvent): void {
     }
     return;
   }
+  // FIX009.4：离场塌缩窗口（320~480ms 无 mask-dead）交互防幽灵面——条目已删
+  // 则静默忽略（开详情/勾选 toggle 均不再携死条目快照；编辑态分支用 editingId
+  // 做主体不涉 item，保持其先行的抑制语义不受影响）
+  if (!props.items.some((it) => it.id === item.id)) return;
   // 勾选框坐标分流（A10 = design todos.js 行 click 分支 1:1）：点中勾选框范围 =
   // 勾选入档（不受拖拽落点抑制约束——design suppress 只拦开详情）；点正文 = 开详情
   const row = e.currentTarget as HTMLElement;
@@ -146,6 +153,8 @@ function onRowClick(item: TodoItem, e: MouseEvent): void {
 }
 
 function onRowDblClick(item: TodoItem): void {
+  // FIX009.4：离场塌缩窗口双击防幽灵编辑——已删条目不进行内编辑态
+  if (!props.items.some((it) => it.id === item.id)) return;
   clearTimeout(clickTimer); // 掐掉未决的开板定时器
   startInlineEdit(item);
 }
@@ -208,9 +217,10 @@ async function commitEdit(item: TodoItem): Promise<void> {
 // Vue 冻结防线（PL013 红线）：拖拽 engaged 期间外部 items 到达不重渲染——重挂 DOM
 // 与虚拟 DOM 打架防线；落点收场 rerender 统一重拉
 watchEffect(() => {
+  void props.items.length; // 依赖收集（FIX009.3：必须先于早退——拖拽期重跑若
+  // 零依赖登记即返回，effect 从此失活，收场 rerender 复核承诺落空）
   syncMaskDead();
   if (deferDuringDrag()) return; // 冻结期跳过（拖拽收场 rerender 统一复核）
-  void props.items.length; // 依赖收集：items 变化即复核
 });
 
 // 拖拽钩子安装（本组件只装一次——气泡组件重复调用幂等覆盖，钩子语义一致）

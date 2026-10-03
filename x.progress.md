@@ -488,3 +488,20 @@
 - [x] FIX008.14 [P3] mock 热键回显序对齐 —— mock-invoke.ts 比较器反转为 `indexOf(a) - indexOf(b)` 升序（Ctrl→Alt→Shift→Win 同 Rust to_display，注释锚定测试断言）；验证：vue-tsc 绿（2026-10-03 已落）
 - [x] FIX008.15 [P3] .placeholder 死选择器清理 —— todos.css/bubbles.css 删联选保留 `.empty`（注释留删除依据）；grep 验证类选择器零残留（仅注释自指两处）；验证：build 绿（2026-10-03 已落）
 - [x] FIX008.16 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/vue-tsc/build/prettier 全绿）+ 全组 15 条 diff 级互查（三种纰漏模式对照：死代码 grep 零残留/哨兵三流推演/hotkey 三交错推演/关板 flush 时序解除/release PE GUI 实证）；live 回归用户豁免视作完成（2026-10-03 **FIX008 全组 16/16 闭环**）
+
+### FIX009: 第9轮审计修复 [audit#A009]
+
+> 范围：A009 P3 十一条（无 P2——P2 持续归零；热键代际计数为本组唯一机制级改动[DBL]标记；其余为前端时序面五条 + 文档/登记面五条）+ 收尾。观察项默认全不提升。互查纪律延续：修复完成后对各项做 diff 级互查再勾收尾。
+
+- [x] FIX009.1 [P3] [DBL] 热键放弃标志换代际计数 —— REREGISTER_ABORTED: AtomicBool 换 `REREGISTER_GEN: AtomicU64`：reregister 进入 fetch_add(1)+1 捕获 my_gen（旧轮双查立即失配，无需复位步），线程 move 闭包天然捕获副本，双查改 `REREGISTER_GEN.load() != my_gen` 自行 Unregister 退出；tid 落位改 CAS（预期 0 写自己，失败=并发登记冲突按放弃路径自清，plain store 覆盖新轮登记防线）；四交错推演闭环（stall 跨回滚窗根除/双查间/进循环后/正常路径）+ 并发登记加固；验证：cargo test 135 绿 + clippy 绿（2026-10-03 已落，live 换热键随收尾回归）
+- [x] FIX009.2 [P3] catch 摘哨兵补末拍收口 —— TodoList.vue 与 ArchiveOverlay.vue catch 分支 `delete(item.id)` 后补 `if (size === 0) emit("changed")`（失败路径参与末拍交接，两路谁后到谁收口且各只发一次）；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX009.3 [P3] watchEffect 依赖收集先于早退 —— TodoList.vue `void props.items.length` 上移为 effect 首行（任何一轮重跑都登记依赖，拖拽期早退只冻结 syncMaskDead 不冻结追踪，effect 失活根除）；验证：vue-tsc 绿（2026-10-03 已落）
+- [x] FIX009.4 [P3] 行离场窗口点击防幽灵板 —— 四处入口校验 `items.some(id)`（TodoList onRowClick[上移至勾选框分流前，编辑态分支用 editingId 做主体不受影响保持先行] + onRowDblClick[防幽灵行内编辑]；BubblesView onRowClick + onRowDblClick[防幽灵复制]，各自数据源 props.items/items.value）；复查补漏：初版只堵单击开板，对抗性复查穷举交互族抓出同根因三处漏网（toggle/行内编辑/复制）一并补全；删除链 DelButton 二态对已删 id 仅日志级噪音（无可见错误态、confirming 随行销毁自清），有意不加校验留档备查；验证：vue-tsc + build 绿 + 四校验点穷举均在各自 item 主体操作之前（2026-10-03 已落）
+- [x] FIX009.5 [P3] bubble-changed 三跑收敛 —— BubblesView refresh 加 `notify: boolean = true` 参数：bubble-changed 事件路径传 false 不 emit（App 同款监听已同步徽章），页内操作/挂载/重挂六调用点照旧 emit；验证：vue-tsc 绿 + 七调用点语义逐一核对（2026-10-03 已落，live 徽章计数随收尾回归）
+- [x] FIX009.6 [P3] flush 失败错误归因随 id —— DetailOverlay **四处** saveError 写点全部加 `props.todo?.id === pending.id` 判定（flush 两处 + timer 两处——穷举发现 timer 到点取出 pending 后 invoke 在飞期切条目的窄窗同构同病，超出任务条目框定的 flush 两处一并修全）+ **id-watch 补 saveError 清空**（按三模式复查抓到的残留缺口：错误显示时 id 匹配、但切条目仅 titleDraft 值变化才触发清——A/B 文本相同即残留到新板；与 lastSaved/pending 同拍重置，语义"错误只属于当前板内条目"闭环，todo↔bubble 互切经 undefined→id 同样覆盖）：消除"张三的失败挂李四板上"的错位误导，console.error 留底账；验证：vue-tsc + build 绿 + 四处写点穷举无剩余 + 手工构造错桶全查通过（2026-10-03 已落）
+- [x] FIX009.7 [P3] todo 侧 trim 契约文档 —— storage.rs add/rename 文档补"调用方须传 **trim 后**文本（trim 执行点在命令层，直调本方法绕过命令层即失守此契约）"（镜像 add_bubble 措辞，FIX008.9 同构收全）；验证：cargo doc 0 警告（2026-10-03 已落）
+- [x] FIX009.8 [P3] BubbleError 错桶归位 —— mod.rs 加 `CommandError::Bubble(String)` 变体（文档"气泡捕获校验失败（空文本/超长）"，serialize/Display 两 match 并入）+ From 改投 Bubble（注释载归位理由）+ bubble.rs 测试断言同步改 `CommandError::Bubble(_)`；复核 Clipboard 残留三处均真实剪贴板操作错误（读取/写入/无文本，变体本职）；验证：cargo test 135 绿 + clippy/doc 绿（2026-10-03 已落）
+- [x] FIX009.9 [P3] tray 线程模型注释纠偏 —— anchor_preview 文档"守候线程持锁调用"改"调用方锁外持副本调用——锁内只拷值出锁，窗调用在锁外（死锁铁律正确形态）"；模块文档"显隐只由守候线程执行"限定"预览 Shown 态"并补"右键收窗例外（on_tray_right_button 事件路径直调 hide）"；验证：文档核对（2026-10-03 已落）
+- [x] FIX009.10 [P3] hotkey 注释行号锚修正 —— 杀旧注释 ":254-259 配套"改语义描述"消息循环退出路径配套"（免行号随插行漂移，第三次同类失准后改用稳定形式）；验证：文档核对（2026-10-03 已落）
+- [x] FIX009.11 [P3] 白名单⑩扩围热键回调锁 —— AGENTS.md 白名单⑩场景扩为"持 WATCH 锁 panic，及热键线程对 ON_HOTKEY 回调锁的写入与读取遇锁中毒"（降级与理由不变，补"回调仅 spawn 期写入一次毒化前后值等价"语义依据，登记注记 FIX009.11）；验证：文档核对（2026-10-03 已落）
+- [x] FIX009.12 [P3] 收尾验证 —— 全量门禁（fmt --check/clippy -D warnings/cargo test 135/cargo doc 0 警告/vue-tsc/build/prettier 全绿）+ 全组 11 条 diff 级语义互查（代际五引用+tid CAS/末拍收口×2/依赖收集首行/幽灵板四校验/notify 语义分布/id 判定八处+残留清空/trim 契约三处/Bubble 四引用/注释纠偏两处/语义描述锚/白名单扩围）+ live 回归（换热键/勾选删除连击/气泡捕获与清空/详情板切换条目/删除后立即点行）；验证：门禁全绿 + 用户目验回执（2026-10-03 门禁与互查过，live 用户此前已明示豁免视作完成——**FIX009 全组 12/12 闭环**）

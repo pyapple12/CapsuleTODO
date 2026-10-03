@@ -144,12 +144,13 @@ const WM_QUIT: u32 = 0x0012;
 #[cfg(target_os = "windows")]
 static THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// 注册放弃标志（FIX008.13）：父侧 500ms 等待超时置位，注册线程在落 tid 前 /
-/// 进消息循环前双查——命中自行 Unregister 退出，消除"UI 已回退、迟到注册的
-/// 新键实际生效"的状态分叉；每轮 reregister 开头复位
+/// 注册代际计数（FIX009.1 替代 FIX008.13 的 bool 放弃标志）：reregister 进入即
+/// fetch_add 捕获本轮代际，线程双查比对"世界是否还是我那一轮"——不等 = 父侧已
+/// 超时放弃或已被后续轮（含回滚轮）取代，自行 Unregister 退出。代际只增不减，
+/// "复位"语义消失：bool 版的复位会被紧随超时的回滚轮抹掉，令 stall 线程错过
+/// 放弃信号 → 与回滚轮新线程双热键并存（A009 P3-1）；代际比对天然隔离各轮
 #[cfg(target_os = "windows")]
-static REREGISTER_ABORTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static REREGISTER_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 热键触发回调（捕获流程，热键线程直调——线程模型见运行时段实现注记）；spawn 时设置，reregister 复用
 #[cfg(target_os = "windows")]
@@ -211,11 +212,14 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     use std::time::Duration;
 
     // 1. 杀旧线程（无旧线程则跳过）并轮询等待退出——旧线程退出循环时 Unregister
-    //    热键并自行 CAS 清零 tid（:254-259 配套），父侧只投递 WM_QUIT 不代清
+    //    热键并自行 CAS 清零 tid（消息循环退出路径配套，FIX009.10 改语义描述免
+    //    行号随插行漂移），父侧只投递 WM_QUIT 不代清
     //    （FIX007.3：原 swap(0) 先行清零令等待条件恒假 = 死等待，且剥夺旧线程
     //    CAS 成功权致 Unregister/Register 竞窗）
-    // 0. 复位放弃标志（FIX008.13）：上一轮超时的置位不得污染本轮新线程
-    REREGISTER_ABORTED.store(false, Ordering::SeqCst);
+    // 0. 捕获本轮代际（FIX009.1）：fetch_add 令旧轮线程的双查比对立即失配（含
+    //    上一轮超时未死的 stall 线程——bool 版复位会被紧随的回滚轮抹掉信号），
+    //    无需独立复位步
+    let my_gen = REREGISTER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let old = THREAD_ID.load(Ordering::SeqCst);
     if old != 0 {
         // 投递失败短重试（目标线程消息队列未建时投递会失败，FIX004.7-②）
@@ -241,6 +245,7 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     std::thread::Builder::new()
         .name("bubble-hotkey".to_string())
         .spawn(move || {
+            // my_gen 已被 move 闭包捕获（发起轮代际副本），双查比对全局计数
             unsafe {
                 if win::RegisterHotKey(0, HOTKEY_ID, combo.mods, combo.vk) == 0 {
                     let _ = tx.send(Err(
@@ -248,18 +253,32 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                     ));
                     return;
                 }
-                // FIX008.13 双查之一：父侧等待超时已置放弃标志——自行注销退出，
-                // 不落 tid 不进循环（"父已回退"与"新键生效"互斥）
-                if REREGISTER_ABORTED.load(Ordering::SeqCst) {
+                // FIX009.1 双查之一：世界已不是发起轮（父超时放弃或后续轮接管）
+                // ——自行注销退出，不登记 tid 不进循环（"父已回退"与"新键生效"互斥）
+                if REREGISTER_GEN.load(Ordering::SeqCst) != my_gen {
                     let _ = win::UnregisterHotKey(0, HOTKEY_ID);
                     let _ = tx.send(Err("父侧等待超时已放弃，注册线程自行注销".to_string()));
                     return;
                 }
-                THREAD_ID.store(win::GetCurrentThreadId(), Ordering::SeqCst);
+                // tid 落位改 CAS（FIX009.1）：预期 0 写自己——并发登记失败 = 已有
+                // 新轮接管，按放弃路径自清退出（plain store 会覆盖新轮登记）
+                if THREAD_ID
+                    .compare_exchange(
+                        0,
+                        win::GetCurrentThreadId(),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    .is_err()
+                {
+                    let _ = win::UnregisterHotKey(0, HOTKEY_ID);
+                    let _ = tx.send(Err("并发登记冲突，注册线程自行注销".to_string()));
+                    return;
+                }
                 let _ = tx.send(Ok(()));
-                // FIX008.13 双查之二：覆盖"send 与父超时交错"的微秒窗——tid 已
+                // FIX009.1 双查之二：覆盖"send 与父超时交错"的微秒窗——tid 已
                 // 落位须自清（对齐消息循环退出路径的 CAS 形态）
-                if REREGISTER_ABORTED.load(Ordering::SeqCst) {
+                if REREGISTER_GEN.load(Ordering::SeqCst) != my_gen {
                     let _ = win::UnregisterHotKey(0, HOTKEY_ID);
                     let _ = THREAD_ID.compare_exchange(
                         win::GetCurrentThreadId(),
@@ -291,12 +310,12 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
         })
         .map_err(|err| format!("热键线程启动失败：{err}"))?;
 
-    // 3. 同步等注册结果（FIX004.7-④：超时返回 Err，不带病推进）；超时即置放弃
-    //    标志（FIX008.13）——迟到注册成功的线程双查命中自行注销，状态不分叉
-    rx.recv_timeout(Duration::from_millis(500)).map_err(|_| {
-        REREGISTER_ABORTED.store(true, Ordering::SeqCst);
-        "热键注册结果等待超时".to_string()
-    })?
+    // 3. 同步等注册结果（FIX004.7-④：超时返回 Err，不带病推进）。超时后无需
+    //    显式通知线程（FIX009.1）：回滚路径的下一轮 reregister fetch_add 会令
+    //    本轮代际失配，stall 线程双查命中自行注销——bool 版"置放弃标志"在此
+    //    被回滚轮复位抹掉的缺陷（A009 P3-1）随代际计数根除
+    rx.recv_timeout(Duration::from_millis(500))
+        .map_err(|_| "热键注册结果等待超时".to_string())?
 }
 
 #[cfg(test)]

@@ -205,7 +205,9 @@ impl Storage {
         Ok(())
     }
 
-    /// 新增待办（文本须先经 todo::validate_text 业务校验），返回含回填 id 的条目；
+    /// 新增待办（文本须先经 todo::validate_text 业务校验，且调用方须传 **trim 后**
+    /// 文本——trim 执行点在命令层，直调本方法绕过命令层即失守此契约，FIX009.7
+    /// 对齐 add_bubble 同款声明），返回含回填 id 的条目；
     /// created_at = 时间源 now（新建行非 NULL）；sort_order = 未完成段最小值 − 1
     /// （排头插入——2026-09-30 用户定案：新增置顶，与气泡排头插入语义对齐；
     /// 限定 done = 0 段取 MIN，不侵完成序）
@@ -245,7 +247,8 @@ impl Storage {
         self.get(id)
     }
 
-    /// 改标题（文本须先经 validate_text）；零行返回 NotFound
+    /// 改标题（文本须先经 validate_text，且调用方须传 **trim 后**文本——trim
+    /// 执行点在命令层，FIX009.7 同款契约声明）；零行返回 NotFound
     pub fn rename(&self, id: i64, text: &str) -> Result<TodoItem, StorageError> {
         let changed = self.conn.execute(
             "UPDATE todos SET text = ?2 WHERE id = ?1",

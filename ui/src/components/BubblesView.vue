@@ -60,12 +60,17 @@ const listEl = ref<HTMLElement | null>(null);
  * （FIX004.23：Rust 侧 snapshot.remind 死值已删，契约只剩 items） */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
 
-/** 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里） */
-async function refresh(): Promise<void> {
+/**
+ * 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里）。
+ * FIX009.5：notify=false 供 bubble-changed 事件触发路径——App 自身的同款监听
+ * 已管徽章，此处再 emit 会让 App.refreshBadge 对同一事件跑两次（冗余 IPC）；
+ * 页内用户操作路径照旧 emit（App 无其他途径感知页内操作）
+ */
+async function refresh(notify: boolean = true): Promise<void> {
   try {
     const snapshot = await invoke<BubbleSnapshot>("bubble_list");
     items.value = snapshot.items;
-    emit("changed");
+    if (notify) emit("changed");
   } catch (err) {
     console.error("bubble_list 拉取失败", err);
   }
@@ -240,6 +245,9 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
 async function onRowClick(item: BubbleItem, e: MouseEvent): Promise<void> {
   if (isSuppressed()) return; // 拖拽落点抑制（useDragReorder 350ms 窗口）
   if (rowMaskDead(rowEl(item.id))) return; // 罩死行禁交互
+  // FIX009.4：离场塌缩窗口点击防幽灵板（气泡全文板 readonly 无写入防御，死
+  // 条目快照会被原样展示）——条目已删则静默忽略
+  if (!items.value.some((it) => it.id === item.id)) return;
   cancelClearConfirm(); // 确认清空期间点气泡行：一键清空旁路退回（A5，todos.js:307 同款）
   clearTimeout(clickTimer);
   // 行中心视口坐标随行上抛（A3：全文板飞出原点 = 被点行中心）
@@ -254,6 +262,8 @@ async function onRowClick(item: BubbleItem, e: MouseEvent): Promise<void> {
 }
 
 async function onRowDblClick(item: BubbleItem): Promise<void> {
+  // FIX009.4：离场塌缩窗口双击防幽灵复制——已删 id 的 bubble_copy 必然 NotFound
+  if (!items.value.some((it) => it.id === item.id)) return;
   if (isSuppressed()) return; // 拖拽收场落点双击不当作复制（A6，detail.js:145 同款）
   clearTimeout(clickTimer); // 掐掉未决的开板定时器：双击只复制不开板
   if (rowMaskDead(rowEl(item.id))) return;
@@ -319,7 +329,7 @@ onMounted(() => {
   // disposed 声明在 setup 层、置位在顶层 onUnmounted（FIX005.26 曾嵌套注册在
   // onMounted 回调内 = 生命周期钩子失效区，防护恒不生效，A006 P2-4 实证）
   listen("bubble-changed", () => {
-    void refresh();
+    void refresh(false); // FIX009.5：事件路径不 emit——App 监听已同步徽章
   })
     .then((unlisten) => {
       if (bubbleListenDisposed) {

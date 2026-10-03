@@ -245,7 +245,8 @@ mod tests {
     fn capture_blank_is_visible_error() {
         let ctx = test_context();
         let err = bubble_capture_core("   ", &ctx).expect_err("空文本必须被拒");
-        assert!(matches!(err, CommandError::Clipboard(_)));
+        // FIX009.8：校验拒绝归 Bubble 专属变体（原错桶 Clipboard 已归位）
+        assert!(matches!(err, CommandError::Bubble(_)));
     }
 
     #[test]

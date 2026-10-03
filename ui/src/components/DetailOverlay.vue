@@ -176,7 +176,11 @@ watch(titleDraft, (text) => {
         emit("changed");
       })
       .catch((err) => {
-        saveError.value = `改名保存失败：${String(err)}`;
+        // FIX009.6：错误只属于当前板内条目——invoke 在飞期切条目后，旧条目的
+        // 失败不挂新板（否则红字与操作对象错位，误导排查）；console.error 仍留底账
+        if (props.todo?.id === pending.id) {
+          saveError.value = `改名保存失败：${String(err)}`;
+        }
         console.error("改名失败", err);
       });
   }, 300);
@@ -202,6 +206,9 @@ watch(
     clearTimeout(noteTimer);
     renamePending = null;
     notePending = null;
+    // FIX009.6 语义闭环：错误只属于当前板内条目——上一条目的失败红字不得
+    // 残留到新条目（titleDraft 装载仅在值变化时触发清空，A/B 文本相同即漏）
+    saveError.value = "";
   },
 );
 watch(noteDraft, (note) => {
@@ -232,7 +239,10 @@ watch(noteDraft, (note) => {
         emit("changed");
       })
       .catch((err) => {
-        saveError.value = `笔记保存失败：${String(err)}`;
+        // FIX009.6：同改名侧——错误只属于当前板内条目
+        if (props.todo?.id === pending.id) {
+          saveError.value = `笔记保存失败：${String(err)}`;
+        }
         console.error("笔记保存失败", err);
       });
   }, 300);
@@ -259,7 +269,11 @@ async function flushPending(): Promise<void> {
           emit("changed");
         })
         .catch((err) => {
-          saveError.value = `改名保存失败：${String(err)}`;
+          // FIX009.6：flush 失败归因随 id（本条目本体）——切源后旧条目的失败
+          // 不挂新板（红字与操作对象错位 = 误导排查）；console.error 留底账
+          if (props.todo?.id === rename.id) {
+            saveError.value = `改名保存失败：${String(err)}`;
+          }
           console.error("改名失败", err);
         }),
     );
@@ -275,7 +289,10 @@ async function flushPending(): Promise<void> {
           emit("changed");
         })
         .catch((err) => {
-          saveError.value = `笔记保存失败：${String(err)}`;
+          // FIX009.6：同 flush 改名侧，失败归因随 id
+          if (props.todo?.id === note.id) {
+            saveError.value = `笔记保存失败：${String(err)}`;
+          }
           console.error("笔记保存失败", err);
         }),
     );
