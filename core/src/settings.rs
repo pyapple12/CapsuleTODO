@@ -1,7 +1,8 @@
 //! 运行时设置持久化（PL003 窗口位置 + PL014.2 气泡提醒上限 + PL015 气泡热键 +
-//! PL017 置顶 always_on_top 与吸附 snap_to_edge 开关，FIX010.8 补齐职责清单）：
-//! JSON 原子写（同目录 .tmp 写入 + rename 替换，失败清理临时文件）。尺寸固定
-//! 300×400 不入配置，仅记位置；文件不存在 = 首启正常态（白名单③回默认位）。
+//! PL017 置顶 always_on_top 与吸附 snap_to_edge 开关，FIX010.8 补齐职责清单 +
+//! FIX013.2 主题三态 theme）：JSON 原子写（同目录 .tmp 写入 + rename 替换，失败
+//! 清理临时文件）。尺寸固定 300×400 不入配置，仅记位置；文件不存在 = 首启正常态
+//! （白名单③回默认位）。
 
 use std::path::Path;
 
@@ -23,6 +24,17 @@ pub const DEFAULT_BUBBLE_HOTKEY: &str = "Ctrl+Alt+C";
 /// 越界静默收敛到边界（白名单⑤）
 pub fn clamp_max_bubbles(value: u32) -> u32 {
     value.clamp(1, MAX_BUBBLES_LIMIT)
+}
+
+/// 主题三态合法值钳制（FIX013.2：0=跟随系统/1=浅色/2=暗色，读写两路径单一来源
+/// 沿 clamp_max_bubbles 同规）——手改 config.json 越界值（>2）静默收敛 0（跟随，
+/// 首启默认语义），白名单⑤扩围
+pub fn clamp_theme(value: u8) -> u8 {
+    if value <= 2 {
+        value
+    } else {
+        0
+    }
 }
 
 /// serde default 挂钩：旧 config.json 缺 max_bubbles 字段时回填 5（PL014.2）
@@ -47,6 +59,12 @@ fn default_snap_to_edge() -> bool {
     false
 }
 
+/// serde default 挂钩：config.json 缺 theme 字段时回填 0 = 跟随系统（FIX013.2，
+/// 与 V0.2.0.0 首启默认定案一致）
+fn default_theme() -> u8 {
+    0
+}
+
 /// serde default 挂钩：config.json 缺 x/y 字段时回填哨兵（FIX007.1——字段级
 /// default 按字段类型取 i32::default()=0，不走 struct Default，0 恰在主屏内会被
 /// 落位判定误收 = 左上角；哨兵 i32::MIN 必判屏外 → 走 default_position 默认位）
@@ -60,7 +78,8 @@ pub const SNAP_THRESHOLD_PX: i32 = 50;
 /// 贴边吸附落位与屏幕边的间距（px，用户定案 5px）
 pub const SNAP_GAP_PX: i32 = 5;
 
-/// 运行时设置（窗口位置 + 气泡提醒上限 + 气泡热键；serde default 容忍手改缺字段）
+/// 运行时设置（窗口位置 + 气泡提醒上限 + 气泡热键 + 置顶/吸附开关 + 主题三态；
+/// serde default 容忍手改缺字段）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WindowSettings {
     /// 窗口左上角 x（屏幕物理坐标；缺字段回哨兵 = 首启未落位，FIX007.1）
@@ -75,12 +94,16 @@ pub struct WindowSettings {
     /// 气泡捕获全局热键（PL015；旧 config.json 缺字段回填 Ctrl+Alt+C）
     #[serde(default = "default_bubble_hotkey")]
     pub bubble_hotkey: String,
-    /// 窗口置顶开关（PL017；旧 config.json 缺字段回填 true——现状即置顶）
+    /// 窗口置顶开关（PL017；旧 config.json 缺字段回填 false——V0.2.0.0 首启默认关）
     #[serde(default = "default_always_on_top")]
     pub always_on_top: bool,
-    /// 贴边吸附开关（PL017；旧 config.json 缺字段回填 true——新功能默认开）
+    /// 贴边吸附开关（PL017；旧 config.json 缺字段回填 false——V0.2.0.0 首启默认关）
     #[serde(default = "default_snap_to_edge")]
     pub snap_to_edge: bool,
+    /// 主题三态（FIX013.2：0=跟随系统/1=浅色/2=暗色；旧 config.json 缺字段回填
+    /// 0 = 跟随，越界值加载点钳制收敛 0）
+    #[serde(default = "default_theme")]
+    pub theme: u8,
 }
 
 impl Default for WindowSettings {
@@ -97,6 +120,7 @@ impl Default for WindowSettings {
             bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
             always_on_top: default_always_on_top(),
             snap_to_edge: default_snap_to_edge(),
+            theme: default_theme(),
         }
     }
 }
@@ -123,6 +147,8 @@ pub fn load(path: &Path) -> Result<Option<WindowSettings>, SettingsError> {
     // 载入规范化单点（FIX004.17）：上限钳制与热键回默认同段——config.json 载入即合法，
     // 调用方无需二次钳制（钳制函数为读写两路径单一来源，白名单⑤）
     settings.max_bubbles = clamp_max_bubbles(settings.max_bubbles);
+    // 主题三态钳制（FIX013.2）：越界收敛 0（跟随），与上限钳制同段同规
+    settings.theme = clamp_theme(settings.theme);
     // 热键规范化（PL015 白名单⑦）：用户手改 config.json 非法热键静默回默认，
     // 不崩常驻应用（与 max_bubbles 越界钳制同款纪律）
     if crate::hotkey::parse(&settings.bubble_hotkey).is_err() {
@@ -202,6 +228,7 @@ mod tests {
                 bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
                 always_on_top: true,
                 snap_to_edge: true,
+                theme: 2,
             },
         )
         .expect("保存必须成功");
@@ -209,6 +236,7 @@ mod tests {
         assert_eq!(loaded.x, 120);
         assert_eq!(loaded.y, -40);
         assert_eq!(loaded.max_bubbles, 5);
+        assert_eq!(loaded.theme, 2, "主题三态落盘回读一致");
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 
@@ -234,6 +262,7 @@ mod tests {
                 bubble_hotkey: DEFAULT_BUBBLE_HOTKEY.to_string(),
                 always_on_top: true,
                 snap_to_edge: true,
+                theme: 0,
             },
         )
         .expect("保存必须成功（父目录自建）");
@@ -328,6 +357,47 @@ mod tests {
         let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
         assert!(!loaded.always_on_top);
         assert!(!loaded.snap_to_edge);
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn clamp_theme_bounds() {
+        // FIX013.2：主题三态钳制单一来源（0/1/2 合法保留，越界收敛 0 = 跟随）
+        assert_eq!(clamp_theme(0), 0);
+        assert_eq!(clamp_theme(1), 1);
+        assert_eq!(clamp_theme(2), 2);
+        assert_eq!(clamp_theme(3), 0);
+        assert_eq!(clamp_theme(255), 0);
+    }
+
+    #[test]
+    fn theme_missing_field_backfills_follow() {
+        // FIX013.2：旧 config.json 缺 theme 字段 → serde default 回填 0 = 跟随系统
+        let path = temp_path("theme-missing.json");
+        std::fs::write(&path, r#"{"x": 1, "y": 2}"#).expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert_eq!(loaded.theme, 0, "缺字段回填跟随");
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn theme_out_of_range_clamps_on_load() {
+        // FIX013.2 白名单⑤扩围：手改 theme:9 → 加载点钳 0（跟随），载入即合法
+        let path = temp_path("theme-oob.json");
+        std::fs::write(&path, r#"{"x": 1, "y": 2, "theme": 9}"#).expect("写入必须成功");
+        let loaded = load(&path).expect("读取必须成功").expect("文件必须存在");
+        assert_eq!(loaded.theme, 0);
+        std::fs::remove_file(&path).expect("清理必须成功");
+    }
+
+    #[test]
+    fn theme_overflow_u8_is_strict_error() {
+        // FIX013.2 主线边界锁定：theme:300 不可解析为 u8（serde invalid value）→
+        // 严格报错不钳制——白名单⑤只覆盖"可解析为 u8 的越界整数"（0~255 且 >2），
+        // 与 max_bubbles u32（300 可解析 → 钳 20）的容错面有意不同
+        let path = temp_path("theme-overflow.json");
+        std::fs::write(&path, r#"{"x": 1, "y": 2, "theme": 300}"#).expect("写入必须成功");
+        assert!(matches!(load(&path), Err(SettingsError::Json(_))));
         std::fs::remove_file(&path).expect("清理必须成功");
     }
 }

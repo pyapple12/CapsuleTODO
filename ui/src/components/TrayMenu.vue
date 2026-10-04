@@ -12,10 +12,11 @@ import type { PrefsView } from "../../types";
 /** 菜单项动作（与 Rust tray_menu_action 分发全集一致） */
 type MenuAction = "show" | "snap" | "top" | "exit";
 
-/** 贴边吸附勾选态（事实源 = config.json，经命令读出） */
-const snapOn = ref(true);
-/** 窗口置顶勾选态 */
-const topOn = ref(true);
+/** 贴边吸附勾选态（事实源 = config.json，经命令读出；初值 false 对齐 V0.2.0.0
+ * 首启默认关定案——菜单窗常驻 hide/show，初值生命周期 = 整个会话，FIX013.1） */
+const snapOn = ref(false);
+/** 窗口置顶勾选态（同上，初值对齐首启默认关） */
+const topOn = ref(false);
 let unlistenPrefs: UnlistenFn | undefined;
 
 /** 点菜单项：动作分发（收窗在 Rust 侧统一执行） */

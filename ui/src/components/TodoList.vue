@@ -177,6 +177,11 @@ function onRowDblClick(item: TodoItem): void {
   // 编辑流程——startInlineEdit 会把 editDraft 复位回已存文本（丢未保存草稿）
   // 并把光标重钉行尾（与单击同根：行级处理器截胡输入框内操作）
   if ((editingId.value ?? pendingExitId.value) === item.id) return;
+  // FIX013.4：罩死行/拖拽收场抑制窗内不进编辑（对齐 BubblesView 同构两查与
+  // 本文件单击侧）；置于同条守卫之后——编辑本条时双击是选词原生行为（1665b52
+  // 定案），不得被抑制窗/罩死误拦
+  if (isSuppressed()) return;
+  if (rowMaskDead(rowEl(item.id))) return;
   startInlineEdit(item);
 }
 
@@ -186,6 +191,14 @@ const editingId = ref<number | null>(null);
 const editDraft = ref("");
 
 function startInlineEdit(item: TodoItem): void {
+  // FIX013.3：换条编辑先掐上一条的待退残留（时序：A 提交在飞 → 双击 B → A 落库
+  // 置待退 → 旧兜底拍子到点无条件清 editingId 强拆 B 编辑器）；清残留后 A 的
+  // 切回走数据到达 watch 正常路——editingId 已易主，A 的待退本已无意义
+  if (pendingExitTimer !== undefined) {
+    window.clearTimeout(pendingExitTimer);
+    pendingExitTimer = undefined;
+  }
+  pendingExitId.value = null;
   editingId.value = item.id;
   editDraft.value = item.text;
   startEditFocusFlow(); // 挂载聚焦 + 80ms 重申（光标行尾）
@@ -212,6 +225,7 @@ function startEditFocusFlow(): void {
  * 才切回文本元素——消除"切回瞬间显示旧文本 → 刷新跳新文本"的闪帧（用户实测）；
  * 1.5s 超时兜底防 refresh 失败卡编辑态 */
 const pendingExitId = ref<number | null>(null);
+let pendingExitTimer: number | undefined; // FIX013.3：兜底拍子句柄（换条编辑时须掐）
 
 async function commitEdit(item: TodoItem): Promise<void> {
   const text = editDraft.value.trim();
@@ -222,13 +236,18 @@ async function commitEdit(item: TodoItem): Promise<void> {
   try {
     await invoke("todo_rename", { id: item.id, text });
     emit("changed");
-    pendingExitId.value = item.id; // 退出编辑延到数据到达（watch props.items 兜底超时）
-    window.setTimeout(() => {
-      if (pendingExitId.value === item.id) {
-        pendingExitId.value = null;
-        editingId.value = null;
-      }
-    }, 1500);
+    // FIX013.3：提交在飞期用户已切到他条编辑（editingId 易主）则跳过待退态——
+    // 旧形态无条件置位 + 1500ms 兜底无条件清 editingId，会强拆新行编辑器
+    //（聚焦元素被摘不派发 blur，新行草稿丢失）；本条仍在编辑才挂待退态
+    if (editingId.value === item.id) {
+      pendingExitId.value = item.id; // 退出编辑延到数据到达（watch props.items 兜底超时）
+      pendingExitTimer = window.setTimeout(() => {
+        if (pendingExitId.value === item.id) {
+          pendingExitId.value = null;
+          editingId.value = null;
+        }
+      }, 1500);
+    }
   } catch (err) {
     console.error("改名失败", err); // input 保留：失败可就地重试
   }

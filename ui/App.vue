@@ -27,7 +27,11 @@ const topbarEl = ref<HTMLElement | null>(null);
 // 粒子引擎句柄：设置板换主题（accent 变色）后 refresh 换色不重建（2026-09-30
 // 资源定案：重建会重播开场汇聚动画 = 切主题资源峰值主因）
 // （shallowRef：volar 对裸 let 的模板收窄会把回调内赋值判成 never，实测 TS2339）
-const titleFX = shallowRef<{ refresh: () => void } | null>(null);
+const titleFX = shallowRef<{ refresh: () => void; destroy: () => void } | null>(null);
+// FIX013.5：两套件清理句柄——套件在 onMounted 异步上下文初始化，其内部卸载钩子
+// 不生效（Vue 铁律），destroy 由顶层 onUnmounted 显式调用
+let titleFXDestroy: (() => void) | null = null;
+let dragDestroy: (() => void) | null = null;
 
 // 拖拽机制安装（PL013：document 级 mousedown/mousemove/mouseup + blur 收尾，
 // App 顶层一次安装，机制对全部 DRAG_TARGETS 生效）
@@ -186,8 +190,11 @@ function onSettingsOpened(): void {
 // 气泡提醒数量（PL014.2 持久化）：启动自 config.json 加载，设置板步进落库
 const maxBubbles = ref(5);
 // 窗口偏好（PL017 持久化）：置顶与贴边吸附开关，设置板 toggle 落库
-const alwaysOnTop = ref(true);
-const snapToEdge = ref(true);
+//（初值 false 对齐 V0.2.0.0 首启默认关定案——拉取失败降级态显示与真机一致，FIX013.1）
+const alwaysOnTop = ref(false);
+const snapToEdge = ref(false);
+// 主题三态（FIX013.2 持久化：0 跟随/1 浅/2 暗），设置板切档落库
+const theme = ref(0);
 
 /** 拉取气泡提醒上限（启动时初始化；失败保持默认 5） */
 async function refreshMaxBubbles(): Promise<void> {
@@ -198,11 +205,13 @@ async function refreshMaxBubbles(): Promise<void> {
   }
 }
 
-/** 拉取窗口偏好开关（PL017：置顶/贴边吸附；失败保持默认 true） */
+/** 拉取窗口偏好（PL017 置顶/吸附 + FIX013.2 主题三态；失败保持默认 false/0，
+ * 对齐 V0.2.0.0 首启定案） */
 async function refreshWindowPrefs(): Promise<void> {
   try {
     alwaysOnTop.value = await invoke<boolean>("settings_get_always_on_top");
     snapToEdge.value = await invoke<boolean>("settings_get_snap_to_edge");
+    theme.value = await invoke<number>("settings_get_theme");
   } catch (err) {
     console.error("窗口偏好拉取失败", err);
   }
@@ -263,6 +272,7 @@ onMounted(async () => {
   unlistenPrefsChanged = await listen<PrefsView>("prefs-changed", (event) => {
     alwaysOnTop.value = event.payload.always_on_top;
     snapToEdge.value = event.payload.snap_to_edge;
+    theme.value = event.payload.theme;
   }).catch((err) => {
     console.error("prefs-changed 监听注册失败", err);
     return undefined;
@@ -294,9 +304,12 @@ onMounted(async () => {
   await refreshMaxBubbles();
   await refreshWindowPrefs();
   // 标题粒子化（design text-particles.js 移植）：reduced-motion 下不初始化回退静态文字
-  if (titleEl.value) titleFX.value = initTitleParticles(titleEl.value);
+  if (titleEl.value) {
+    titleFX.value = initTitleParticles(titleEl.value);
+    titleFXDestroy = titleFX.value?.destroy ?? null;
+  }
   // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗
-  if (topbarEl.value) useThresholdDrag(topbarEl.value);
+  if (topbarEl.value) dragDestroy = useThresholdDrag(topbarEl.value);
 });
 
 onUnmounted(() => {
@@ -305,6 +318,8 @@ onUnmounted(() => {
   unlistenBubbleChanged?.();
   unlistenTodoChanged?.();
   unlistenPrefsChanged?.();
+  titleFXDestroy?.(); // FIX013.5：粒子/拖拽套件显式清理
+  dragDestroy?.();
 });
 </script>
 
@@ -351,6 +366,7 @@ onUnmounted(() => {
       v-model:max-bubbles="maxBubbles"
       v-model:always-on-top="alwaysOnTop"
       v-model:snap-to-edge="snapToEdge"
+      v-model:theme="theme"
       @opened="onSettingsOpened"
       @theme-changed="titleFX?.refresh()"
     />

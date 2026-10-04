@@ -20,6 +20,21 @@ use tauri::Manager;
 
 use crate::commands::AppContext;
 
+/// Win32 光标读取 FFI（FIX013.8 单源：cursor_in_tray/cursor_in_window 原各持一份
+/// 同构内联声明，漂移防线提为文件级单点——改绑定只动此处）
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn GetCursorPos(point: *mut Point) -> i32;
+}
+
 /// 守候线程预览窗连续缺席拍数（退出口计数：满 50 拍 = 5s 退出）
 static ABSENT_TICKS: AtomicU32 = AtomicU32::new(0);
 
@@ -464,15 +479,7 @@ fn spawn_menu_watch(_app: &tauri::AppHandle) {}
 fn cursor_in_tray(tray_top: i32, tray_right: i32, tray_width: i32, tray_height: i32) -> bool {
     #[cfg(target_os = "windows")]
     {
-        #[repr(C)]
-        struct Point {
-            x: i32,
-            y: i32,
-        }
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetCursorPos(point: *mut Point) -> i32;
-        }
+        // FFI 声明单点在文件级（FIX013.8）
         let mut pt = Point { x: 0, y: 0 };
         if unsafe { GetCursorPos(&mut pt) } == 0 {
             return false;
@@ -495,15 +502,7 @@ fn cursor_in_tray(tray_top: i32, tray_right: i32, tray_width: i32, tray_height: 
 fn cursor_in_window(w: &tauri::WebviewWindow) -> bool {
     #[cfg(target_os = "windows")]
     {
-        #[repr(C)]
-        struct Point {
-            x: i32,
-            y: i32,
-        }
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetCursorPos(point: *mut Point) -> i32;
-        }
+        // FFI 声明单点在文件级（FIX013.8）
         let mut pt = Point { x: 0, y: 0 };
         if unsafe { GetCursorPos(&mut pt) } == 0 {
             return false;

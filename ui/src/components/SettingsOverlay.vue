@@ -16,6 +16,7 @@ const emit = defineEmits<{
   "update:maxBubbles": [value: number];
   "update:alwaysOnTop": [value: boolean];
   "update:snapToEdge": [value: boolean];
+  "update:theme": [value: number];
 }>();
 
 const props = defineProps<{
@@ -25,6 +26,8 @@ const props = defineProps<{
   alwaysOnTop: boolean;
   /** 贴边吸附开关（PL017，父级持有落库） */
   snapToEdge: boolean;
+  /** 主题三态（FIX013.2 持久化：0 跟随/1 浅/2 暗，父级持有落库） */
+  theme: number;
 }>();
 
 const overlay = ref<HTMLElement | null>(null);
@@ -112,6 +115,17 @@ function applyTheme(idx: 0 | 1 | 2): void {
   themeIdx.value = idx;
 }
 
+// FIX013.2：主题持久化下行链——父级启动回读（settings_get_theme）与 prefs-changed
+// 广播经 prop 驱动本组件档位；本组件切档走 saveTheme 成功后上抛 update:theme
+watch(
+  () => props.theme,
+  (t) => {
+    const idx = (t === 1 || t === 2 ? t : 0) as 0 | 1 | 2;
+    if (idx !== themeIdx.value) themeIdx.value = idx;
+  },
+  { immediate: true },
+);
+
 watch(
   themeIdx,
   (idx) => {
@@ -125,14 +139,29 @@ watch(
   { immediate: true },
 );
 
+/** 主题切档落库（FIX013.2 持久化）：成功后应用档位并上抛父级；失败落日志不改
+ * 观感，开关 DOM 手工回拨——computed 值未变时 Vue 不会重置原生 checkbox
+ *（toggleAlwaysOnTop 同款先例） */
+async function saveTheme(idx: 0 | 1 | 2, e: Event): Promise<void> {
+  try {
+    await invoke("settings_set_theme", { theme: idx });
+    applyTheme(idx);
+    emit("update:theme", idx);
+  } catch (err) {
+    console.error("保存主题设置失败", err);
+    const input = e.target as HTMLInputElement;
+    input.checked = !input.checked;
+  }
+}
+
 /** 跟随系统开关：关闭瞬间以系统当前深浅作为日夜档起始（design 定案） */
 function onFollowChange(e: Event): void {
   const on = (e.target as HTMLInputElement).checked;
-  applyTheme(on ? 0 : systemDark.matches ? 2 : 1);
+  void saveTheme(on ? 0 : systemDark.matches ? 2 : 1, e);
 }
 
 function onDaynightChange(e: Event): void {
-  applyTheme((e.target as HTMLInputElement).checked ? 2 : 1);
+  void saveTheme((e.target as HTMLInputElement).checked ? 2 : 1, e);
 }
 
 /** 跟随期间系统深浅实时变化 → 界面档位同步（design theme.js syncThemeControls 同款；

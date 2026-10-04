@@ -52,4 +52,6 @@ export interface PrefsView {
   always_on_top: boolean;
   /** 贴边吸附开关 */
   snap_to_edge: boolean;
+  /** 主题三态（FIX013.2：0=跟随系统/1=浅色/2=暗色） */
+  theme: number;
 }

@@ -55,8 +55,9 @@ let MAX_BUBBLES = 5;
 /** 气泡上限单源（FIX005.25）：与 Rust settings::MAX_BUBBLES_LIMIT 对齐的 mock 侧
  * 常量（IAB 无法跨进程拉真值，改 Rust 上限时此处同步改一行） */
 const BUBBLE_MAX_LIMIT = 20;
-let MOCK_ALWAYS_ON_TOP = true; // PL017 设置板置顶开关 mock 态
-let MOCK_SNAP_TO_EDGE = true; // PL017 设置板贴边吸附开关 mock 态
+let MOCK_ALWAYS_ON_TOP = false; // PL017 设置板置顶开关 mock 态（V0.2.0.0 首启默认关，FIX013.1 对齐）
+let MOCK_SNAP_TO_EDGE = false; // PL017 设置板贴边吸附开关 mock 态（同上）
+let MOCK_THEME = 0; // FIX013.2 设置板主题三态 mock 态（0 跟随/1 浅/2 暗）
 let MOCK_BUBBLE_HOTKEY = "Ctrl+Alt+C"; // PL015 mock 内存态；busy 标志模拟占用失败
 let mockBubbleHotkeyBusy = false;
 
@@ -295,6 +296,13 @@ const handlers: Record<string, CommandHandler> = {
   settings_get_snap_to_edge: () => MOCK_SNAP_TO_EDGE,
   settings_set_snap_to_edge: (args) => {
     MOCK_SNAP_TO_EDGE = Boolean(args.on);
+    return null;
+  },
+  // 主题三态（FIX013.2）：读取/写入（内存态，越界钳 0 对齐 Rust clamp_theme）
+  settings_get_theme: () => MOCK_THEME,
+  settings_set_theme: (args) => {
+    const t = Number(args.theme);
+    MOCK_THEME = t === 1 || t === 2 ? t : 0;
     return null;
   },
   // 气泡热键（PL015，FIX004.5）：读取/写入组合键（内存态 + parse 同规校验；

@@ -7,6 +7,7 @@
 
 （从新到旧；版本号 = 提交四段式，详见 AGENTS.md 版本线）
 
+- **A013 第 11 轮全量审计归档**（2026-10-04，**A/FIX 同号绑定规范首用**——A 跟 FIX 走，FIX011/FIX012 已被非审计批占用故取 013；P2×3+P3×8 无 P0/P1，实现面零新缺陷；修复走 FIX013）→ 附录 A013
 - **PATCH001 归档板 7 天自动回收**（2026-10-04 闭环 5/5，V0.2.1.1：**零 schema 改动**[done_at PL010 已有] + 归档读路径惰性清扫[启动+每次清单变更自动触发] + 固定 7 天无设置项；**PATCH{NNN} 小修小改编号轨道同批建立**；同批捎带行内编辑输入框点击截胡修复）→ 附录 PATCH001
 - **FIX012 打包发布里程碑批**（2026-10-04 闭环 11/11，**V0.2.0.0 首个正式版发布上线**：commit 49f88a3 + tag v0.2.0 + GitHub Release；正式图标/绿色单 exe 出厂/首启默认四项[置顶关·吸附关·主题跟随·右上落位]/开板末帧 pop 根治/双击标题缩回托盘/release 使用说明与 MIT）→ 附录 FIX012
 - **FIX011 观察项清理批**（2026-10-03 闭环 11/11，V0.1.9.1：CSP 落地 + 九条轻松修；**§四豁免定案清单建立[永久 39/条件 7]，A001–A010 报告观察项节归并为指向**）→ 附录 FIX011
@@ -60,47 +61,47 @@
 
 ### ① 永久豁免（39 条——不可达/设计固有/装饰层/收益低于成本/用户定案）
 
-| #   | 观察项                                                             | 出处           | 永久理由                                  |
-| --- | ------------------------------------------------------------------ | -------------- | ----------------------------------------- |
-| P1  | todo_list 失败冻结旧清单无反馈                                     | A001           | 有意降级——冻结优于报错打断                |
-| P2  | setup 期 expect（lib.rs:262/:349）                                 | A001/A003      | 装配期不变量断言，架构保证不可达          |
-| P3  | db 路径进启动错误消息                                              | A003           | 本地桌面应用助排障                        |
-| P4  | 轮询 1000ms/热键常量/武装 500ms/miss 4×100ms 内联字面量            | A003/A004/A010 | 有注释依据或测试锚定的算法参数            |
-| P5  | fullscreen 轮询线程不随窗关退出                                    | A003           | 进程生命周期线程                          |
-| P6  | 最小化 -32000 坐标入 config                                        | A003           | 启动越界兜底自愈                          |
-| P7  | bubble.rs 双锁 SQLite 读                                           | A003           | 低频 UI 读锁内耗时微小                    |
-| P8  | 无虚拟化/类名 camelCase 混用                                       | A003           | 300×400 数据量小/uiverse 保形             |
-| P9  | 录制态按旧热键触发一次捕获                                         | A004           | 系统 RegisterHotKey 固有时序              |
-| P10 | Win10 pre-22H2 玻璃日志刷屏                                        | A004           | 平台基线 Win11 定案                       |
-| P11 | capture 合成 keyup 清修饰键残留                                    | A005           | 有注释依据的定案权衡                      |
-| P12 | 托盘菜单动作失败仅 console.error                                   | A005           | 点项先收窗架构下无反馈可行面              |
-| P13 | 预览窗首拉失败与真空态不可区分                                     | A005           | 冻结豁免同族                              |
-| P14 | R3 迟到 destroy 竞态日志                                           | A005           | 定案行为                                  |
-| P15 | mock max_bubbles 0 值漂移                                          | A005           | 前端钳制后不可达                          |
-| P16 | 置顶反向残留（窗口已切落库失败）                                   | A006/A007      | 采纳方案固有，IO 错误才触发               |
-| P17 | fullscreen 三类失败共享日志旗标                                    | A006           | 微瑕，白名单②语义内                       |
-| P18 | TrayPreview listen 在 await refresh 之后                           | A007           | refresh 有 catch 不会 reject              |
-| P19 | DRAG_THRESHOLD 5/6 同名异值                                        | A007           | 不同域有注释                              |
-| P20 | seed_data expect+exit 并存/MOD_* pub 过宽                          | A007           | 工具不出货/历史面                         |
-| P21 | 双 epoch 时钟并存                                                  | A008           | 语义隔离清晰，登记非问题                  |
-| P22 | Idle 拍每 100ms 一次主线程往返                                     | A008           | 开销可忽略                                |
-| P23 | mock Number\|\|5 漂移                                              | A008           | UI 永不发 0                               |
-| P24 | 四 DTO Clone derive 零调用                                         | A009           | 防未来惯例，零代价                        |
-| P25 | AgeLevel Deserialize 占位                                          | A010           | 注释自证防未来对称                        |
-| P26 | format! 表名插值两处                                               | A010           | SQLite 设计限制，已裁决无注入面           |
-| P27 | paths data_dir 备份接缝                                            | A010           | 九轮既有形态                              |
-| P28 | fullscreen hwnd 启动期一次捕获                                     | A010           | hide 语义主窗永不重建                     |
-| P29 | theme() 失败深色缺省                                               | A010           | 一次性装饰层                              |
-| P30 | system_now unwrap_or(0)                                            | A008           | 时钟回拨纯理论不可达                      |
-| P31 | ★ settings 原子写无 fsync                                          | A001           | 断电+写入瞬间双条件，数据仅窗口位置       |
-| P32 | ★ fullscreen 容差 8px 自动隐藏任务栏误判                           | A001           | 当前实机无此环境配置                      |
-| P33 | ★ toggle/remove 失败无用户可见反馈                                 | A001/A008      | 本地 IPC 架构性极低，行保持原状即自然反馈 |
-| P34 | ★ 气泡去重 COUNT+INSERT 非原子/无 UNIQUE 索引/全表扫/list 无 LIMIT | A005/A008/A010 | Mutex 串行+单实例+小量级锁死不可达        |
-| P35 | ★ 预览/菜单窗 -2000 首绘副屏闪现/py<0 虚拟屏顶                     | A005           | 特定多屏拓扑，当前环境不存在              |
-| P36 | ★ 菜单 toggle 100ms 竞窗/current_monitor 失败/守候慢盘 5s 缺席     | A005           | 极端时序理论缺口                          |
-| P37 | ★ settings 读路径合法非规范热键串不收敛                            | A009           | 用户手改才触发，仅回显外观面              |
-| P38 | ★ EXITING 无复位                                                   | A009           | close 失败极端路径，语义偏转仍合用户意图  |
-| P39 | ★ tray_preview 预览窗缺失静默 Ok                                   | A010           | 创建失败 setup 即中止，不可达             |
+| #   | 观察项                                                                                                | 出处           | 永久理由                                  |
+| --- | ----------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------- |
+| P1  | todo_list 失败冻结旧清单无反馈                                                                        | A001           | 有意降级——冻结优于报错打断                |
+| P2  | setup 期 expect（lib.rs:262/:349）                                                                    | A001/A003      | 装配期不变量断言，架构保证不可达          |
+| P3  | db 路径进启动错误消息                                                                                 | A003           | 本地桌面应用助排障                        |
+| P4  | 轮询 1000ms/热键常量/武装 500ms/miss 4×100ms 内联字面量                                               | A003/A004/A010 | 有注释依据或测试锚定的算法参数            |
+| P5  | fullscreen 轮询线程不随窗关退出                                                                       | A003           | 进程生命周期线程                          |
+| P6  | 最小化 -32000 坐标入 config                                                                           | A003           | 启动越界兜底自愈                          |
+| P7  | bubble.rs 双锁 SQLite 读                                                                              | A003           | 低频 UI 读锁内耗时微小                    |
+| P8  | 无虚拟化/类名 camelCase 混用                                                                          | A003           | 300×400 数据量小/uiverse 保形             |
+| P9  | 录制态按旧热键触发一次捕获                                                                            | A004           | 系统 RegisterHotKey 固有时序              |
+| P10 | Win10 pre-22H2 玻璃日志刷屏                                                                           | A004           | 平台基线 Win11 定案                       |
+| P11 | capture 合成 keyup 清修饰键残留                                                                       | A005           | 有注释依据的定案权衡                      |
+| P12 | 托盘菜单动作与标题双击缩回托盘失败仅 console.error（FIX013.9 扩围覆盖 main_hide_to_tray，2026-10-04） | A005           | 点项先收窗架构下无反馈可行面              |
+| P13 | 预览窗首拉失败与真空态不可区分                                                                        | A005           | 冻结豁免同族                              |
+| P14 | R3 迟到 destroy 竞态日志                                                                              | A005           | 定案行为                                  |
+| P15 | mock max_bubbles 0 值漂移                                                                             | A005           | 前端钳制后不可达                          |
+| P16 | 置顶反向残留（窗口已切落库失败）                                                                      | A006/A007      | 采纳方案固有，IO 错误才触发               |
+| P17 | fullscreen 三类失败共享日志旗标                                                                       | A006           | 微瑕，白名单②语义内                       |
+| P18 | TrayPreview listen 在 await refresh 之后                                                              | A007           | refresh 有 catch 不会 reject              |
+| P19 | DRAG_THRESHOLD 5/6 同名异值                                                                           | A007           | 不同域有注释                              |
+| P20 | seed_data expect+exit 并存/MOD_* pub 过宽                                                             | A007           | 工具不出货/历史面                         |
+| P21 | 双 epoch 时钟并存                                                                                     | A008           | 语义隔离清晰，登记非问题                  |
+| P22 | Idle 拍每 100ms 一次主线程往返                                                                        | A008           | 开销可忽略                                |
+| P23 | mock Number\|\|5 漂移                                                                                 | A008           | UI 永不发 0                               |
+| P24 | 四 DTO Clone derive 零调用                                                                            | A009           | 防未来惯例，零代价                        |
+| P25 | AgeLevel Deserialize 占位                                                                             | A010           | 注释自证防未来对称                        |
+| P26 | format! 表名插值两处                                                                                  | A010           | SQLite 设计限制，已裁决无注入面           |
+| P27 | paths data_dir 备份接缝                                                                               | A010           | 九轮既有形态                              |
+| P28 | fullscreen hwnd 启动期一次捕获                                                                        | A010           | hide 语义主窗永不重建                     |
+| P29 | theme() 失败深色缺省                                                                                  | A010           | 一次性装饰层                              |
+| P30 | system_now unwrap_or(0)                                                                               | A008           | 时钟回拨纯理论不可达                      |
+| P31 | ★ settings 原子写无 fsync                                                                             | A001           | 断电+写入瞬间双条件，数据仅窗口位置       |
+| P32 | ★ fullscreen 容差 8px 自动隐藏任务栏误判                                                              | A001           | 当前实机无此环境配置                      |
+| P33 | ★ toggle/remove 失败无用户可见反馈                                                                    | A001/A008      | 本地 IPC 架构性极低，行保持原状即自然反馈 |
+| P34 | ★ 气泡去重 COUNT+INSERT 非原子/无 UNIQUE 索引/全表扫/list 无 LIMIT                                    | A005/A008/A010 | Mutex 串行+单实例+小量级锁死不可达        |
+| P35 | ★ 预览/菜单窗 -2000 首绘副屏闪现/py<0 虚拟屏顶                                                        | A005           | 特定多屏拓扑，当前环境不存在              |
+| P36 | ★ 菜单 toggle 100ms 竞窗/current_monitor 失败/守候慢盘 5s 缺席                                        | A005           | 极端时序理论缺口                          |
+| P37 | ★ settings 读路径合法非规范热键串不收敛                                                               | A009           | 用户手改才触发，仅回显外观面              |
+| P38 | ★ EXITING 无复位                                                                                      | A009           | close 失败极端路径，语义偏转仍合用户意图  |
+| P39 | ★ tray_preview 预览窗缺失静默 Ok                                                                      | A010           | 创建失败 setup 即中止，不可达             |
 
 （P31–P39 = 原条件豁免经 2026-10-03 评估"条件不可达性高"升格永久。）
 
@@ -913,5 +914,104 @@ FIX009 12/12 diff 级零回退；代际计数三段联动四交错推演全部�
 > - **同批捎带**：清单行内编辑输入框点击截胡修复（TodoList.vue 行级 click/dblclick 对输入框本体的截胡——单击文本中间被 focusEditEnd 重钉行尾、双击选词重启编辑流丢草稿；用户实测 bug，同根双修）
 >
 > 状态：✅ 已完成（2026-10-04，V0.2.1.1；实施记录见 x.progress.md PATCH001 组）
+
+---
+
+## 附录 A013：全量代码审计报告（第 11 轮，2026-10-04）
+
+> 范围：全仓通读。方式：主会话 FIX010 十三锚点 grep 复核 + 三路并行全文通读（Rust 业务组 / Tauri 集成组 / 前端组，各路 `git diff e16304f..HEAD` 逐行补盲）。基线 `1665b52`（V0.2.1.1，工作区净）。豁免对照 §四清单（永久 39 + 条件 7）。**编号说明：A/FIX 同号绑定规范首用（A 跟 FIX 走，见 AGENTS.md 任务清单纪律），第 11 轮取号 A013/FIX013。**
+> 状态：✅ 已完成（2026-10-04，FIX013 全组 12/12 闭环；IAB live 断言经用户定案豁免随日常使用复核，如实记录）
+
+### 零、上轮修复复核清单（全组：FIX010 + FIX011 + FIX012 + CI 三提交 + PATCH001）
+
+| 组       | 条目                          | 现状 | 证据                                                                     |
+| -------- | ----------------------------- | ---- | ------------------------------------------------------------------------ |
+| FIX010   | .1 拍子到点复核防幽灵板       | ✅   | TodoList/BubblesView 拍子内 `some((it` ×6；App.vue `?? item` 零命中      |
+| FIX010   | .2 归档按钮守卫看在飞拍子     | ✅   | ArchiveOverlay.vue:99 clearTimeout 前置于 ：100 守卫                     |
+| FIX010   | .3 "唯一调用者"例外补齐       | ✅   | tray.rs ×3 + lib.rs ×1 全带"右键收窗"限定                                |
+| FIX010   | .4 fullscreen 锁失败 continue | ✅   | fullscreen.rs:109-126                                                    |
+| FIX010   | .5 Bubble 契约断言            | ✅   | commands/mod.rs:74                                                       |
+| FIX010   | .6 换热键回滚写复核           | ✅   | commands/settings.rs:84-97                                               |
+| FIX010   | .7 setup 锁日志 Debug 详情    | ✅   | lib.rs:269                                                               |
+| FIX010   | .8 settings 模块头补齐        | ✅   | settings.rs:2                                                            |
+| FIX010   | .9 哨兵单源                   | ✅   | settings.rs:93-95                                                        |
+| FIX010   | .10 测试通道门控              | ✅   | storage.rs:104/:110                                                      |
+| FIX010   | .11 mock 基座对齐             | ✅   | mock-invoke.ts:250/:334-336                                              |
+| FIX010   | .12 勾选哨兵登记              | ✅   | TodoList/ArchiveOverlay 登记注释                                         |
+| FIX010   | .13 defineExpose 清理         | ✅   | DetailOverlay.vue:302 / BubblesView.vue:296 删除留档                     |
+| FIX010   | .14 收尾门禁                  | ✅   | CI 云端同口径复证                                                        |
+| FIX011   | .1 CSP                        | ✅   | tauri.conf.json:12                                                       |
+| FIX011   | .2 whiteboard 测试常量化      | ✅   | commands/whiteboard.rs:61 `MAX_CONTENT_LEN + 1`                          |
+| FIX011   | .3 storage sort 注释措辞      | ✅   | storage.rs:318                                                           |
+| FIX011   | .4 hotkey abort 双分支日志    | ✅   | hotkey.rs:261/:286                                                       |
+| FIX011   | .5 storage tests use 收敛     | ✅   | diff 级复核在位                                                          |
+| FIX011   | .6 拖静默阈值注释语义化       | ✅   | lib.rs:33/:38/:545-547                                                   |
+| FIX011   | .7 BUBBLE_MAX_LIMIT ref 命名  | ✅   | SettingsOverlay 声明+3 引用同步                                          |
+| FIX011   | .8 tooltip 中文化             | ✅   | SettingsOverlay aria-label                                               |
+| FIX011   | .9 BubblesView 删冗余 async   | ✅   | 函数体无 await                                                           |
+| FIX011   | .10 App.vue import 组间空行   | ✅   | App.vue:8/:17                                                            |
+| FIX011   | .11 收尾验证                  | ✅   | CI run 37139480687/37149067675 success                                   |
+| FIX012   | .1 正式图标                   | ✅   | icons/ 五件套 + tauri.conf.json:29-35                                    |
+| FIX012   | .2 绿色单 exe                 | ✅   | main.rs:7 GUI 子系统                                                     |
+| FIX012   | .3 首启默认四项               | ⚠️   | Rust 四项 diff 级全过；**前端三处默认值 + settings 字段注释漏改 → P2-1** |
+| FIX012   | .4 开板末帧 pop 根治          | ✅   | archive.css:49 / detail.css:42 `will-change`                             |
+| FIX012   | .5 双击标题缩回托盘           | ✅   | tray_menu.rs:73-83 + lib.rs:258 + App.vue 全链（反馈缺口 → P3-6）        |
+| FIX012   | .6 tooltip 补齐               | ✅   | 同 FIX011.8                                                              |
+| FIX012   | .7 release/ 使用说明          | ✅   | 在库（PATCH001 已补归档语义）                                            |
+| FIX012   | .8 commit + tag               | ✅   | tag v0.2.0（与 ui1.0-final 并存）                                        |
+| FIX012   | .9 zip 规则与工件             | ✅   | .gitignore:21-24 + release/ 工件                                         |
+| FIX012   | .10 GitHub Release            | ✅   | gh 实证 Latest v0.2.0                                                    |
+| FIX012   | .11 发布收尾自查              | ✅   | 后续排期在 z.plan 待完成区                                               |
+| CI       | ci.yml 入库                   | ✅   | .github/workflows/ci.yml                                                 |
+| CI       | .2 构建顺序修正               | ✅   | job 步骤序：前端构建先于 cargo 组                                        |
+| CI       | .3 收口步骤移除               | ✅   | `test -f` 零命中                                                         |
+| CI       | README CI 徽章                | ✅   | README.md:5                                                              |
+| CI       | 云端复证                      | ✅   | run 37149067675 七步逐项 ✓（rust-cache 热缓存 1m31s 非跳步）             |
+| PATCH001 | .1 常量+红灯测试              | ✅   | todo.rs:22 + 四用例（139 绿）                                            |
+| PATCH001 | .2 存储层回收方法             | ✅   | storage.rs:345-352（两路最严审零缺陷）                                   |
+| PATCH001 | .3 归档读路径挂接             | ✅   | commands/todo.rs:164-172                                                 |
+| PATCH001 | .4 版本与文档连带             | ⚠️   | 文档五连在位；**README 版本徽章连带漏 → P3-3**                           |
+| PATCH001 | .5 收尾验证                   | ✅   | 门禁全绿 + CI 复证 + 端到端隔离实测                                      |
+
+**零节总结论**：四组 46 项逐项核验，44 ✅ / 2 ⚠️（均收编 P 级，无行为级回退）。
+
+### 一、P0-P3 修复清单（无 P0/P1；P2 ×3 + P3 ×8）
+
+| #    | 文件:行号                                                                                               | 类型    | 描述与建议                                                                                                                                                                                                                                                                                                                                                                                                                              | 性质                         | 影响面            |
+| ---- | ------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ----------------- |
+| P2-1 | ui/App.vue:190-191、:202 + TrayMenu.vue:16-18 + mock-invoke.ts:58-59 + settings.rs:78、:81（连带 ：63） | 12/11/6 | **FIX012.3 首启默认定案连带漏改面**：Rust 侧 V0.2.0.0 起置顶/吸附缺省关（settings.rs:40-48），前端三处默认仍 `ref(true)`（App.vue 设置板回落 ref 含 ：202 注释 / TrayMenu 常驻菜单窗初始勾选 / mock 内存态）——降级态显示漂移 + **IAB 冒烟以 mock 为事实源锁定与真机相反形态**；settings.rs 两字段 doc 仍写"回填 true"与行为方向相反、:63 struct 职责清单缺两开关。修法：三处齐改 false + 注释同步 + 字段 doc 改"回填 false" + 63 行补齐 | 新增（FIX012 修复不完整）    | 跨模块            |
+| P2-2 | SettingsOverlay.vue:94 + core/src/settings.rs（无 theme 字段）                                          | 12      | **主题手动档（浅/暗）不持久化**：设置板六项唯主题三态每次启动重置回跟随系统；z.plan 仅定案"种子 0"未定案"不持久化"，"该进配置未进"不可豁免。修法：WindowSettings 增 theme 字段（serde default 0）+ settings_set 命令 + 前端启动回读                                                                                                                                                                                                     | 遗留（存量暴露）             | 配置体系+Vue 前端 |
+| P2-3 | TodoList.vue:188-192、:226-231                                                                          | 1       | **跨条目切换 pendingExitId 残留 → 新行编辑器 ≤1.5s 被强拆、草稿丢失**（需验证）：编辑 A 提交在飞 → 双击行 B（1665b52 守卫只拦同条目）→ rename(A) resolve 置 pendingExitId=A → watch 不清（editDraft 已是 B 文本）→ 1500ms 兜底无条件清 editingId → B 输入框强制卸载（不派发 blur，草稿丢失）。修法：startInlineEdit 先清 pendingExitId + 掐兜底句柄                                                                                     | 遗留（存量暴露）             | Vue 前端          |
+| P3-1 | TodoList.vue:170-181                                                                                    | 1/4     | **onRowDblClick 缺 rowMaskDead/isSuppressed 前置**：罩死行双击仍进编辑、拖拽收场 350ms 内双击重启编辑（对照组 BubblesView.vue:274-275 两查俱全，单击侧齐全，仅双击漏）。修法：对齐补两查                                                                                                                                                                                                                                                | 遗留                         | Vue 前端          |
+| P3-2 | composables/titleParticles.ts:306-313（:20 注释）+ useThresholdDrag.ts:50-53                            | 2/6     | **onUnmounted 注册于异步上下文清理恒失效**（FIX005.26 同款铁律复发）：App.vue onMounted await 链后调用，监听清理从未注册；titleParticles.ts:20 注释与行为不符。实际影响≈0（App 无卸载路径）故 P3。修法：getCurrentInstance 守卫 + 显式 destroy（对齐 useGlassBar）                                                                                                                                                                      | 遗留                         | Vue 前端          |
+| P3-3 | README.md:6、:33、:118                                                                                  | 6       | **README 版本口径落后**：徽章 Version-0.2.0 与双语 zip 链接 v0.2.0，Cargo.toml 已 0.2.1。需定口径（徽章随 Cargo 即时推进或随 release 更新）并写入 AGENTS 版本双轨条款防重复报告                                                                                                                                                                                                                                                         | 新增（PATCH001 bump 连带漏） | 文档              |
+| P3-4 | AGENTS.md:54、:46                                                                                       | 6       | **目录树两处与实态漂移**：bubble.rs 行仍写"满 5 阈值"（FIX004.23 已删 Rust 侧阈值）；tests/ 漏列 sort_order_migration.rs                                                                                                                                                                                                                                                                                                                | 新增（存量暴露）             | 文档              |
+| P3-5 | tray.rs:466-475、:496-505                                                                               | 4       | **同文件 FFI 重复声明**：`#[repr(C)] Point` + `GetCursorPos` extern 两处同构。修法：提文件级单点                                                                                                                                                                                                                                                                                                                                        | 遗留                         | Tauri 后端        |
+| P3-6 | commands/tray_menu.rs:74-83                                                                             | 11/13   | **main_hide_to_tray close 失败仅 eprintln 仍返回 Ok**——双击标题无用户可见反馈；贴近豁免 P12 但主体是标题双击非菜单项，豁免归属归档定案（扩 P12 表述或登记新条目或改严格）                                                                                                                                                                                                                                                               | 新增（FIX012.5 引入）        | Tauri 后端        |
+| P3-7 | commands/todo.rs:15-19                                                                                  | 13      | **todo-changed 广播失败仅落日志——容错白名单未登记**（同族 FIX008.12 已登记，此条自 PL018.6 在位无登记）。修法：白名单补三要素                                                                                                                                                                                                                                                                                                           | 遗留                         | Tauri 后端        |
+| P3-8 | AGENTS.md 白名单 PL015.5 条                                                                             | 13      | **登记面未覆盖 FIX010.6 变体**："并发接管放弃回滚"降级未入白名单文（代码注释已详述，仅登记缺）。修法：PL015.5 扩围                                                                                                                                                                                                                                                                                                                      | 遗留                         | 文档              |
+
+> 豁免过滤记录：Tauri 组"Idle 拍每 100ms 主线程往返"命中 **P22**、"多屏负 y 副屏 py<0 翻转失准"命中 **P35**——均永久豁免不报。
+
+### 二、参考级观察项（记录不修，含回落理由）
+
+| 文件:行号                                            | 描述                                                                               | 回落理由                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------- |
+| todo.rs:91                                           | `now - created` 理论 i64 溢出（手改 db 极端值）                                    | 无可达正常路径，纯理论【需验证】         |
+| storage.rs:320-352                                   | list/list_done/purge 无索引全表扫                                                  | 零线程定案设计依据；单用户量级实测无感   |
+| commands/todo.rs:164-172                             | 读命令携破坏性副作用（purge）命名无暗示                                            | 函数头文档注释已载明定案形态，仅口径记录 |
+| commands/todo.rs + App.vue:152                       | purge 后归档详情板 ghost 条目面（删除在打开后，操作得可见错误）                    | 自愈可见非静默错值，触发链极窄【需验证】 |
+| lib.rs:267-309                                       | setup 两次取设置锁可复用                                                           | 极小卫生面                               |
+| TrayPreview.vue:38、:51                              | `?? 164` / `slice(0,5)` 散装魔法数                                                 | 预览窗私有展示参数自洽                   |
+| ArchiveOverlay.vue:153-156 + DetailOverlay.vue:82-86 | 450ms settle 双写                                                                  | 与 CSS 揭示过渡硬耦合                    |
+| mock-invoke.ts:129-134、:185-191                     | validateText 硬编码 24；`todo_set_note` 缺 10_000 笔记校验（IAB 测超长笔记假通过） | dev-only，随下批 mock 对齐顺带           |
+| main.ts:44-47                                        | `catch { return "main" }` 静默回落                                                 | 纯浏览器 DEV 分支不可达                  |
+| archive.css:49 / detail.css:42                       | 三浮板常驻 `will-change` 合成层                                                    | 四变体实验定案注释在案                   |
+| TodoList.vue:286-297                                 | `watch(items, {deep:true})` 每刷新深遍历                                           | pendingExit 判定所需，N 小               |
+| useDragReorder.ts:121-124、:147-150                  | DOM 快照 Number() 无 NaN 防御                                                      | 行模板恒带 data-row-id，异常被 serde 拒  |
+
+### 三、亮点
+
+PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪律/TDD 三案例）；FIX010 十四项 diff 级零回退；死锁铁律全组锁点零违规；FFI 签名全组核对无误；SQL 全参数化；types.ts ↔ serde 逐字段零漂移；28 invoke 命令名与 generate_handler 一一匹配；capabilities 匹配；依赖零未用；CSP 落地核验通过。**收官态势：连续四轮无 P0/P1，实现面（SQL/状态机/FFI/退出链）维持零新缺陷。**
 
 ---

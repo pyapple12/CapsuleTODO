@@ -189,6 +189,7 @@ fn save_window_position(window: &tauri::Window, runtime: &settings::WindowSettin
                     bubble_hotkey: runtime.bubble_hotkey.clone(),
                     always_on_top: runtime.always_on_top,
                     snap_to_edge: runtime.snap_to_edge,
+                    theme: runtime.theme,
                 },
             ) {
                 eprintln!("窗口位置保存失败：{err}");
@@ -253,6 +254,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_always_on_top,
             commands::settings::settings_get_snap_to_edge,
             commands::settings::settings_set_snap_to_edge,
+            commands::settings::settings_get_theme,
+            commands::settings::settings_set_theme,
             commands::tray_preview::tray_preview_resize,
             commands::tray_menu::tray_menu_action,
             commands::tray_menu::main_hide_to_tray,

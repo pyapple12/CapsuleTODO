@@ -5,7 +5,7 @@
 use tauri::{Emitter, Manager, State};
 
 use super::{AppContext, CommandError};
-use crate::settings::{clamp_max_bubbles, MAX_BUBBLES_LIMIT};
+use crate::settings::{clamp_max_bubbles, clamp_theme, MAX_BUBBLES_LIMIT};
 
 /// 读取气泡提醒上限
 #[tauri::command]
@@ -209,6 +209,8 @@ pub(crate) struct PrefsSnapshot {
     pub always_on_top: bool,
     /// 贴边吸附开关
     pub snap_to_edge: bool,
+    /// 主题三态（FIX013.2：0=跟随系统/1=浅色/2=暗色）
+    pub theme: u8,
 }
 
 /// 全量广播窗口偏好（PL018.3；FIX005.9 提 pub(crate) 供 tray.rs 单源复用）：
@@ -219,6 +221,7 @@ pub(crate) fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
         Ok(s) => PrefsSnapshot {
             always_on_top: s.always_on_top,
             snap_to_edge: s.snap_to_edge,
+            theme: s.theme,
         },
         Err(err) => {
             eprintln!("prefs-changed 读取失败（跳过广播）：{err:?}");
@@ -238,6 +241,40 @@ pub fn settings_set_snap_to_edge_core(
 ) -> Result<(), CommandError> {
     let mut settings = ctx.lock_settings()?;
     settings.snap_to_edge = on;
+    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    Ok(())
+}
+
+/// 读取主题三态（FIX013.2：0=跟随系统/1=浅色/2=暗色）
+#[tauri::command]
+pub fn settings_get_theme(ctx: State<'_, AppContext>) -> Result<u8, CommandError> {
+    Ok(ctx.lock_settings()?.theme)
+}
+
+/// 写入主题三态（FIX013.2）：钳制后落库 → 广播 prefs-changed（设置板回显与未来
+/// 消费端同步，照 set_snap_to_edge 形态；主题无窗口操作，落库即生效）
+#[tauri::command]
+pub fn settings_set_theme(
+    theme: u8,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    let path = settings_path_or_err()?;
+    settings_set_theme_core(theme, &path, &ctx)?;
+    emit_prefs_changed(&app, &ctx);
+    Ok(())
+}
+
+/// settings_set_theme 核心实现：钳制 + 更新运行时设置 + 原子落盘（直测 = 临时
+/// 路径，禁触真实用户数据）
+pub fn settings_set_theme_core(
+    theme: u8,
+    path: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let clamped = clamp_theme(theme);
+    let mut settings = ctx.lock_settings()?;
+    settings.theme = clamped;
     crate::settings::save(path, &settings).map_err(CommandError::from)?;
     Ok(())
 }
@@ -358,5 +395,40 @@ mod tests {
             .expect("文件必须存在");
         assert!(loaded.always_on_top && loaded.snap_to_edge);
         std::fs::remove_file(&tmp).expect("清理必须成功");
+    }
+
+    #[test]
+    fn theme_set_get_roundtrip_and_clamp() {
+        // FIX013.2：主题三态 core 直测——合法值落库回读一致，越界值写路径钳 0
+        let tmp =
+            std::env::temp_dir().join(format!("capsule-theme-cmd-{}.json", std::process::id()));
+        let ctx = test_context();
+        assert_eq!(ctx.lock_settings().expect("锁").theme, 0, "默认跟随系统");
+        settings_set_theme_core(2, &tmp, &ctx).expect("写必须成功");
+        assert_eq!(ctx.lock_settings().expect("锁").theme, 2, "暗色落库");
+        settings_set_theme_core(99, &tmp, &ctx).expect("越界写钳制不报错");
+        assert_eq!(ctx.lock_settings().expect("锁").theme, 0, "越界收敛跟随");
+        // 落盘重读确认持久化
+        let loaded = crate::settings::load(&tmp)
+            .expect("读取必须成功")
+            .expect("文件必须存在");
+        assert_eq!(loaded.theme, 0);
+        std::fs::remove_file(&tmp).expect("清理必须成功");
+    }
+
+    #[test]
+    fn prefs_snapshot_serialization_contract() {
+        // FIX013.2：prefs-changed 载荷键名契约锁定（FIX005.9 结构化替代裸 json!
+        // 后首个字段级断言；新增偏好字段须同步补此断言防键名漂移，A004 Hotkey /
+        // A006 Window 契约断言同款纪律）
+        let json = serde_json::to_string(&PrefsSnapshot {
+            always_on_top: false,
+            snap_to_edge: true,
+            theme: 2,
+        })
+        .expect("序列化必须成功");
+        assert!(json.contains("\"always_on_top\":false"));
+        assert!(json.contains("\"snap_to_edge\":true"));
+        assert!(json.contains("\"theme\":2"));
     }
 }

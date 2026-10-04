@@ -3,7 +3,7 @@
 **简体中文** | [English](#english)
 
 [![CI](https://github.com/pyapple12/CapsuleTODO/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11-0078D6.svg)](#下载)
 [![Rust](https://img.shields.io/badge/Rust-1.96-orange.svg)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org)

@@ -1,7 +1,7 @@
 // ===== 标题粒子化（PL012 后补移植：design/assets/js/text-particles.js 1:1 → TS）。
 // 参考 Da0Mine/text-particleization（MIT）：标题文字粒子化——canvas 接管视觉，
 // 鼠标排斥 + 弹回归位 + 静止自动停帧省 GPU。算法与参数逐行对照不改 =====
-import { onUnmounted } from "vue";
+import { getCurrentInstance, onUnmounted } from "vue";
 
 /** 粒子（home = 字形坐标） */
 interface Particle {
@@ -16,9 +16,13 @@ interface Particle {
 
 /**
  * 初始化标题粒子：h1 内须含 .title-canvas 画布；reduced-motion 直接不初始化
- * （回退静态文字）。返回 refresh（主题换色后重建）；组件卸载自动清监听
+ * （回退静态文字）。返回 refresh（主题换色重读参数 + 唤醒重绘）与 destroy
+ * （显式清理——调用点在异步上下文时生命周期钩子不生效，Vue 铁律 FIX013.5，
+ * 由持有方在顶层 onUnmounted 显式调用；同步上下文调用时仍注册卸载钩子兜底）
  */
-export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | null {
+export function initTitleParticles(
+  h1: HTMLElement,
+): { refresh: () => void; destroy: () => void } | null {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
   const canvas = h1.querySelector<HTMLCanvasElement>(".title-canvas") as HTMLCanvasElement;
   if (!canvas) return null;
@@ -303,14 +307,17 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
   build();
   wake(); // 开场汇聚动画
 
-  onUnmounted(() => {
+  // FIX013.5：清理收敛为显式 destroy——调用点在 onMounted await 链后（异步上下文），
+  // onUnmounted 注册被 Vue 静默忽略（FIX005.26 同款陷阱），destroy 由持有方调用
+  const destroy = (): void => {
     if (raf) cancelAnimationFrame(raf);
     window.removeEventListener("mousemove", onMouse);
     document.documentElement.removeEventListener("mouseleave", onLeave);
     window.removeEventListener("touchmove", onTouch);
     window.removeEventListener("resize", onResize);
     window.removeEventListener("scroll", onScroll);
-  });
+  };
+  if (getCurrentInstance()) onUnmounted(destroy); // 仅 setup 同步上下文可注册
 
   return {
     refresh() {
@@ -320,5 +327,6 @@ export function initTitleParticles(h1: HTMLElement): { refresh: () => void } | n
       readThemeParams();
       wake();
     },
+    destroy,
   };
 }
