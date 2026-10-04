@@ -30,7 +30,7 @@
 
 ### 下载
 
-从 [Releases](../../releases) 下载 `CapsuleTODO_v0.2.0_win_x64.zip`，解压到任意目录，双击 `capsule-todo.exe` 即用——无需安装、不写注册表，首次运行自动在 exe 同级创建 `configs\` 与 `data\`。备份/迁移 = 拷走这两个文件夹。
+从 [Releases](../../releases) 下载 `CapsuleTODO_v0.2.1_win_x64.zip`，解压到任意目录，双击 `capsule-todo.exe` 即用——无需安装、不写注册表，首次运行自动在 exe 同级创建 `configs\` 与 `data\`。备份/迁移 = 拷走这两个文件夹。
 
 > Windows 10/11（64 位）。玻璃磨砂依赖系统合成器，部分 Win10 旧版本观感略有差异；macOS/Linux 适配在 Windows 版成熟后推进。
 
@@ -115,7 +115,7 @@ A glassmorphic desktop TODO board that lives in the corner of your screen — re
 
 ### Download
 
-Grab `CapsuleTODO_v0.2.0_win_x64.zip` from [Releases](../../releases), unzip anywhere, and run `capsule-todo.exe`. No installer, no registry writes — first launch creates `configs\` and `data\` next to the exe. To back up or migrate, just copy those two folders.
+Grab `CapsuleTODO_v0.2.1_win_x64.zip` from [Releases](../../releases), unzip anywhere, and run `capsule-todo.exe`. No installer, no registry writes — first launch creates `configs\` and `data\` next to the exe. To back up or migrate, just copy those two folders.
 
 > Windows 10/11 x64. The acrylic effect depends on the OS compositor; older Win10 builds may look slightly different. macOS/Linux support is planned after the Windows release matures.
 
