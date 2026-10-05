@@ -42,12 +42,12 @@ backups/
 ## 测试与覆盖率
 coverage/
 
-## 运行时数据（双落址，沿系列定案：dev 落项目根 configs/ 与 data/，release 落 exe 同级；内容不入仓库，.gitkeep 保目录）
-configs/config.json
+## 运行时数据（双落址，沿系列定案：dev 落项目根 configs/ 与 data/，release 落 exe 同级；整目录不入仓库——git 不跟踪空目录，目录骨架由本地运行时自建）
+configs/
+data/
 *.db
 *.db.bak
 *.db.corrupt
-data/todo.log
 
 ## IDE 和编辑器
 .vscode/
