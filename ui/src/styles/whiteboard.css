@@ -42,8 +42,10 @@
   color: var(--ink-2);
 }
 
-/* 保存失败错误行（APP 扩展：严格报错策略可见化；状态行已按 2026-09-28 目验定案移除） */
-.error {
+/* 保存失败错误行（APP 扩展：严格报错策略可见化；状态行已按 2026-09-28 目验定案移除）。
+   收敛到 .whiteboard 容器下——避免与 bubbles.css 的全局 .error 同名碰撞（FIX：原两条
+   全局 .error 同优先级、后加载者覆盖，白板样式盖掉了气泡错误行） */
+.whiteboard .error {
   margin: 0;
   font-size: 12px;
   color: var(--danger);

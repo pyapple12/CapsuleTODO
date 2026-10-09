@@ -94,6 +94,23 @@
   box-shadow: var(--panel-stroke), var(--panel-shadow);
 }
 
+/* 气泡图片模式（PL024）：img 接管板面，超高图由壳自行滚动（textarea 缺席，
+   滑杆/阅读三角不挂载属可接受降态——图片模式无长文滚动需求） */
+.note-shell.image-shell {
+  display: flex;
+  align-items: safe center; /* 短图垂直居中；超高图退回顶部对齐（safe 防滚动容器裁头） */
+  justify-content: center;
+  overflow-y: auto;
+  overflow-x: hidden; /* 零横向滑杆：overflow-y:auto 会把 overflow-x 计算成 auto，须显式压住（PL024.8c） */
+}
+
+.detail-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-panel);
+}
+
 .detail-note {
   width: 100%;
   height: 100%;

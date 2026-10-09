@@ -63,6 +63,7 @@ Thumbs.db
 .claude/
 .agents/
 .mimosa/
+.openchamber/
 .zcode/
 !.zcode/config.json
 

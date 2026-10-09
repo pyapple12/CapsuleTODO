@@ -47,6 +47,7 @@ let copiedTimer = 0;
 let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
+let errorTimer = 0; // 错误行 1s 自动隐藏定时器（PL024.8a）
 let unlistenBubbleChanged: UnlistenFn | undefined; // 热键失焦刷新监听句柄（PL016.1）
 // 监听竞态防护标志（FIX006.4）：setup 层声明——生命周期钩子仅在 setup 同步上下文
 // 注册才生效（嵌套注册被 Vue 忽略 = 防护恒失效教训）
@@ -59,6 +60,32 @@ const listEl = ref<HTMLElement | null>(null);
  * 阈值由设置板步进（已持久化，PL014.2 落库）即时生效。满额裁决收敛前端本地
  * （FIX004.23：Rust 侧 snapshot.remind 死值已删，契约只剩 items） */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
+
+/**
+ * 错误文案截断（PL024.8a 单点收敛）：第二个全角冒号起丢弃——系统英文细节不进 UI，
+ * Rust 文案与 console 底账保持完整（FIX009.6 可见文案/底账分离先例）
+ */
+function truncateError(msg: string): string {
+  const first = msg.indexOf("：");
+  if (first < 0) return msg;
+  const second = msg.indexOf("：", first + 1);
+  return second < 0 ? msg : msg.slice(0, second);
+}
+
+/** 展示错误行（PL024.8a）：置入文案 + 挂 1s 自动隐藏定时器（重复触发重新计时） */
+function showError(msg: string): void {
+  error.value = truncateError(msg);
+  window.clearTimeout(errorTimer);
+  errorTimer = window.setTimeout(() => {
+    error.value = "";
+  }, 1000);
+}
+
+/** 立即清除错误行（成功路径）：取消未决定时器并清文本（渐隐由 Transition 承担） */
+function clearError(): void {
+  window.clearTimeout(errorTimer);
+  error.value = "";
+}
 
 /**
  * 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里）。
@@ -108,7 +135,7 @@ async function capture(): Promise<void> {
   cancelClearConfirm();
   try {
     const outcome = await invoke<BubbleCaptureOutcome>("bubble_capture");
-    error.value = "";
+    clearError();
     duplicate.value = outcome.status === "duplicate";
     copied.value = !duplicate.value;
     window.clearTimeout(copiedTimer);
@@ -118,7 +145,7 @@ async function capture(): Promise<void> {
     }, 1000);
     await refresh();
   } catch (err) {
-    error.value = `捕获失败：${String(err)}`;
+    showError(`捕获失败：${String(err)}`);
   }
 }
 
@@ -206,7 +233,7 @@ async function onClearClick(): Promise<void> {
         await refresh();
       } catch (err) {
         // FIX007.7 失败可见（行已塌缩"假空"，不提示则用户以为删成功）
-        error.value = `清空失败：${String(err)}`;
+        showError(`清空失败：${String(err)}`);
         console.error("清空失败", err);
       }
     }, 300);
@@ -353,7 +380,9 @@ onUnmounted(() => {
   // clearFxTimer（清空集体退场收尾）豁免清理：用户已点"确认清空"，300ms 收尾
   // 落库必须完成——切页取消会让"确认"被吞（数据残留 + 退场动画已播 = 状态诡异）。
   // 收尾回调仅 invoke + refresh，无报错路径（IAB 实测 errs=0），卸载后执行静默无害
-  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
+  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, errorTimer].forEach((t) =>
+    window.clearTimeout(t),
+  );
   unlistenBubbleChanged?.();
   rebuildObserver?.disconnect();
   unmountScrollKit();
@@ -390,7 +419,9 @@ onUnmounted(() => {
         一键清空
       </button>
     </div>
-    <p v-if="error" class="error">{{ error }}</p>
+    <Transition name="err">
+      <p v-if="error" class="error">{{ error }}</p>
+    </Transition>
     <p v-if="showEmpty" class="empty">暂无气泡，点上方捕获剪贴板</p>
     <TransitionGroup
       ref="listEl"

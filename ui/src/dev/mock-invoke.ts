@@ -43,9 +43,19 @@ type MockTodoView = MockTodo & { age_level: MockAgeLevel };
 interface MockBubble {
   id: number;
   text: string;
+  /** 气泡类型（镜像 BubbleKind，PL024；mock 图走常量 data URL） */
+  kind: "Text" | "Image";
   /** 拖拽排序键（PL013；种子行未赋值回退 id 序） */
   sort_order?: number;
 }
+
+/** 1×1 透明 PNG（mock 图片气泡载荷；合法 PNG 魔数 base64，IAB 断言 img 可渲染） */
+const MOCK_PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** 超高图夹具（PL024.8c IAB：4×256 SVG data URL——宽 1/64 高比，width:100% 撑出超高
+ * 纵向滚动，滑杆/三角才有可测几何；1×1 PNG 比例接近方图，滚不动断言无从成立） */
+const MOCK_TALL_IMAGE_DATA_URL =
+  "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='256'%3E%3Crect%20width='4'%20height='256'%20fill='%237a7ac8'/%3E%3C/svg%3E";
 
 /** 气泡页快照（镜像 BubbleSnapshot；满额提醒显隐由前端本地阈值裁决，FIX004.23） */
 interface MockBubbleSnapshot {
@@ -112,7 +122,7 @@ function seed(): void {
     t("交房租", false, 0, "每月 5 号前，银行卡留够余额。"),
     t("回复设计评审邮件", false, 0, "重点回复动效时长那两条意见，语气放软。"),
   ];
-  const b = (text: string): MockBubble => ({ id: ++state.bubbleSeq, text });
+  const b = (text: string): MockBubble => ({ id: ++state.bubbleSeq, text, kind: "Text" });
   state.bubbles = [
     b("示例片段：把设计实验场的配方读数抄回 glass.css"),
     b("示例片段：uiverse 动效候选 R001-5 成功对勾曲线"),
@@ -230,20 +240,44 @@ const handlers: Record<string, CommandHandler> = {
       (a, b) => (a.sort_order ?? a.id) - (b.sort_order ?? b.id) || a.id - b.id,
     ),
   }),
-  // 捕获（Rust = 读真剪贴板；mock 环境无剪贴板，返回模拟文本走完整校验+去重链路，
-  // FIX004.5：返回 BubbleCaptureOutcome 形状与真机同构——重复返回 duplicate 不入库）。
+  // 捕获（Rust = 图优先分叉读真剪贴板，PL024；mock 环境无剪贴板——localStorage
+  // ['mock-capture-image']='1' 开关造图片气泡走全链，默认返回模拟文本）。
   // sort_order = 现存最小值 − 1（排头插入，对齐 Rust add_bubble 的 unshift 语义）
   bubble_capture: () => {
+    // PL024.8a IAB 断言开关：localStorage['mock-capture-fail']='1' 模拟捕获失败
+    //（文案含两个全角冒号 + 英文段，专供显示层截断断言；dev-only 模块，生产被 vite 消除）
+    if (localStorage.getItem("mock-capture-fail") === "1") {
+      throw "剪贴板读取失败：The clipboard could not be read";
+    }
+    const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
+    if (localStorage.getItem("mock-capture-image") === "1") {
+      const d = new Date();
+      const p = (n: number): string => String(n).padStart(2, "0");
+      const text = `🖼 截图 ${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      const item: MockBubble = { id: ++state.bubbleSeq, text, kind: "Image", sort_order: min - 1 };
+      state.bubbles.push(item);
+      return { status: "added", item };
+    }
     const text = `[mock 捕获] ${new Date().toLocaleTimeString()} 的剪贴板内容`;
     const err = text.trim() ? null : "气泡文本不能为空";
     if (err) throw err;
     if (state.bubbles.some((b) => b.text === text)) {
       return { status: "duplicate" };
     }
-    const min = Math.min(0, ...state.bubbles.map((b) => b.sort_order ?? b.id));
-    const item: MockBubble = { id: ++state.bubbleSeq, text, sort_order: min - 1 };
+    const item: MockBubble = { id: ++state.bubbleSeq, text, kind: "Text", sort_order: min - 1 };
     state.bubbles.push(item);
     return { status: "added", item };
+  },
+  // 图片按需取数（PL024 载荷分层）：Image 气泡回常量 data URL（localStorage
+  // ['mock-image-tall']='1' 走高图夹具供 PL024.8c 滑杆断言）；文本气泡/不存在严格报错
+  bubble_get_image: (args) => {
+    const id = Number(args.id);
+    const item = state.bubbles.find((b) => b.id === id);
+    if (!item) throw `气泡条目不存在：${id}`;
+    if (item.kind !== "Image") throw "图片格式暂不支持";
+    return localStorage.getItem("mock-image-tall") === "1"
+      ? MOCK_TALL_IMAGE_DATA_URL
+      : MOCK_PNG_DATA_URL;
   },
   // 复制回（Rust = 写真剪贴板；mock 环境写不进去，无读取口故仅返回成功
   //——FIX005.22：原 state.lastCopied 只写不读删除，断言需求出现时再加正式读取口）

@@ -35,8 +35,11 @@ export type TodoView = TodoItem & {
 export interface BubbleItem {
   /** 条目唯一标识（创建序） */
   id: number;
-  /** 气泡文本 */
+  /** 气泡文本（图片气泡 = 自动占位文案） */
   text: string;
+  /** 气泡类型（镜像 BubbleKind；Image = 图片气泡，板面渲染图片——列表载荷不带图，
+   * 图片走 bubble_get_image 按需拉取，PL024） */
+  kind: "Text" | "Image";
 }
 
 /** 气泡页快照（镜像 BubbleSnapshot；满额提醒显隐由前端本地阈值裁决，FIX004.23） */

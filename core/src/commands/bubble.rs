@@ -6,7 +6,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::{AppContext, CommandError};
-use crate::bubble::{validate_bubble_text, BubbleItem, BubbleSnapshot};
+use crate::bubble::{
+    validate_bubble_text, validate_image_png, BubbleError, BubbleItem, BubbleSnapshot,
+};
 use crate::storage::BubbleAddOutcome;
 
 /// 热键触发路径（PL015.5）：热键线程直调（实现注记：未走 run_on_main_thread——
@@ -24,38 +26,152 @@ pub fn bubble_capture_from_clipboard_quiet(app: &AppHandle) {
     }
 }
 
-/// Windows 圈选直达编排（PL016.3）：终端守卫 → 快照原剪贴板 → 合成 Ctrl+C →
-/// 轮询等变化（≤300ms）→ 命中 = 恢复原剪贴板 + 入库 + 发 bubble-changed；
-/// 未命中静默（用户定案：无选区/复制被拒不回退捕获旧剪贴板，且剪贴板未变无需
-/// 恢复）。轮询最多 300ms 短临界区，不阻塞 UI
+/// 图片气泡占位文案（用户定案格式 `🖼 截图 {yyMMddHHmmss}` 连写）：
+/// Windows GetLocalTime 直连取本地时区（零依赖，kernel32 薄壳同 hotkey/capture
+/// FFI 先例）；延后平台退 UTC 推算（civil 算法，标签可读性达标非时区承诺）
+#[cfg(target_os = "windows")]
+pub fn image_bubble_label() -> String {
+    #[repr(C)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        millis: u16,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLocalTime(out: *mut SystemTime);
+    }
+    let mut t = SystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        millis: 0,
+    };
+    unsafe { GetLocalTime(&mut t) };
+    format!(
+        "🖼 截图 {:02}{:02}{:02}{:02}{:02}{:02}",
+        t.year % 100,
+        t.month,
+        t.day,
+        t.hour,
+        t.minute,
+        t.second
+    )
+}
+
+/// epoch 天数 → (年, 月, 日)（Howard Hinnant civil 算法，延后平台 UTC 标签用）
+#[cfg(not(target_os = "windows"))]
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// 图片气泡占位文案（非 Windows：UTC 推算，延后平台占位实现）
+#[cfg(not(target_os = "windows"))]
+pub fn image_bubble_label() -> String {
+    let secs = crate::storage::system_now() / 1000;
+    let sod = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    format!(
+        "🖼 截图 {:02}{:02}{:02}{:02}{:02}{:02}",
+        y % 100,
+        m,
+        d,
+        sod / 3600,
+        (sod % 3600) / 60,
+        sod % 60
+    )
+}
+
+/// 捕获剪贴板图片为新气泡（PNG 校验 + 入库；**无去重**——每次截图都是新内容，
+/// PL024 定案）
+pub fn bubble_capture_image_core(
+    png: &[u8],
+    ctx: &AppContext,
+) -> Result<BubbleCaptureOutcome, CommandError> {
+    validate_image_png(png)?;
+    let label = image_bubble_label();
+    let storage = ctx.lock_storage()?;
+    match storage.add_image_bubble(&label, png)? {
+        BubbleAddOutcome::Added(item) => Ok(BubbleCaptureOutcome::Added { item }),
+        BubbleAddOutcome::Duplicate => Ok(BubbleCaptureOutcome::Duplicate),
+    }
+}
+
+/// 图片捕获收尾（热键路径）：校验入库 + 广播；失败静默落日志（反馈静默定案
+/// 与文本路径对齐；图片路径无 Duplicate 分支）
+fn finish_quiet_capture_image(app: &AppHandle, png: &[u8]) {
+    let ctx = app.state::<AppContext>();
+    match bubble_capture_image_core(png, &ctx) {
+        Ok(BubbleCaptureOutcome::Added { .. }) => {
+            if let Err(err) = app.emit("bubble-changed", ()) {
+                eprintln!("bubble-changed 事件发送失败：{err}");
+            }
+        }
+        Err(err) => eprintln!("热键图片捕获失败：{err}"),
+        Ok(BubbleCaptureOutcome::Duplicate) => {}
+    }
+}
+
+/// Windows 圈选直达编排（PL016.3，PL024 图优先分叉；PL024.8x 变化优先重构）：
+/// **变化优先 + 快照兜底**——先快照 {文本, 图}，合成 Ctrl+C 让前台复制用户选中的
+/// 项（文件/文本），轮询只认相对快照的新内容（新图或新文本）；超时无变化才兜底
+/// 收快照图（截图场景：合成 Ctrl+C 是 no-op，快照图即截图）。不再「剪贴板有图就
+/// 直接收」——那会让剪贴板里的旧图短路掉用户新选中的项
 #[cfg(target_os = "windows")]
 fn capture_quiet_windows(app: &AppHandle) {
+    let before_text = app.clipboard().read_text().ok();
+    let before_image = crate::clipboard_image::read_clipboard_image();
     // 终端边界守卫（PL016.4）：conhost/Windows Terminal 无选区时 Ctrl+C =
-    // 中断信号（SIGINT），合成会打断前台进程——跳过合成直接静默
+    // 中断信号（SIGINT），不能合成——但快照已有图（终端里截图）仍可直接收
     if crate::capture::foreground_is_console() {
+        if let Some(png) = before_image {
+            finish_quiet_capture_image(app, &png);
+        }
         return;
     }
-    let before = app.clipboard().read_text().ok();
     crate::capture::synthesize_ctrl_c();
     let start = std::time::Instant::now();
-    let picked = crate::capture::wait_clipboard_change(
-        before.as_deref(),
+    let picked = crate::capture::wait_clipboard_capture(
+        before_text.as_deref(),
+        before_image.as_deref(),
         crate::capture::WAIT_TIMEOUT_MS,
         crate::capture::POLL_INTERVAL_MS,
         || start.elapsed().as_millis() as u64,
         || app.clipboard().read_text().ok(),
+        crate::clipboard_image::read_clipboard_image,
     );
-    let Some(text) = picked else {
+    let Some(hit) = picked else {
         return;
     };
     // 恢复原剪贴板（圈选复制动作污染了用户剪贴板；失败落日志不阻断——捕获已
     // 成立，且下次粘贴拿到的是刚圈选的文本损失为零）；原本无文本（None）无可恢复
-    if let Some(old) = &before {
+    if let Some(old) = &before_text {
         if let Err(err) = app.clipboard().write_text(old) {
             eprintln!("热键捕获：原剪贴板恢复失败：{err}");
         }
     }
-    finish_quiet_capture(app, &text);
+    match hit {
+        crate::capture::CaptureHit::Text(text) => finish_quiet_capture(app, &text),
+        crate::capture::CaptureHit::Image(png) => finish_quiet_capture_image(app, &png),
+    }
 }
 
 /// 非 Windows 直读剪贴板捕获（无合成能力平台保持旧行为）
@@ -103,13 +219,17 @@ impl BubbleCaptureOutcome {
     }
 }
 
-/// 捕获剪贴板文本为新气泡（剪贴板无文本/空文本严格报错；重复内容返回 Duplicate
-/// 不入库——PL015.5 去重，与热键路径同规）
+/// 捕获剪贴板为新气泡（PL024 图优先分叉：剪贴板有图捕获图片气泡，无图回落
+/// 文本链路；文本无/空文本严格报错，重复内容返回 Duplicate 不入库——PL015.5
+/// 去重与热键路径同规）
 #[tauri::command]
 pub fn bubble_capture(
     app: AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<BubbleCaptureOutcome, CommandError> {
+    if let Some(png) = crate::clipboard_image::read_clipboard_image() {
+        return bubble_capture_image_core(&png, &ctx);
+    }
     let text = app
         .clipboard()
         .read_text()
@@ -144,24 +264,71 @@ pub fn bubble_list_core(ctx: &AppContext) -> Result<BubbleSnapshot, CommandError
     Ok(BubbleSnapshot { items })
 }
 
-/// 复制气泡内容回剪贴板（捕获→粘贴走→清理闭环的回程）
+/// 气泡图片按需取数（详情板 data URL；**列表载荷不带图**——PL024 载荷分层定案，
+/// 本命令只在 kind = Image 时被前端调用）。文本气泡/不存在严格报错
+#[tauri::command]
+pub fn bubble_get_image(id: i64, ctx: State<'_, AppContext>) -> Result<String, CommandError> {
+    bubble_get_image_core(id, &ctx)
+}
+
+/// bubble_get_image 核心实现：取 PNG 字节 → base64 data URL
+pub fn bubble_get_image_core(id: i64, ctx: &AppContext) -> Result<String, CommandError> {
+    let storage = ctx.lock_storage()?;
+    let png = storage.get_bubble_image(id)?.ok_or(CommandError::Bubble(
+        BubbleError::UnsupportedFormat.to_string(),
+    ))?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        crate::clipboard_image::base64_encode(&png)
+    ))
+}
+
+/// 复制回取数路由结果（PL024 按 kind 分派；不跨 IPC 无需 Serialize）
+#[derive(Debug)]
+pub enum BubbleCopyPayload {
+    /// 文本气泡原文
+    Text(String),
+    /// 图片气泡 PNG 字节（写回三格式由剪贴板 FFI 层裁决）
+    Image(Vec<u8>),
+}
+
+/// 复制回取数路由核心（直测面；写剪贴板动作留命令薄壳不直测）：
+/// 文本回原文、图片回 PNG 字节；图片列缺席（防御面）严格报错
+pub fn bubble_copy_payload_core(
+    id: i64,
+    ctx: &AppContext,
+) -> Result<BubbleCopyPayload, CommandError> {
+    let storage = ctx.lock_storage()?;
+    let item = storage.get_bubble(id)?;
+    match item.kind {
+        crate::bubble::BubbleKind::Text => Ok(BubbleCopyPayload::Text(item.text)),
+        crate::bubble::BubbleKind::Image => match storage.get_bubble_image(id)? {
+            Some(png) => Ok(BubbleCopyPayload::Image(png)),
+            None => Err(CommandError::Bubble(
+                BubbleError::UnsupportedFormat.to_string(),
+            )),
+        },
+    }
+}
+
+/// 复制气泡内容回剪贴板（捕获→粘贴走→清理闭环的回程；PL024 按 kind 分叉——
+/// 文本走插件写文本，图片走 Win32 三格式写入[PNG 注册格式 + CF_DIB + CF_DIBV5]，
+/// 用户主动覆盖剪贴板无恢复逻辑）
 #[tauri::command]
 pub fn bubble_copy(
     id: i64,
     app: AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
-    let text = bubble_text_core(id, &ctx)?;
-    app.clipboard()
-        .write_text(&text)
-        .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))?;
+    match bubble_copy_payload_core(id, &ctx)? {
+        BubbleCopyPayload::Text(text) => app
+            .clipboard()
+            .write_text(&text)
+            .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))?,
+        BubbleCopyPayload::Image(png) => crate::clipboard_image::write_clipboard_image(&png)
+            .map_err(|err| CommandError::Clipboard(format!("图片写回剪贴板失败：{err}")))?,
+    }
     Ok(())
-}
-
-/// 复制回的前半段：回读气泡文本（直测）
-pub fn bubble_text_core(id: i64, ctx: &AppContext) -> Result<String, CommandError> {
-    let storage = ctx.lock_storage()?;
-    Ok(storage.get_bubble(id)?.text)
 }
 
 /// 删除单条气泡（不存在严格报错）
@@ -228,6 +395,67 @@ mod tests {
     }
 
     #[test]
+    fn capture_image_persists_with_label_and_dedupes() {
+        // 图片捕获入库 + 占位文案格式（🖼 截图 + 12 位数字）+ 同图去重（PL024.8x）
+        let ctx = test_context();
+        let png = png_magic_bytes();
+        let a = bubble_capture_image_core(&png, &ctx)
+            .expect("合法图片必须成功")
+            .added_item();
+        let dup = bubble_capture_image_core(&png, &ctx).expect("去重判定必须成功");
+        assert!(
+            matches!(dup, BubbleCaptureOutcome::Duplicate),
+            "同图第二次应判重复"
+        );
+        let digits = a
+            .text
+            .chars()
+            .skip("🖼 截图 ".chars().count())
+            .collect::<String>();
+        assert_eq!(digits.len(), 12, "yyMMddHHmmss 连写 12 位");
+        assert!(digits.chars().all(|c| c.is_ascii_digit()), "占位尾全数字");
+        let view = bubble_list_core(&ctx).expect("读命令必须成功");
+        assert_eq!(view.items.len(), 1, "同图去重后仅一条");
+        assert!(view
+            .items
+            .iter()
+            .all(|it| it.kind == crate::bubble::BubbleKind::Image));
+    }
+
+    #[test]
+    fn capture_image_rejects_garbage_bytes() {
+        // 魔数校验在命令层可见（严格抛错主线；Bubble 变体承载文案）
+        let ctx = test_context();
+        let err = bubble_capture_image_core(b"garbage", &ctx).expect_err("垃圾字节必须被拒");
+        assert!(
+            matches!(err, CommandError::Bubble(ref msg) if msg.contains("图片格式暂不支持")),
+            "文案必须可见且指向格式"
+        );
+    }
+
+    #[test]
+    fn get_image_core_data_url_and_strict_errors() {
+        // 图片气泡 → data URL 前缀；文本气泡/不存在严格报错
+        let ctx = test_context();
+        let item = bubble_capture_image_core(&png_magic_bytes(), &ctx)
+            .expect("合法图片必须成功")
+            .added_item();
+        let url = bubble_get_image_core(item.id, &ctx).expect("取数必须成功");
+        assert!(url.starts_with("data:image/png;base64,"));
+        let text_item = bubble_capture_core("文本", &ctx)
+            .expect("写入必须成功")
+            .added_item();
+        let err = bubble_get_image_core(text_item.id, &ctx).expect_err("文本气泡必须报错");
+        assert!(matches!(err, CommandError::Bubble(ref msg) if msg.contains("图片格式暂不支持")));
+        assert!(bubble_get_image_core(99, &ctx).is_err());
+    }
+
+    /// 最小合法 PNG 形态（魔数 + 载荷；storage 测试同款语义）
+    fn png_magic_bytes() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 7, 8, 9]
+    }
+
+    #[test]
     fn capture_duplicate_outcome_and_list_unchanged() {
         // PL015.5 去重：重复文本返回 Duplicate（非错误），列表不变；trim 后命中查重
         let ctx = test_context();
@@ -251,15 +479,23 @@ mod tests {
 
     #[test]
     fn text_core_reads_back_and_missing_errors() {
+        // PL024.6 迁移为取数路由面：文本 → Text；图片 → Image；不存在 → NotFound
         let ctx = test_context();
         let item = bubble_capture_core("片段", &ctx)
             .expect("合法文本必须成功")
             .added_item();
-        assert_eq!(
-            bubble_text_core(item.id, &ctx).expect("回读必须成功"),
-            "片段"
-        );
-        let err = bubble_text_core(99, &ctx).expect_err("不存在必须报错");
+        assert!(matches!(
+            bubble_copy_payload_core(item.id, &ctx).expect("回读必须成功"),
+            BubbleCopyPayload::Text(ref t) if t == "片段"
+        ));
+        let img = bubble_capture_image_core(&png_magic_bytes(), &ctx)
+            .expect("图片捕获必须成功")
+            .added_item();
+        assert!(matches!(
+            bubble_copy_payload_core(img.id, &ctx).expect("取图必须成功"),
+            BubbleCopyPayload::Image(ref png) if png == &png_magic_bytes()
+        ));
+        let err = bubble_copy_payload_core(99, &ctx).expect_err("不存在必须报错");
         assert!(matches!(err, CommandError::Storage(_)));
     }
 

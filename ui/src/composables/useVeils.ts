@@ -30,15 +30,25 @@ export function syncVeils(): void {
   const detailOpen = reads.detail?.() ?? false;
   const anyOpen = boardOpen || settingsOpen || detailOpen;
   for (const g of glassBars) {
-    const veil = g.scroller.id === "archive-list" ? !boardOpen : anyOpen;
+    // 归档自家滑杆随归档板出现（!boardOpen）；详情板自家滑杆随详情板开合隐现
+    //（对齐下方三角同款特判——板开时自家滑杆必须可见，不吃 anyOpen 的帘；
+    // 关板 !detailOpen 罩住，顺带根治"关板后滑杆残留"）
+    const veil =
+      g.scroller.id === "archive-list"
+        ? !boardOpen
+        : g.scroller.id === "detail-note" || g.scroller.id === "detail-image-shell"
+          ? !detailOpen
+          : anyOpen;
     g.bar.classList.toggle("veiled", veil);
   }
   for (const r of boardReads) {
     // 归档实例跳过（方案 B）：三角住玻璃板随板隐显，不能吃帘——否则板开时
     // anyOpen=true 会把自家三角罩死；关板泄漏由"玻璃 visibility 连带隐藏"根治
     if (r.el.id === "archive-list") continue;
-    // 详情板实例随详情板开合隐现（板开时自家三角必须可见，不吃 anyOpen 的帘）
-    const veil = r.el.id === "detail-note" ? !detailOpen : anyOpen;
+    // 详情板实例随详情板开合隐现（板开时自家三角必须可见，不吃 anyOpen 的帘）——
+    // 文本 textarea（detail-note）与图片壳（detail-image-shell，PL024.8c）两模式同规
+    const veil =
+      r.el.id === "detail-note" || r.el.id === "detail-image-shell" ? !detailOpen : anyOpen;
     for (const hint of r.hints) hint.classList.toggle("veiled", veil);
   }
 }

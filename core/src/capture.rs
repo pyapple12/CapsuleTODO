@@ -11,36 +11,58 @@ pub const POLL_INTERVAL_MS: u64 = 10;
 /// 等剪贴板变化总超时（毫秒；无选区/管理员窗拒绝合成时到点静默）
 pub const WAIT_TIMEOUT_MS: u64 = 300;
 
-/// 等剪贴板出现"非空且不同于快照"的新文本（10ms 步进轮询纯状态机）。
-/// 命中判定 trim 后比较（复制工具常加尾随换行，语义不变）；返回原始文本
-///（入库校验/去重由 bubble_capture_core 负责，此处不重复裁决）。
+/// 圈选等待命中（PL024 双通道演进）：文本变化或图片出现，图优先
+pub enum CaptureHit {
+    /// 剪贴板新文本（圈选复制；入库校验/去重由命令层裁决，此处不重复裁决）
+    Text(String),
+    /// 剪贴板出现图片（PNG 字节随命中携带——等待期读到的图必为圈选新图，
+    /// 快照期已有图被前置检测拦截）
+    Image(Vec<u8>),
+}
+
+/// 等剪贴板出现"相对快照的新文本，或相对快照的新图片"（10ms 步进轮询纯状态机，
+/// PL024 双通道；PL024.8x 变化优先——旧图不再立即命中，须与快照不同才算新）。
+/// 图优先判定（截图工具常同放图+文本两格式）；文本命中 trim 后比较（复制工具常加
+/// 尾随换行，语义不变）；**超时兜底**：全程无新内容但快照本就有图 → 返回快照图
+/// （截图场景：合成 Ctrl+C 是 no-op，剪贴板图未变，应作为本次捕获目标）。
 ///
 /// # 参数
-/// - `before`：起点快照（None = 原剪贴板无文本；此态下读到任何非空文本即命中）
+/// - `before_text`：文本起点快照（None = 原剪贴板无文本；此态下任何非空文本即命中）
+/// - `before_image`：图片起点快照（None = 原剪贴板无图；命中判定 = 出现与之不同的图）
 /// - `timeout_ms`：总等待上限
 /// - `step_ms`：轮询步进（真实 10ms；测试传 0 零真实等待）
 /// - `now_ms`：单调时钟（毫秒），测试注入
-/// - `read`：剪贴板读函数（None = 剪贴板无文本/读取失败），测试注入
+/// - `read_text`：文本读函数（None = 剪贴板无文本/读取失败），测试注入
+/// - `read_image`：图片读函数（None = 无图/读取失败），测试注入
 ///
 /// # 返回
-/// `Some(新文本)` 命中；`None` 超时未变（无选区/复制被拒——调用方按用户定案静默）
-pub fn wait_clipboard_change(
-    before: Option<&str>,
+/// `Some(命中)` 新文本/新图片（或兜底快照图）；`None` 超时且快照无图（无选区/
+/// 复制被拒——调用方按用户定案静默）
+pub fn wait_clipboard_capture(
+    before_text: Option<&str>,
+    before_image: Option<&[u8]>,
     timeout_ms: u64,
     step_ms: u64,
     mut now_ms: impl FnMut() -> u64,
-    mut read: impl FnMut() -> Option<String>,
-) -> Option<String> {
+    mut read_text: impl FnMut() -> Option<String>,
+    mut read_image: impl FnMut() -> Option<Vec<u8>>,
+) -> Option<CaptureHit> {
     let deadline = now_ms() + timeout_ms;
     loop {
-        if let Some(text) = read() {
+        if let Some(png) = read_image() {
+            if before_image != Some(png.as_slice()) {
+                return Some(CaptureHit::Image(png));
+            }
+        }
+        if let Some(text) = read_text() {
             let trimmed = text.trim();
-            if !trimmed.is_empty() && Some(trimmed) != before.map(str::trim) {
-                return Some(text);
+            if !trimmed.is_empty() && Some(trimmed) != before_text.map(str::trim) {
+                return Some(CaptureHit::Text(text));
             }
         }
         if now_ms() >= deadline {
-            return None;
+            // 兜底：无新内容但快照已有图 → 收快照图（截图场景）
+            return before_image.map(|b| CaptureHit::Image(b.to_vec()));
         }
         std::thread::sleep(std::time::Duration::from_millis(step_ms));
     }
@@ -123,7 +145,7 @@ pub use win::{foreground_is_console, synthesize_ctrl_c};
 
 #[cfg(test)]
 mod tests {
-    use super::wait_clipboard_change;
+    use super::{wait_clipboard_capture, CaptureHit};
 
     /// 递增假时钟（毫秒）：tick 返回累加值，保证轮询有限轮收敛（step=0 零真实等待）
     struct Clock(u64);
@@ -134,32 +156,41 @@ mod tests {
         }
     }
 
+    /// 无图读函数（文本通道测试共用：图片通道恒缺席）
+    fn no_image() -> Option<Vec<u8>> {
+        None
+    }
+
     #[test]
     fn hits_immediately_on_new_text() {
         // 首次读取即返回新文本 → 立即命中（不走到超时判断）
         let mut clock = Clock(0);
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
             Some("旧"),
+            None,
             300,
             0,
             || clock.tick(1),
             || Some("新".to_string()),
+            no_image,
         );
-        assert_eq!(got.as_deref(), Some("新"));
+        assert!(matches!(got, Some(CaptureHit::Text(t)) if t == "新"));
     }
 
     #[test]
     fn times_out_silently_when_unchanged() {
         // 读到的恒为快照原值 → 超时 None（无选区静默定案的状态机基础）
         let mut clock = Clock(0);
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
             Some("旧"),
+            None,
             300,
             0,
             || clock.tick(100),
             || Some("旧".to_string()),
+            no_image,
         );
-        assert_eq!(got, None);
+        assert!(got.is_none());
     }
 
     #[test]
@@ -167,8 +198,9 @@ mod tests {
         // 前 2 次旧文本、第 3 次起新文本 → 中途命中（模拟复制落剪贴板有时延）
         let mut clock = Clock(0);
         let mut calls = 0u32;
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
             Some("旧"),
+            None,
             300,
             0,
             || clock.tick(50),
@@ -180,8 +212,9 @@ mod tests {
                     Some("新".to_string())
                 }
             },
+            no_image,
         );
-        assert_eq!(got.as_deref(), Some("新"));
+        assert!(matches!(got, Some(CaptureHit::Text(t)) if t == "新"));
         assert_eq!(calls, 3);
     }
 
@@ -190,8 +223,9 @@ mod tests {
         // 空串/纯空白不算命中（条目语义：非空且不同才命中）→ 超时 None
         let mut clock = Clock(0);
         let mut calls = 0u32;
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
             Some("旧"),
+            None,
             100,
             0,
             || clock.tick(50),
@@ -203,35 +237,144 @@ mod tests {
                     Some("   ".to_string())
                 }
             },
+            no_image,
         );
-        assert_eq!(got, None);
+        assert!(got.is_none());
     }
 
     #[test]
     fn trim_equivalent_text_is_not_a_change() {
         // 尾随换行与快照 trim 等价 → 不算变化（复制工具尾随换行容忍）
         let mut clock = Clock(0);
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
             Some("旧文本"),
+            None,
             100,
             0,
             || clock.tick(50),
             || Some("旧文本\n".to_string()),
+            no_image,
         );
-        assert_eq!(got, None);
+        assert!(got.is_none());
     }
 
     #[test]
     fn snapshot_none_hits_any_nonempty() {
         // 原剪贴板无文本（None）→ 任何非空新文本即命中
         let mut clock = Clock(0);
-        let got = wait_clipboard_change(
+        let got = wait_clipboard_capture(
+            None,
             None,
             300,
             0,
             || clock.tick(1),
             || Some("圈选内容".to_string()),
+            no_image,
         );
-        assert_eq!(got.as_deref(), Some("圈选内容"));
+        assert!(matches!(got, Some(CaptureHit::Text(t)) if t == "圈选内容"));
+    }
+
+    // —— PL024.4 图片通道（双通道演进新增）——
+
+    #[test]
+    fn image_hit_carries_bytes_and_wins_over_text() {
+        // 图优先判定：同轮既有图又有新文本 → 图命中且字节随命中携带
+        let mut clock = Clock(0);
+        let got = wait_clipboard_capture(
+            Some("旧"),
+            None,
+            300,
+            0,
+            || clock.tick(1),
+            || Some("圈选新文本".to_string()),
+            || Some(vec![1, 2, 3]),
+        );
+        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn image_appearing_midway_hits_before_timeout() {
+        // 前 2 轮无图无新文本，第 3 轮图片出现 → 中途命中（模拟圈选图片复制时延）
+        let mut clock = Clock(0);
+        let mut calls = 0u32;
+        let got = wait_clipboard_capture(
+            Some("旧"),
+            None,
+            300,
+            0,
+            || clock.tick(50),
+            || Some("旧".to_string()),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    None
+                } else {
+                    Some(vec![9])
+                }
+            },
+        );
+        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![9]));
+        assert_eq!(calls, 3);
+    }
+
+    // —— PL024.8x 变化优先 + 快照兜底（用户反馈：旧图不得短路新选中项）——
+
+    #[test]
+    fn stale_image_falls_back_to_snapshot_on_timeout() {
+        // 剪贴板始终是快照那张旧图、无新内容 → 超时兜底返回快照图（截图场景）
+        let mut clock = Clock(0);
+        let before_img = vec![9u8, 9, 9];
+        let got = wait_clipboard_capture(
+            None,
+            Some(&before_img),
+            100,
+            0,
+            || clock.tick(50),
+            || None,
+            || Some(before_img.clone()),
+        );
+        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == before_img));
+    }
+
+    #[test]
+    fn new_image_after_synthesis_wins_over_stale_snapshot() {
+        // 合成后出现与快照不同的新图 → 立即命中新图，旧图不短路
+        let mut clock = Clock(0);
+        let before_img = vec![1u8];
+        let mut calls = 0u32;
+        let got = wait_clipboard_capture(
+            None,
+            Some(&before_img),
+            300,
+            0,
+            || clock.tick(10),
+            || None,
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Some(before_img.clone())
+                } else {
+                    Some(vec![2u8, 2])
+                }
+            },
+        );
+        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![2u8, 2]));
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn no_new_content_and_no_snapshot_times_out() {
+        // 无新内容且快照无图 → None（无选区/复制被拒静默）
+        let mut clock = Clock(0);
+        let got = wait_clipboard_capture(
+            Some("旧"),
+            None,
+            100,
+            0,
+            || clock.tick(50),
+            || Some("旧".to_string()),
+            no_image,
+        );
+        assert!(got.is_none());
     }
 }

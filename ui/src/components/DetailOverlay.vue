@@ -29,6 +29,9 @@ const isBubbleMode = computed(() => props.bubble !== null);
 const overlay = ref<HTMLElement | null>(null);
 const titleDraft = ref("");
 const noteDraft = ref("");
+/** 气泡图片 data URL（PL024 载荷分层：列表不带图，开板按需 bubble_get_image 拉取；
+ * 文本气泡恒空串） */
+const bubbleImgSrc = ref("");
 
 const isOpen = ref(false);
 
@@ -36,10 +39,53 @@ const isOpen = ref(false);
 // 吃 .veiled 淡出、关板恢复（useVeils detail 特判按 textarea id=detail-note 匹配）
 bindOverlayState("detail", () => isOpen.value);
 
-// 板内整板阅读（gate：仅开板时亮三角）+ 玻璃滑杆（textarea 透明填壳同源滚动）
+// 板内整板阅读（gate：仅开板时亮三角）+ 玻璃滑杆（同源滚动）。
+// 双挂载模式（PL024.8c）：文本/气泡走 textarea（noteEl），图片气泡走壳容器（shellEl，
+// 自身 overflow-y 滚动）——两套件（滑杆 + ▲▼三角 + 溶解带）与文字块完全一致，同挂同卸。
 const noteEl = ref<HTMLTextAreaElement | null>(null);
-let boardRead: { sync: () => void; settle: () => void } | null = null;
-let glassBar: { sync: () => void } | null = null;
+const shellEl = ref<HTMLElement | null>(null);
+interface DetailKit {
+  boardRead: { sync: () => void; settle: () => void; destroy: () => void };
+  glassBar: { sync: () => void; destroy: () => void };
+}
+let kit: DetailKit | null = null;
+/** 当前套件挂载模式（PL024.8c 模式感知：切换/关板显式 destroy，FIX013.5 先例） */
+let kitMode: "note" | "image" | null = null;
+
+/** 期望套件模式：关板 = null；图片气泡待图到达前 = null（避免挂到随即被替换的
+ * textarea 上成孤儿）；文本/气泡文本 = note；图片已就位 = image */
+function desiredKit(): "note" | "image" | null {
+  if (!isOpen.value) return null;
+  if (props.bubble?.kind === "Image") {
+    return bubbleImgSrc.value && shellEl.value ? "image" : null;
+  }
+  return noteEl.value ? "note" : null;
+}
+
+/** 按期望模式挂/卸套件（幂等：模式不变不重挂；切换先 destroy 旧套件）；
+ * 滑杆锚 = 详情玻璃板（overlay），居中于内容区右缘与板右缘之间（与文字块同点） */
+function syncKit(): void {
+  const want = desiredKit();
+  if (want === kitMode) return;
+  kit?.boardRead.destroy();
+  kit?.glassBar.destroy();
+  kit = null;
+  kitMode = null;
+  const anchor = overlay.value ?? undefined;
+  if (want === "note" && noteEl.value) {
+    kit = {
+      boardRead: useBoardRead(noteEl.value, { gate: () => isOpen.value, layout: true }),
+      glassBar: useGlassBar(noteEl.value, { anchor, right: 4 }),
+    };
+    kitMode = "note";
+  } else if (want === "image" && shellEl.value) {
+    kit = {
+      boardRead: useBoardRead(shellEl.value, { gate: () => isOpen.value, layout: true }),
+      glassBar: useGlassBar(shellEl.value, { anchor, right: 4 }),
+    };
+    kitMode = "image";
+  }
+}
 
 /** 开板：揭示动画几何注入（页签顶实测上扩 4px；飞出原点 = 被点行中心——A3，
  * design positionDetailOverlay 同款，origin 在 nextTick 后注入见 open 内注释） */
@@ -64,13 +110,7 @@ function open(): void {
       ov.style.setProperty("--origin-x", `${Math.round(props.anchor.x - or.left)}px`);
       ov.style.setProperty("--origin-y", `${Math.round(props.anchor.y - or.top)}px`);
     }
-    if (noteEl.value && !boardRead) {
-      boardRead = useBoardRead(noteEl.value, {
-        gate: () => isOpen.value,
-        layout: true,
-      });
-      glassBar = useGlassBar(noteEl.value, { right: 4.75 });
-    }
+    syncKit();
     // 滚动复位（A4 = design resetDetailScroll）：换内容必归零——上一次会话的
     // scrollTop 会残留（实测开板落在文末）；textarea 程序赋值不派发 scroll，
     // 补发合成事件让三角/到底抬带停在复位后状态
@@ -81,8 +121,8 @@ function open(): void {
     }
     window.setTimeout(() => {
       if (!isOpen.value) return; // 早关板防污染：settle 不把 at-bottom/带挂回已收的板
-      boardRead?.settle();
-      glassBar?.sync();
+      kit?.boardRead.settle();
+      kit?.glassBar.sync();
     }, 450);
   });
 }
@@ -98,6 +138,7 @@ function close(): void {
     note.classList.remove("at-bottom");
     note.style.removeProperty("--fade-btm");
   }
+  syncKit(); // 关板即卸套件（isOpen=false → want null；FIX013.5 显式清理）
   syncVeils();
   emit("close");
 }
@@ -108,6 +149,7 @@ watch(
   (t) => {
     if (t) {
       void flushPending(); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
+      bubbleImgSrc.value = ""; // 图片残留清防串板（bubble→todo 切源防串）
       titleDraft.value = t.text;
       noteDraft.value = t.note;
       open();
@@ -122,13 +164,46 @@ watch(
   (b) => {
     if (b) {
       void flushPending(); // todo→bubble 切源同款先 flush（FIX003.4）
-      noteDraft.value = b.text; // 气泡全文只读展示
+      if (b.kind === "Image") {
+        // PL024 图片气泡：板面 = 图片（按需拉取 data URL），文本位留空防占位文案重复
+        noteDraft.value = "";
+        bubbleImgSrc.value = "";
+        void invoke<string>("bubble_get_image", { id: b.id })
+          .then((url) => {
+            if (props.bubble?.id === b.id) bubbleImgSrc.value = url;
+          })
+          .catch((err) => {
+            console.error("气泡图片取数失败", err);
+            if (props.bubble?.id === b.id) {
+              saveError.value = `气泡图片取数失败：${String(err)}`;
+            }
+          });
+      } else {
+        bubbleImgSrc.value = "";
+        noteDraft.value = b.text; // 气泡全文只读展示
+      }
       open();
     } else if (!props.todo) {
+      bubbleImgSrc.value = "";
       close();
     }
   },
 );
+
+// 图片按需拉取异步到达（PL024.8c）：bubbleImgSrc 从空到有（进图片模式）/从有到空
+// （退图片模式/切源）都驱动套件重挂——挂载点必须等图渲染后再定，不能放 open() 的
+// nextTick（彼时 textarea 尚在，会把笔记套件挂到随即被替换的 textarea 上成孤儿）；
+// 图就位后再补一次 settle，防 open 内 450ms 定时器早于图渲染（显隐/几何重算）
+watch(bubbleImgSrc, () => {
+  void nextTick(() => {
+    syncKit();
+    window.setTimeout(() => {
+      if (!isOpen.value) return;
+      kit?.boardRead.settle();
+      kit?.glassBar.sync();
+    }, 450);
+  });
+});
 
 // —— 标题改名（maxlength 12，input 实时同步回清单——debounce 300ms 合并 IPC）。
 // bubble 模式只读：head 整个隐藏无 input，此 watch 天然不触发 ——
@@ -313,6 +388,10 @@ window.addEventListener("mousedown", onGlobalDown, true);
 
 onBeforeUnmount(() => {
   void flushPending();
+  kit?.boardRead.destroy(); // 卸载即卸套件（FIX013.5 显式清理）
+  kit?.glassBar.destroy();
+  kit = null;
+  kitMode = null;
   window.removeEventListener("mousedown", onGlobalDown, true);
 });
 </script>
@@ -331,8 +410,15 @@ onBeforeUnmount(() => {
           placeholder="最多 12 字"
         />
       </div>
-      <div class="note-shell" :class="{ 'bubble-shell': isBubbleMode }">
+      <div
+        ref="shellEl"
+        id="detail-image-shell"
+        class="note-shell"
+        :class="{ 'bubble-shell': isBubbleMode, 'image-shell': bubbleImgSrc !== '' }"
+      >
+        <img v-if="bubbleImgSrc" class="detail-image" :src="bubbleImgSrc" alt="气泡图片" />
         <textarea
+          v-else
           ref="noteEl"
           id="detail-note"
           v-model="noteDraft"

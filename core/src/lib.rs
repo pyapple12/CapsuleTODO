@@ -5,6 +5,7 @@
 
 pub mod bubble;
 pub mod capture;
+pub mod clipboard_image;
 pub mod commands;
 pub mod fullscreen;
 #[cfg(target_os = "windows")]
@@ -239,6 +240,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_reorder,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
+            commands::bubble::bubble_get_image,
             commands::bubble::bubble_copy,
             commands::bubble::bubble_remove,
             commands::bubble::bubble_clear,

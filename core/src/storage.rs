@@ -170,6 +170,7 @@ impl Storage {
             )?;
         }
         self.migrate_sort_order()?;
+        self.migrate_bubble_kind()?;
         Ok(())
     }
 
@@ -205,6 +206,25 @@ impl Storage {
                      SELECT COUNT(*) FROM bubbles b2 WHERE b2.id > bubbles.id
                  );",
             )?;
+        }
+        Ok(())
+    }
+
+    /// PL024 数据迁移：bubbles 补 kind/image 两列（幂等——先探列再 ALTER，沿 PL013
+    /// 先例）。存量回填语义：kind = 'text'（DEFAULT 承担），image = NULL；新库建表后
+    /// 同样走本函数补齐（建表语句保持原样，让"旧 schema → 迁移"路径与新库路径
+    /// 汇合同一份代码）
+    fn migrate_bubble_kind(&self) -> Result<(), StorageError> {
+        let bubble_cols = self.column_set("bubbles")?;
+        if !bubble_cols.contains("kind") {
+            self.conn.execute(
+                "ALTER TABLE bubbles ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+                [],
+            )?;
+        }
+        if !bubble_cols.contains("image") {
+            self.conn
+                .execute("ALTER TABLE bubbles ADD COLUMN image BLOB", [])?;
         }
         Ok(())
     }
@@ -355,11 +375,16 @@ impl Storage {
         Ok(changed)
     }
 
-    /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）
+    /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）。
+    /// kind 值域由自有写入收敛（'text'/'image' 字面量），未知值宽容回落 Text
     fn row_to_bubble(row: &rusqlite::Row<'_>) -> rusqlite::Result<BubbleItem> {
         Ok(BubbleItem {
             id: row.get(0)?,
             text: row.get(1)?,
+            kind: match row.get::<_, String>(2)?.as_str() {
+                "image" => crate::bubble::BubbleKind::Image,
+                _ => crate::bubble::BubbleKind::Text,
+            },
         })
     }
 
@@ -386,7 +411,66 @@ impl Storage {
         Ok(BubbleAddOutcome::Added(BubbleItem {
             id: self.conn.last_insert_rowid(),
             text: text.to_string(),
+            kind: crate::bubble::BubbleKind::Text,
         }))
+    }
+
+    /// 新增图片气泡（占位文本 + PNG 字节；**按内容去重**——同 PNG 字节已在库则返回
+    /// Duplicate 不入库，防重复入库[PL024.8x 用户反馈]）；排头插入与 add_bubble 同款
+    /// （sort_order = 现存最小值 − 1）。PNG 须先过 validate_image_png（魔数/上限校验
+    /// 执行点在命令层，同 trim 契约声明先例）
+    pub fn add_image_bubble(
+        &self,
+        text: &str,
+        png: &[u8],
+    ) -> Result<BubbleAddOutcome, StorageError> {
+        if self.image_bytes_exist(png)? {
+            return Ok(BubbleAddOutcome::Duplicate);
+        }
+        self.conn.execute(
+            "INSERT INTO bubbles(text, kind, image, sort_order)
+             VALUES (?1, 'image', ?2, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM bubbles))",
+            rusqlite::params![text, png],
+        )?;
+        Ok(BubbleAddOutcome::Added(BubbleItem {
+            id: self.conn.last_insert_rowid(),
+            text: text.to_string(),
+            kind: crate::bubble::BubbleKind::Image,
+        }))
+    }
+
+    /// 图片内容去重判定（PL024.8x）：按字节长度预筛（廉价）+ 逐字节比对，命中即重复。
+    /// 气泡量小（≤20），预筛后通常 0~1 个候选
+    fn image_bytes_exist(&self, png: &[u8]) -> Result<bool, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT image FROM bubbles WHERE kind = 'image' AND length(image) = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![png.len() as i64])?;
+        while let Some(row) = rows.next()? {
+            let blob: Option<Vec<u8>> = row.get(0)?;
+            if blob.as_deref() == Some(png) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// 读图片气泡的 PNG 字节（详情板与复制回取数源）：不存在 NotFound 严格报错，
+    /// 文本气泡返回 None（正常态非错误——调用面只对 kind=Image 调用，防御兜底）
+    pub fn get_bubble_image(&self, id: i64) -> Result<Option<Vec<u8>>, StorageError> {
+        self.get_bubble(id)?;
+        let img: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT image FROM bubbles WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(id),
+                other => StorageError::Sqlite(other),
+            })?;
+        Ok(img)
     }
 
     /// 气泡列表：按 sort_order 升序（拖拽序；新捕获排头插入 = 展示序与实验场
@@ -394,7 +478,7 @@ impl Storage {
     pub fn list_bubbles(&self) -> Result<Vec<BubbleItem>, StorageError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, text FROM bubbles ORDER BY sort_order ASC, id ASC")?;
+            .prepare("SELECT id, text, kind FROM bubbles ORDER BY sort_order ASC, id ASC")?;
         let rows = stmt.query_map([], Self::row_to_bubble)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -477,7 +561,7 @@ impl Storage {
     pub fn get_bubble(&self, id: i64) -> Result<BubbleItem, StorageError> {
         self.conn
             .query_row(
-                "SELECT id, text FROM bubbles WHERE id = ?1",
+                "SELECT id, text, kind FROM bubbles WHERE id = ?1",
                 rusqlite::params![id],
                 Self::row_to_bubble,
             )
@@ -686,6 +770,89 @@ mod tests {
         st.remove_bubble(item.id).expect("删除必须成功");
         let re = st.add_bubble("临时片段").expect("写入必须成功");
         assert!(!re.is_duplicate(), "删除后可再添加同文本");
+    }
+
+    // ===== PL024.1 图片气泡存储（TDD 红灯） =====
+
+    /// 最小合法 PNG 形态（8 字节魔数 + 少量载荷；魔数与 bubble.rs 单源语义一致）
+    fn png_bytes() -> Vec<u8> {
+        vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3]
+    }
+
+    #[test]
+    fn migration_backfills_bubble_kind_text() {
+        // legacy bubbles（PL013 fixture，无 kind/image 列）→ 迁移后存量行 kind = Text
+        let st = legacy_storage_with_bubbles();
+        st.init().expect("迁移必须成功");
+        let items = st.list_bubbles().expect("读取必须成功");
+        assert!(!items.is_empty());
+        for it in &items {
+            assert_eq!(
+                it.kind,
+                crate::bubble::BubbleKind::Text,
+                "存量行 = 文本气泡"
+            );
+        }
+    }
+
+    #[test]
+    fn add_image_bubble_dedupes_by_content() {
+        // 图片按内容去重（PL024.8x）：同 PNG 字节第二次返回 Duplicate 不入库；
+        // 不同字节仍入库；列表 kind = Image（载荷不带图）
+        let st = storage();
+        let png = png_bytes();
+        let a = st
+            .add_image_bubble("🖼 截图 261009143205", &png)
+            .expect("首次必须成功")
+            .added_item();
+        let dup = st
+            .add_image_bubble("🖼 截图 261009143206", &png)
+            .expect("去重判定必须成功");
+        assert!(dup.is_duplicate(), "同 PNG 字节应判重复");
+        let mut other = png.clone();
+        other.push(0);
+        let b = st
+            .add_image_bubble("🖼 截图 261009143207", &other)
+            .expect("不同字节必须成功")
+            .added_item();
+        let items = st.list_bubbles().expect("读取必须成功");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .all(|it| it.kind == crate::bubble::BubbleKind::Image),
+            "列表 kind = Image（载荷不带图）"
+        );
+        assert_eq!(
+            st.get_bubble_image(a.id).expect("读取必须成功").as_deref(),
+            Some(&png[..]),
+            "图片字节完整回读"
+        );
+        assert_eq!(
+            st.get_bubble_image(b.id).expect("读取必须成功").as_deref(),
+            Some(&other[..])
+        );
+    }
+
+    #[test]
+    fn get_bubble_image_text_none_and_missing_errors() {
+        // 文本气泡 = None（非错误）；不存在 = NotFound 严格报错
+        let st = storage();
+        let item = st.add_bubble("文本").expect("写入必须成功").added_item();
+        assert_eq!(st.get_bubble_image(item.id).expect("读取必须成功"), None);
+        assert!(matches!(
+            st.get_bubble_image(99),
+            Err(StorageError::NotFound(99))
+        ));
+    }
+
+    #[test]
+    fn add_bubble_text_path_stays_text_kind() {
+        // 文本路径回归锁定：kind = Text（image 列 NULL 语义由 get_bubble_image None 证）
+        let st = storage();
+        let item = st.add_bubble("文本").expect("写入必须成功").added_item();
+        assert_eq!(item.kind, crate::bubble::BubbleKind::Text);
+        assert_eq!(st.get_bubble_image(item.id).expect("读取必须成功"), None);
     }
 
     #[test]

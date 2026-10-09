@@ -62,10 +62,24 @@
   cursor: default; /* disabled 已挡点击，只去手型 */
 }
 
-.error {
-  margin: 0;
-  font-size: 12px;
+.bubbles .error {
+  margin: 0 0 0 12px; /* 位置对齐满额警告行（.full-warning 同款左缩进） */
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
   color: var(--danger);
+  text-shadow: 0.5px 0.5px 2px #000; /* age-alert/满额提醒同款阴影（PL024.8a 定案） */
+}
+
+/* 错误行渐显渐隐（PL024.8a）：0.3s opacity 过渡，进出共用（1s 后置空触发 leave 渐隐） */
+.err-enter-active,
+.err-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.err-enter-from,
+.err-leave-to {
+  opacity: 0;
 }
 
 /* 一键清空：红染玻璃卡（用户定案 2026-09-25）——深度与捕获对称；无气泡转灰染且不可点 */
