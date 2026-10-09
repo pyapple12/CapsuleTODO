@@ -21,6 +21,8 @@ export interface TodoItem {
   done_at: number | null;
   /** 详情板笔记（自由文本） */
   note: string;
+  /** 笔记有无裁决（Rust trim 判空单源下发，红点指示依据——前端禁自行判空） */
+  has_note: boolean;
 }
 
 /** 清单视图条目（镜像 TodoView = TodoItem 扁平 + 龄期档位） */

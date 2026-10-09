@@ -14,6 +14,8 @@ interface MockTodo {
   created_at: number | null;
   done_at: number | null;
   note: string;
+  /** 笔记有无裁决（镜像 Rust has_note：trim 判空单源，PL023） */
+  has_note: boolean;
   /** 拖拽排序键（PL013；种子行未赋值回退 id 序） */
   sort_order?: number;
 }
@@ -91,6 +93,7 @@ function seed(): void {
     created_at: now - ageHours * HOUR,
     done_at: done ? now : null,
     note,
+    has_note: note.trim() !== "",
   });
   state.todos = [
     t("买牛奶", false, 0, "2L 全脂一盒\n鸡蛋一排\n顺路取快递"),
@@ -161,6 +164,7 @@ const handlers: Record<string, CommandHandler> = {
       created_at: Date.now(),
       done_at: null,
       note: "",
+      has_note: false,
     };
     state.todos.push(item);
     return item;
@@ -188,6 +192,7 @@ const handlers: Record<string, CommandHandler> = {
     const item = state.todos.find((x) => x.id === id);
     if (!item) throw `待办条目不存在：${id}`;
     item.note = String(args.note ?? "");
+    item.has_note = item.note.trim() !== ""; // 裁决随写重算（对齐 Rust 派生语义，PL023）
     return null;
   },
   todo_archive_list: () =>

@@ -64,6 +64,18 @@
   transition: color 0.5s ease;
 }
 
+/* 笔记红点（PL023）：钉玻璃条左上角 4px 内缩（条内贴角——todo-row overflow:clip 裁
+   出界元素，红点不得骑角）；9px 常显；无独立交互——点击冒泡行单击开详情板（既有守卫链） */
+.note-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
 /* 双击行内改标题：编辑框原位替换文字（外观一致），≤12 字与详情板标题同规；
    padding 一次写全清掉 UA 默认上下 1px（行盒非整数时 0.1~0.3px 下扩，实测）。
    左内距 0：与 t-text 文字起点严格对齐（2px 起点差 = 双击瞬间文字右移，
@@ -180,6 +192,11 @@ li.todo-item.dragging .del {
 
 .todo-item.mask-dead .t-text {
   color: color-mix(in srgb, var(--ink) 40%, transparent);
+}
+
+.todo-item.mask-dead .note-dot {
+  opacity: 0.35; /* 与删除钮同族淡出 */
+  transition: opacity 0.5s ease;
 }
 
 .todo-item.mask-dead .del {

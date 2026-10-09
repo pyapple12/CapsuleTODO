@@ -231,6 +231,7 @@ impl Storage {
             created_at: Some(now),
             done_at: None,
             note: String::new(),
+            has_note: false,
         })
     }
 
@@ -276,15 +277,18 @@ impl Storage {
         Ok(())
     }
 
-    /// 行映射（get/list 共用；NULL 时刻映射 Option::None）
+    /// 行映射（get/list 共用；NULL 时刻映射 Option::None；has_note 由此单点派生，
+    /// toggle/rename 经 get(id) 自动覆盖——PL023）
     fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoItem> {
+        let note: String = row.get(5)?;
         Ok(TodoItem {
             id: row.get(0)?,
             text: row.get(1)?,
             done: row.get::<_, i64>(2)? != 0,
             created_at: row.get(3)?,
             done_at: row.get(4)?,
-            note: row.get(5)?,
+            has_note: !note.trim().is_empty(),
+            note,
         })
     }
 
@@ -983,6 +987,21 @@ mod tests {
             st.set_note(99, "x"),
             Err(StorageError::NotFound(99))
         ));
+    }
+
+    #[test]
+    fn has_note_derives_from_note_trim() {
+        // PL023.1："有笔记"裁决字段（trim 判空单源）——非空白亮、纯空白与空串不亮
+        //（validate_note 允许空白入库，红点语义只认 trim 后非空，PL023 定案）
+        let st = storage();
+        let item = st.add("任务").expect("写入必须成功");
+        assert!(!st.get(item.id).expect("读取必须成功").has_note);
+        st.set_note(item.id, "有内容").expect("写笔记必须成功");
+        assert!(st.get(item.id).expect("读取必须成功").has_note);
+        st.set_note(item.id, "   ").expect("写纯空白必须成功");
+        assert!(!st.get(item.id).expect("读取必须成功").has_note);
+        st.set_note(item.id, "").expect("清空笔记必须成功");
+        assert!(!st.get(item.id).expect("读取必须成功").has_note);
     }
 
     // ===== PL013.1 排序持久化（TDD） =====

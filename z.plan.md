@@ -1015,3 +1015,17 @@ FIX009 12/12 diff 级零回退；代际计数三段联动四交错推演全部�
 PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪律/TDD 三案例）；FIX010 十四项 diff 级零回退；死锁铁律全组锁点零违规；FFI 签名全组核对无误；SQL 全参数化；types.ts ↔ serde 逐字段零漂移；28 invoke 命令名与 generate_handler 一一匹配；capabilities 匹配；依赖零未用；CSP 落地核验通过。**收官态势：连续四轮无 P0/P1，实现面（SQL/状态机/FFI/退出链）维持零新缺陷。**
 
 ---
+
+## 附录 PL023：清单笔记红点指示（2026-10-09 立项，[future-plan-001#功能二]）
+
+> 背景：todo 详情本体 PL010 已落全链（todos.note 列 + DetailOverlay 详情板 + todo_set_note 防抖保存 + types/mock 镜像），但清单行上看不出哪条写过笔记。用户提出"有详情内容的条目显示红点，方便查看"——本 PL 纯做视觉指示：**零 schema 改动、零新命令、零新事件处理器**（future-plan-001 讨论稿的体量预估据此大幅收窄）。
+> 方案要点（2026-10-09 用户定案）：
+>
+> - **裁决在 Rust**：TodoItem 加派生字段 `has_note: bool`，存储层 row_to_item 单点算 `!note.trim().is_empty()`——对齐 age_level"阈值裁决不漂移"纪律（A001 dim 12），"什么算有内容"的语义单源不散落前端；get/list/list_done 共用 row_to_item，toggle/rename 返回 get(id) 自动覆盖；add() 字面量补 has_note: false
+> - **红点 = 纯指示器**：t-text 内部 inline 圆点（`v-if="item.has_note"`），点击天然冒泡行单击 → 既有开详情板路径（180ms 防双击拍子 / 拖拽落点抑制 / 罩死行禁交互，全套既有守卫自动生效），前端零新事件
+> - **挂点定案**：初版文本尾内联 6px → **用户目验微调（2026-10-09）钉玻璃条左上角 4px 内缩、放大至 9px**——条内贴角为硬约束（todo-row `overflow: clip` 裁出界元素，红点不得骑角）；纵向对齐成列扫读更整齐；罩死态随删除钮同族淡出（opacity 0.35）。色用 `--danger` 与龄期红字同族
+> - **语义边界**："有内容" = trim 后非空——纯空白笔记不算（validate_note 允许空白入库，红点不亮），与清空笔记红点灭同一条规则零特判
+> - **范围收敛**：归档板不加红点（用户定案；TodoItem 载荷带字段，日后启用零成本）
+> - **版本**：feat → Cargo.toml 0.2.1 → 0.2.2，提交 feat: V0.2.2.1
+>
+> 状态：✅ 已完成（2026-10-09，V0.2.2.1；实施记录见 x.progress.md PL023 组——IAB 三断言：种子 6 行红点全亮 / 点红点详情板开 / 清空笔记红点 6→5）

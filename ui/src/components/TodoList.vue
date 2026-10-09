@@ -392,6 +392,7 @@ onUnmounted(() => {
             @confirm="onConfirm(item)"
             @leave="onCancel(item)"
           />
+          <span v-if="item.has_note" class="note-dot" title="有笔记"></span>
         </div>
         <p v-if="item.age_level === 'Yellow'" class="age-alert age-alert--yellow">
           已超过24小时了哦&nbsp;&nbsp;｜ω･) WATCHING

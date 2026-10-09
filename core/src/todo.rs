@@ -61,6 +61,9 @@ pub struct TodoItem {
     pub done_at: Option<i64>,
     /// 详情板笔记（自由文本，允许空白）
     pub note: String,
+    /// 笔记有无裁决（trim 判空单源——"有内容"语义不散落前端，红点指示依据，PL023；
+    /// 纯空白笔记不算有内容，与清空笔记红点灭同一条规则）
+    pub has_note: bool,
 }
 
 /// 文本校验：trim 后非空且不超过 MAX_TEXT_LEN（按字符计）
@@ -187,5 +190,22 @@ mod tests {
     fn age_level_deserialize_roundtrip() {
         let v: AgeLevel = serde_json::from_str("\"Red\"").unwrap();
         assert_eq!(v, AgeLevel::Red);
+    }
+
+    /// has_note 序列化契约断言（PL023）：新字段随 TodoItem serde 下发，键名漂移
+    /// 防线（A004/A006 契约断言先例——前端 types.ts 镜像的单一事实源）
+    #[test]
+    fn todo_item_serializes_has_note() {
+        let item = TodoItem {
+            id: 1,
+            text: "任务".into(),
+            done: false,
+            created_at: None,
+            done_at: None,
+            note: String::new(),
+            has_note: false,
+        };
+        let json = serde_json::to_string(&item).expect("序列化必须成功");
+        assert!(json.contains("\"has_note\":false"));
     }
 }
