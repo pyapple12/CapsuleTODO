@@ -3,7 +3,7 @@
 **简体中文** | [English](#english)
 
 [![CI](https://github.com/pyapple12/CapsuleTODO/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/Version-0.2.1-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/Version-0.2.2-blue.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows_10%2F11-0078D6.svg)](#下载)
 [![Rust](https://img.shields.io/badge/Rust-1.96-orange.svg)](https://www.rust-lang.org)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org)
@@ -21,16 +21,17 @@
 ### 功能亮点
 
 - **会呼吸的玻璃** —— 焦点联动 DWM 亚克力（聚焦磨砂、失焦透明），深浅色跟随系统
-- **顺手捕获** —— 任意软件中按全局热键（默认 `Ctrl+Alt+C`），选中文字直接捕获（自动复制），内容落为气泡并自动去重
-- **待办清单** —— 单击勾选入档、双击行内改名、拖拽排序、详情板写笔记
+- **顺手捕获** —— 任意软件中按全局热键（默认 `Ctrl+Alt+C`），选中文字或图片直接捕获（自动复制），内容落为气泡并自动去重
+- **图片气泡** —— 截图 / 图片文件也能收进气泡；单击看大图、双击用系统程序开原图，复制回保真
+- **待办清单** —— 单击勾选入档、双击行内改名、拖拽排序、详情板写笔记（有笔记的行左上角红点提示）
 - **气泡便签** —— 单击看全文、双击复制回剪贴板、拖拽排序、满额提醒（默认 5 条可调）
 - **白板** —— 随写随存的草稿板
 - **托盘常驻** —— 悬停托盘图标实时预览待办；双击标题缩回托盘
-- **绿色便携** —— 单文件 exe，数据全部落在同级 `configs\` 与 `data\`
+- **绿色便携** —— 单文件 exe，数据全部落在同级 `configs\` 与 `data\`（图片存 `data\images\`）
 
 ### 下载
 
-从 [Releases](../../releases) 下载 `CapsuleTODO_v0.2.1_win_x64.zip`，解压到任意目录，双击 `capsule-todo.exe` 即用——无需安装、不写注册表，首次运行自动在 exe 同级创建 `configs\` 与 `data\`。备份/迁移 = 拷走这两个文件夹。
+从 [Releases](../../releases) 下载 `CapsuleTODO_v0.2.2_win_x64.zip`，解压到任意目录，双击 `capsule-todo.exe` 即用——无需安装、不写注册表，首次运行自动在 exe 同级创建 `configs\` 与 `data\`。备份/迁移 = 拷走这两个文件夹。
 
 > Windows 10/11（64 位）。玻璃磨砂依赖系统合成器，部分 Win10 旧版本观感略有差异；macOS/Linux 适配在 Windows 版成熟后推进。
 
@@ -106,16 +107,17 @@ A glassmorphic desktop TODO board that lives in the corner of your screen — re
 ### Highlights
 
 - **Glass that breathes** — focus-linked DWM Acrylic (frosted when active, transparent when idle), light/dark follows the OS
-- **Frictionless capture** — press the global hotkey (default `Ctrl+Alt+C`) anywhere, even with text selected (auto-copy & capture); captured snippets land as bubbles, deduplicated automatically
-- **Todo board** — one-click archive, inline rename (double-click), drag to reorder, per-item notes & detail panel
+- **Frictionless capture** — press the global hotkey (default `Ctrl+Alt+C`) anywhere, even with text selected (auto-copy & capture); snippets land as bubbles, deduplicated automatically
+- **Image bubbles** — screenshots and image files land as bubbles too; click to view large, double-click to open the original, copy back faithfully
+- **Todo board** — one-click archive, inline rename (double-click), drag to reorder, per-item notes & detail panel (rows with a note show a red dot)
 - **Bubble tray** — full-text view, copy-back on double-click, drag to reorder, configurable capacity reminder (default 5)
 - **Whiteboard** — a scratch pad that saves itself
 - **Tray-native** — hover the tray icon for a live todo preview; double-click the title to tuck the board back into the tray
-- **Portable** — a single exe; all data stays in `configs/` + `data/` beside it
+- **Portable** — a single exe; all data stays in `configs/` + `data/` beside it (images under `data/images/`)
 
 ### Download
 
-Grab `CapsuleTODO_v0.2.1_win_x64.zip` from [Releases](../../releases), unzip anywhere, and run `capsule-todo.exe`. No installer, no registry writes — first launch creates `configs\` and `data\` next to the exe. To back up or migrate, just copy those two folders.
+Grab `CapsuleTODO_v0.2.2_win_x64.zip` from [Releases](../../releases), unzip anywhere, and run `capsule-todo.exe`. No installer, no registry writes — first launch creates `configs\` and `data\` next to the exe. To back up or migrate, just copy those two folders.
 
 > Windows 10/11 x64. The acrylic effect depends on the OS compositor; older Win10 builds may look slightly different. macOS/Linux support is planned after the Windows release matures.
 
