@@ -205,6 +205,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 运行时数据双落址（PL002）：dev = 仓库根 / release = exe 同级；库打开失败启动即报错
     let db = paths::db_path()?;
     let storage = Storage::open(&db).map_err(|err| format!("清单库打开失败（{db:?}）：{err}"))?;
+    // PL025 图片载荷落盘化：存量 BLOB → 文件 + 退役 image 列（须在资产协议注册前；
+    // 失败严格报错不静默丢图）
+    let images = paths::images_dir()?;
+    storage
+        .migrate_blobs_to_files(&images, &commands::bubble::local_stamp())
+        .map_err(|err| format!("图片存量迁移失败：{err}"))?;
+    storage
+        .drop_image_column()
+        .map_err(|err| format!("image 列退役失败：{err}"))?;
     // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
     // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
     let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
@@ -240,7 +249,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_reorder,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
-            commands::bubble::bubble_get_image,
+            commands::bubble::bubble_get_image_path,
+            commands::bubble::bubble_open_image,
             commands::bubble::bubble_copy,
             commands::bubble::bubble_remove,
             commands::bubble::bubble_clear,
@@ -263,6 +273,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::tray_menu::main_hide_to_tray,
         ])
         .setup(|app| {
+            // PL025：把图片目录注册进 asset 协议 scope（详情直读落盘图片；运行时注册
+            // 免静态 glob 无法同时命中 dev/release 两种程序目录）
+            let images = paths::images_dir()?;
+            app.asset_protocol_scope()
+                .allow_directory(&images, true)
+                .map_err(|err| format!("图片目录 asset 协议注册失败：{err}"))?;
             let window = app
                 .get_webview_window("main")
                 .expect("主窗口必须在 tauri.conf.json 中存在");

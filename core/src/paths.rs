@@ -40,6 +40,18 @@ pub fn db_path() -> std::io::Result<PathBuf> {
     Ok(data_dir()?.join("todo.db"))
 }
 
+/// 基于指定根解析图片目录（缺失自建）；生产传 runtime_root()，测试注入临时目录
+pub fn images_dir_under(root: &Path) -> std::io::Result<PathBuf> {
+    let dir = data_dir_under(root)?.join("images");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// 图片目录：<运行时根>/data/images（图片气泡载荷落盘处；asset 协议直读源，PL025）
+pub fn images_dir() -> std::io::Result<PathBuf> {
+    images_dir_under(&runtime_root()?)
+}
+
 /// 基于指定根解析配置目录（缺失自建）；生产传 runtime_root()，测试注入临时目录
 pub fn configs_dir_under(root: &Path) -> std::io::Result<PathBuf> {
     let dir = root.join("configs");
@@ -72,6 +84,16 @@ mod tests {
         let dir = configs_dir_under(&root).expect("目录自建必须成功");
         assert!(dir.is_dir());
         assert!(dir.ends_with("configs"));
+        std::fs::remove_dir_all(&root).expect("清理必须成功");
+    }
+
+    #[test]
+    fn images_dir_under_creates_dir() {
+        let root =
+            std::env::temp_dir().join(format!("capsule-todo-paths-i-{}", std::process::id()));
+        let dir = images_dir_under(&root).expect("目录自建必须成功");
+        assert!(dir.is_dir());
+        assert!(dir.ends_with("images"));
         std::fs::remove_dir_all(&root).expect("清理必须成功");
     }
 

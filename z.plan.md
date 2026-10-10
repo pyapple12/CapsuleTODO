@@ -1047,3 +1047,25 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 > - **补定一件（2026-10-09 目验反馈；2026-10-10 追加 boardRead 跟随定案，PL024.8c）**：图片详情板滑杆与整板阅读规范——图片自适应宽零横向滑杆（`overflow-x: hidden`）；图片模式整板阅读套件与**文字块完全一致**（useGlassBar 与 useBoardRead 双挂；滑杆锚 `.detail-overlay`、`right: 4` 居中于内容区右缘与板右缘之间；▲▼三角 + 溶解带同规）；图片异步渲染的挂载时机 + 模式化挂载/销毁 + useVeils 帘豁免扩围（防复现"详板自家滑杆被罩"原 bug）
 >
 > 状态：🚧 进行中（2026-10-09——.1–.7 代码面完成[164 测试绿 + 八项门禁绿 + IAB 三断言过]，.8a/.8b 目验反馈补定待实施；live 真机三断言待用户执行，AI 不可代按剪贴板交互）
+
+---
+
+## 附录 PL025：图片气泡载荷落盘化（图片文件存程序目录 + asset 协议直读 + 原格式保留 + 复制回镜像来源）（2026-10-10 立项）
+
+> 背景：PL024 把图片字节整存 DB（bubbles.image BLOB）——4MB 上限挡大图、DB 膨胀、读写搬字节、文件图被强转 PNG（有损/变大/丢动画）。本 PL 把图片载荷从 DB 迁出：一律落盘到程序目录 `data/images/`，DB 只存文件名；asset 协议直读；文件图保留原格式；复制回按来源镜像。
+> 方案要点（2026-10-10 用户定案）：
+>
+> - **统一落盘**：截图与文件图都写 `data/images/`（dev=项目根 / release=exe 同级，沿双落址）；DB 只存相对文件名 `image_file`；`bubbles.image` 列迁移后 **DROP**（先迁移、后删列，幂等）
+> - **原格式保留**：文件图原字节直写、保留原扩展名（jpg/gif/webp/bmp/png，**不转 PNG**——无有损二次编码、更小、保动画）；截图 PNG 直写（仅 CF_DIB 来源的截图编码一次 PNG）
+> - **asset 协议直读**：图片目录 = 程序目录；启动运行时 `app.asset_protocol_scope().allow_directory(images_dir, true)` 注册（API 实测存在于 tauri 2.11.5/2.12.0）；`tauri.conf.json` 开 `assetProtocol` + CSP `img-src` 加 `asset: http://asset.localhost`；详情**不再回 base64**
+> - **命名**：文件图 `🖼️ 图片 <文件名>`；截图 `🖼️ 截图 {yyMMddHHmmss}`（emoji `🖼`→`🖼️`）
+> - **去重**：内容哈希（FNV-1a 64 手写零依赖，按**原字节**算）
+> - **复制回 = 镜像来源**（用户定案）：文件图 → `CF_HDROP`（把应用内副本文件放剪贴板，**原样零解码**，复制的是文件）；截图 → `PNG + CF_DIB + CF_DIBV5`（PNG 字节直写；DIB/DIBV5 解码像素，复制的是可粘贴的图）
+> - **失效兜底**：`image_file` 存在但文件缺失 → 详情板「文件已移动或删除，请删除气泡」+ 删除按钮
+> - **数据模型**：bubbles 幂等补三列 `image_file TEXT` / `image_hash TEXT` / `image_source TEXT`（`'screenshot' | 'file'`，复制回分支判据；存量默认 `'screenshot'`）；文件名 `{id}.{ext}`
+> - **错误策略**：迁移幂等、失败严格报错（不静默丢图）；删气泡删文件 best-effort；文件缺失走失效态不崩不静默；无新增容错白名单
+> - **边界**：非 Windows asset 协议可用但文件图来源（CF_HDROP）仅 Windows；超大图存储层无上限但 WebView 仍要解码整图（缩略图/降采样记为后续项）；动图文件图保留原文件不丢
+> - **修订（2026-10-10 目验反馈，用户定案；执行条目 `.b`）**：①落盘改**子文件夹** `data/images/bubble_{yyMMddHHmmss}_{n}/{原名}.{ext}`（气泡专用前缀，留白板空间；截图内层 `snap_{yyMMddHHmmss}_{n}.png`；`n` 同秒从 1 递增）——复制回 `CF_HDROP` 指向内层原名文件 → **粘出原名**（零改名/零临时文件）；删气泡**递归删文件夹**；②**大图降采样预览**（宽 > 2000px 或 > 2MB → 捕获时生成 `{folder}/preview.png`，长边 ≤ 1600；详情读预览、复制回/查看用原图；失败降级不阻断）；③**双击详情图开原图**（`ShellExecuteW` 零依赖，仅 Windows）；④**占字文案判别**（单占字态：捕获成功 `已捕获` / 双击复制 `已复制` / 重复 `重复捕获，无效！`）。**定案不做**：捕获按钮不改逻辑（焦点所限，按钮收不了他应用选区）；虚拟文件剪贴板格式（FileGroupDescriptor + FileContents）不实施；复制回后判重已由内容哈希覆盖。编号约定：初版已实现为 `PL025.Na`，本次修订为 `PL025.Nb`（**不改写 .a**）。
+> - **补修（2026-10-10 目验反馈，PL025.8）**：①失效块溢出（`.detail-image-broken` 补 `box-sizing: border-box`）②详情删除后气泡列表不刷新（`bubble_remove`/`bubble_clear` 发 `bubble-changed`）③失效文案加粗 + 阴影（字号维持 12px）④失效删除按钮对齐「一键清空」样式 + 按下即时视觉（不做二态确认）
+>
+> 状态：🚧 实施中（2026-10-10——初版 `PL025.Na` 已落并门禁绿；目验反馈修订 `PL025.Nb` 已落；补修 `PL025.8` 已落；执行拆条见 x.progress.md PL025 组）

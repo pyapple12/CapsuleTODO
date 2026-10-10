@@ -253,7 +253,7 @@ const handlers: Record<string, CommandHandler> = {
     if (localStorage.getItem("mock-capture-image") === "1") {
       const d = new Date();
       const p = (n: number): string => String(n).padStart(2, "0");
-      const text = `🖼 截图 ${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      const text = `🖼️ 截图 ${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
       const item: MockBubble = { id: ++state.bubbleSeq, text, kind: "Image", sort_order: min - 1 };
       state.bubbles.push(item);
       return { status: "added", item };
@@ -268,9 +268,10 @@ const handlers: Record<string, CommandHandler> = {
     state.bubbles.push(item);
     return { status: "added", item };
   },
-  // 图片按需取数（PL024 载荷分层）：Image 气泡回常量 data URL（localStorage
-  // ['mock-image-tall']='1' 走高图夹具供 PL024.8c 滑杆断言）；文本气泡/不存在严格报错
-  bubble_get_image: (args) => {
+  // 图片按需取数（PL025 载荷落盘化：真实回绝对路径；mock 无落盘/asset 协议，回
+  // data URL 供前端 resolveImageSrc 直用）：localStorage ['mock-image-tall']='1'
+  // 走高图夹具供滑杆断言；文本气泡/不存在严格报错
+  bubble_get_image_path: (args) => {
     const id = Number(args.id);
     const item = state.bubbles.find((b) => b.id === id);
     if (!item) throw `气泡条目不存在：${id}`;
@@ -278,6 +279,14 @@ const handlers: Record<string, CommandHandler> = {
     return localStorage.getItem("mock-image-tall") === "1"
       ? MOCK_TALL_IMAGE_DATA_URL
       : MOCK_PNG_DATA_URL;
+  },
+  // 打开原图（PL025 双击详情图；mock 无系统调用，空实现）
+  bubble_open_image: (args) => {
+    const id = Number(args.id);
+    const item = state.bubbles.find((b) => b.id === id);
+    if (!item) throw `气泡条目不存在：${id}`;
+    if (item.kind !== "Image") throw "图片格式暂不支持";
+    return null;
   },
   // 复制回（Rust = 写真剪贴板；mock 环境写不进去，无读取口故仅返回成功
   //——FIX005.22：原 state.lastCopied 只写不读删除，断言需求出现时再加正式读取口）

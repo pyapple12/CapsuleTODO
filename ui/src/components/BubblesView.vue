@@ -29,8 +29,8 @@ const props = defineProps<{
 
 const items = ref<BubbleItem[]>([]);
 const error = ref("");
-const copied = ref(false); // 占字态：捕获钮禁点 + 换 clipboard-check 图标文案
-const duplicate = ref(false); // 重复占字态（PL015.5 去重）：换 ✕ 图标 + "重复捕获，无效！"
+/** 占字态（PL025.6 单态 + 判别）："" 空闲 / "capture" 已捕获 / "copy" 已复制 / "duplicate" 重复捕获 */
+const feedback = ref<"" | "capture" | "copy" | "duplicate">("");
 const confirmingClear = ref(false);
 
 // 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
@@ -136,12 +136,10 @@ async function capture(): Promise<void> {
   try {
     const outcome = await invoke<BubbleCaptureOutcome>("bubble_capture");
     clearError();
-    duplicate.value = outcome.status === "duplicate";
-    copied.value = !duplicate.value;
+    feedback.value = outcome.status === "duplicate" ? "duplicate" : "capture";
     window.clearTimeout(copiedTimer);
     copiedTimer = window.setTimeout(() => {
-      copied.value = false;
-      duplicate.value = false;
+      feedback.value = "";
     }, 1000);
     await refresh();
   } catch (err) {
@@ -302,12 +300,10 @@ async function onRowDblClick(item: BubbleItem): Promise<void> {
   if (rowMaskDead(rowEl(item.id))) return;
   try {
     await invoke("bubble_copy", { id: item.id });
-    copied.value = true;
-    duplicate.value = false; // FIX004.3：复制占字复位须同清 duplicate，否则重复捕获后双击复制=钮永久卡死
+    feedback.value = "copy"; // PL025.6：双击复制回显「已复制」（单态覆盖，无需同清）
     window.clearTimeout(copiedTimer);
     copiedTimer = window.setTimeout(() => {
-      copied.value = false;
-      duplicate.value = false;
+      feedback.value = "";
     }, 1000);
   } catch (err) {
     console.error("复制失败", err);
@@ -393,13 +389,16 @@ onUnmounted(() => {
 <template>
   <section class="bubbles">
     <div class="actions">
-      <!-- 捕获钮：占字态换 clipboard-check 图标 + "已捕获" + 50% 紫禁点（文案定案 2026-09-28）；
-           重复占字态换 ✕ 图标 + "重复捕获，无效！"（PL015.5 去重定案 2026-09-30） -->
-      <button class="capture" :disabled="copied || duplicate" @click="capture">
-        <span v-if="duplicate" class="cap-idle">
+      <!-- 捕获钮：占字态单态 + 判别（PL025.6）——已捕获 / 已复制 / 重复捕获，无效！，
+           均换图标 + 50% 紫禁点（文案定案 2026-09-28；复制判别 2026-10-10） -->
+      <button class="capture" :disabled="feedback !== ''" @click="capture">
+        <span v-if="feedback === 'duplicate'" class="cap-idle">
           <span class="cap-icon" v-html="CLIPBOARD_X_ICON"></span>重复捕获，无效！
         </span>
-        <span v-else-if="copied" class="cap-idle">
+        <span v-else-if="feedback === 'copy'" class="cap-idle">
+          <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已复制
+        </span>
+        <span v-else-if="feedback === 'capture'" class="cap-idle">
           <span class="cap-icon" v-html="CLIPBOARD_CHECK_ICON"></span>已捕获
         </span>
         <span v-else class="cap-idle">

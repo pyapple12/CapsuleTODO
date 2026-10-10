@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, TodoItem } from "../../types";
 import { UI_TEXT_MAX_LEN } from "../../types";
 import { useBoardRead } from "../composables/useBoardRead";
@@ -29,9 +29,50 @@ const isBubbleMode = computed(() => props.bubble !== null);
 const overlay = ref<HTMLElement | null>(null);
 const titleDraft = ref("");
 const noteDraft = ref("");
-/** 气泡图片 data URL（PL024 载荷分层：列表不带图，开板按需 bubble_get_image 拉取；
- * 文本气泡恒空串） */
+/** 气泡图片可渲染 src（PL025 载荷落盘化：开板按需 bubble_get_image_path 取绝对路径
+ * → convertFileSrc 生成 asset URL；mock 环境返回 data URL 直用） */
 const bubbleImgSrc = ref("");
+/** 图片失效态文案（PL025：文件缺失 → 提示删除气泡；空串 = 正常） */
+const imageError = ref("");
+
+/** 解析图片 src（单点收敛）：data:/asset:/http(s) 直用，否则转 asset 协议 URL */
+function resolveImageSrc(value: string): string {
+  if (value.startsWith("data:") || value.startsWith("asset:") || value.startsWith("http")) {
+    return value;
+  }
+  return convertFileSrc(value);
+}
+
+/** 图片加载失败（asset 协议取不到/文件缺失）→ 失效态 */
+function onImageError(): void {
+  imageError.value = "文件已移动或删除，请删除气泡";
+}
+
+/** 双击详情图 → 系统默认程序打开原图（PL025，ShellExecuteW） */
+async function onImageDblClick(): Promise<void> {
+  const b = props.bubble;
+  if (!b) return;
+  try {
+    await invoke("bubble_open_image", { id: b.id });
+  } catch (err) {
+    console.error("打开原图失败", err);
+    saveError.value = `打开原图失败：${String(err)}`;
+  }
+}
+
+/** 删除失效图片气泡（失效态删除按钮）：删条目 + 上抛变更 + 收板 */
+async function onDeleteImageBubble(): Promise<void> {
+  const b = props.bubble;
+  if (!b) return;
+  try {
+    await invoke("bubble_remove", { id: b.id });
+    emit("changed");
+    close();
+  } catch (err) {
+    console.error("删除失效图片气泡失败", err);
+    saveError.value = `删除失败：${String(err)}`;
+  }
+}
 
 const isOpen = ref(false);
 
@@ -150,6 +191,7 @@ watch(
     if (t) {
       void flushPending(); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
       bubbleImgSrc.value = ""; // 图片残留清防串板（bubble→todo 切源防串）
+      imageError.value = "";
       titleDraft.value = t.text;
       noteDraft.value = t.note;
       open();
@@ -165,26 +207,30 @@ watch(
     if (b) {
       void flushPending(); // todo→bubble 切源同款先 flush（FIX003.4）
       if (b.kind === "Image") {
-        // PL024 图片气泡：板面 = 图片（按需拉取 data URL），文本位留空防占位文案重复
+        // PL025 图片气泡：板面 = 落盘图片（按需取绝对路径 → asset 协议直读），
+        // 文本位留空防占位文案重复；文件缺失 → 失效态（提示删除）
         noteDraft.value = "";
         bubbleImgSrc.value = "";
-        void invoke<string>("bubble_get_image", { id: b.id })
-          .then((url) => {
-            if (props.bubble?.id === b.id) bubbleImgSrc.value = url;
+        imageError.value = "";
+        void invoke<string>("bubble_get_image_path", { id: b.id })
+          .then((path) => {
+            if (props.bubble?.id === b.id) bubbleImgSrc.value = resolveImageSrc(path);
           })
           .catch((err) => {
             console.error("气泡图片取数失败", err);
             if (props.bubble?.id === b.id) {
-              saveError.value = `气泡图片取数失败：${String(err)}`;
+              imageError.value = "文件已移动或删除，请删除气泡";
             }
           });
       } else {
         bubbleImgSrc.value = "";
+        imageError.value = "";
         noteDraft.value = b.text; // 气泡全文只读展示
       }
       open();
     } else if (!props.todo) {
       bubbleImgSrc.value = "";
+      imageError.value = "";
       close();
     }
   },
@@ -416,7 +462,18 @@ onBeforeUnmount(() => {
         class="note-shell"
         :class="{ 'bubble-shell': isBubbleMode, 'image-shell': bubbleImgSrc !== '' }"
       >
-        <img v-if="bubbleImgSrc" class="detail-image" :src="bubbleImgSrc" alt="气泡图片" />
+        <img
+          v-if="bubbleImgSrc && !imageError"
+          class="detail-image"
+          :src="bubbleImgSrc"
+          alt="气泡图片"
+          @error="onImageError"
+          @dblclick="onImageDblClick"
+        />
+        <div v-else-if="imageError" class="detail-image-broken">
+          <p class="detail-image-broken-text">{{ imageError }}</p>
+          <button class="detail-image-broken-del" @click="onDeleteImageBubble">删除气泡</button>
+        </div>
         <textarea
           v-else
           ref="noteEl"

@@ -1,10 +1,10 @@
-//! 剪贴板图片读写（PL024；读链三级化 PL024.8b）：纯逻辑编解码段（跨平台 cargo test
-//! 全测）+ Win32 FFI 薄壳段（cfg windows）。读 = PNG 注册格式主路径（截图工具原厂
-//! 字节零转换）→ CF_DIB 回退（24/32bpp BI_RGB/BI_BITFIELDS → PNG 编码，罕见变体严格
-//! 报不支持）→ CF_HDROP 文件引用回退（选中/复制的单个图像文件读盘转 PNG，PL024.8b）；
-//! 写 = PNG 注册格式 + CF_DIB + CF_DIBV5 三格式（= Win+Shift+S 原厂写入集，像素
-//! 同源仅头结构差异，alpha 全链无损；CF_BITMAP 由剪贴板自动合成不手写）。
-//! base64 手写标准实现（详情板 data URL，零第二新依赖）。
+//! 剪贴板图片读写（PL024；PL025 落盘化：文件图保留原格式 + 复制回镜像来源）：纯逻辑
+//! 编解码段（跨平台 cargo test 全测）+ Win32 FFI 薄壳段（cfg windows）。读 = PNG 注册
+//! 格式主路径（截图工具原厂字节零转换）→ CF_DIB 回退（24/32bpp BI_RGB/BI_BITFIELDS →
+//! PNG 编码，罕见变体严格报不支持）→ CF_HDROP 文件引用回退（选中/复制的单个图像文件
+//! **原字节保留**，PL025——不再转 PNG）。写 = 截图复制回 PNG 注册格式 + CF_DIB +
+//! CF_DIBV5 三格式（= Win+Shift+S 原厂写入集；CF_BITMAP 由剪贴板自动合成不手写）；
+//! 文件图复制回 = CF_HDROP 文件引用（DROPFILES 头 + 宽字符路径表，PL025）。
 
 use crate::bubble::BubbleError;
 
@@ -13,6 +13,76 @@ pub const MAX_SOURCE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// 认可的图像文件扩展名（CF_HDROP 文件分支；表驱动 + 小写比对，PL024.8b）
 const IMAGE_FILE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/// 受支持的图像格式集合（validate_image_bytes 嗅探白名单，与扩展名表同源）
+const SUPPORTED_FORMATS: &[image::ImageFormat] = &[
+    image::ImageFormat::Png,
+    image::ImageFormat::Jpeg,
+    image::ImageFormat::Gif,
+    image::ImageFormat::WebP,
+    image::ImageFormat::Bmp,
+];
+
+/// 捕获到的剪贴板图片（PL025）：bytes = 原字节（截图 = PNG；文件图 = 原格式原字节），
+/// file_name = 文件来源文件名（截图分支 None——决定占位文案与复制回分支）
+pub struct CapturedImage {
+    /// 图片原字节（落盘直写，不再转码）
+    pub bytes: Vec<u8>,
+    /// 文件来源文件名（截图 = None）
+    pub file_name: Option<String>,
+}
+
+/// 图片字节格式校验（PL025 取代 PNG 魔数校验）：image crate 嗅探受支持格式，不认即
+/// UnsupportedFormat；**无大小上限**（落盘无 DB 上限；文件读盘闸口见 source_file_within_limit）
+pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), BubbleError> {
+    match image::guess_format(bytes) {
+        Ok(fmt) if SUPPORTED_FORMATS.contains(&fmt) => Ok(()),
+        _ => Err(BubbleError::UnsupportedFormat),
+    }
+}
+
+/// 大图降采样预览（PL025）：宽 > 2000px 或字节 > 2MB → 长边 ≤ 1600 的 PNG 预览字节；
+/// 小图返回 None（不生成）；尺寸探测/解码/编码失败 None（调用方降级用原图，不阻断）
+pub fn generate_preview(bytes: &[u8]) -> Option<Vec<u8>> {
+    const WIDTH_THRESHOLD: u32 = 2000;
+    const BYTES_THRESHOLD: usize = 2 * 1024 * 1024;
+    const MAX_EDGE: u32 = 1600;
+    // 只读头取尺寸（不整图解码）——廉价判阈值
+    let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if dims.0 <= WIDTH_THRESHOLD && bytes.len() <= BYTES_THRESHOLD {
+        return None;
+    }
+    let img = image::load_from_memory(bytes).ok()?;
+    let resized = img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Triangle);
+    let mut out = Vec::new();
+    resized
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .ok()?;
+    Some(out)
+}
+
+/// 构造 CF_HDROP 数据块（DROPFILES 头 + 宽字符路径表 + 双 NUL 终止，PL025 文件图复制回）：
+/// 头 20 字节 = pFiles(u32=20) + pt(8) + fNC(i32=0) + fWide(i32=1)；各路径 UTF-16 各自
+/// NUL 终止，整表再补一个 NUL
+pub fn build_dropfiles(paths: &[&std::path::Path]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&20u32.to_le_bytes()); // pFiles = sizeof(DROPFILES)
+    out.extend_from_slice(&[0u8; 8]); // pt
+    out.extend_from_slice(&0i32.to_le_bytes()); // fNC
+    out.extend_from_slice(&1i32.to_le_bytes()); // fWide
+    for p in paths {
+        for u in p.to_string_lossy().encode_utf16() {
+            out.extend_from_slice(&u.to_le_bytes());
+        }
+        out.extend_from_slice(&0u16.to_le_bytes()); // 每项 NUL
+    }
+    out.extend_from_slice(&0u16.to_le_bytes()); // 整表终止 NUL
+    out
+}
 
 /// 剪贴板图片读写失败错误族（写方向严格报错，经 CommandError::Clipboard 跨进程可见）
 #[derive(Debug, thiserror::Error)]
@@ -253,32 +323,6 @@ pub fn build_dibv5_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
     Ok(out)
 }
 
-/// 标准 base64 编码（RFC 4648 字母表 + padding；手写 ~20 行避免第二新依赖，
-/// 详情板 data URL 专用）
-pub fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// 文件名是否为认可的图像文件（扩展名表驱动、大小写不敏感；Path 取末段扩展名，
 /// 免疫目录名带点，PL024.8b）
 pub fn is_image_extension(name: &str) -> bool {
@@ -297,16 +341,6 @@ pub fn is_image_extension(name: &str) -> bool {
 /// 源文件字节数是否在上限内（CF_HDROP 分支读盘前闸口，PL024.8b）
 pub fn source_file_within_limit(len: u64) -> bool {
     len <= MAX_SOURCE_FILE_BYTES
-}
-
-/// 图像文件字节 → PNG（可入库形态）：已是 PNG 直通原字节（零转换）；其余格式经通用
-/// 解码转 PNG；解码失败严格报 UnsupportedFormat（PL024.8b）
-pub fn image_file_to_png(bytes: &[u8]) -> Result<Vec<u8>, BubbleError> {
-    if bytes.starts_with(&crate::bubble::PNG_MAGIC) {
-        return Ok(bytes.to_vec());
-    }
-    let (w, h, rgba) = decode_to_rgba(bytes)?;
-    encode_rgba_to_png(w, h, rgba)
 }
 
 // —— Win32 FFI 薄壳段（仅 Windows）——
@@ -425,9 +459,9 @@ mod win {
         }
     }
 
-    /// 读图像文件转 PNG（须已 CloseClipboard）：扩展名判定 + 元数据长度闸口 + 读盘 +
-    /// 转码；IO/解码失败落日志返 None（热键静默定案对齐，PL024.8b）
-    fn read_image_file(path: &str) -> Option<Vec<u8>> {
+    /// 读图像文件（须已 CloseClipboard）：扩展名判定 + 元数据长度闸口 + **原字节读盘**
+    /// （PL025 保留原格式，不转 PNG）+ 取文件名；IO 失败落日志返 None（热键静默定案对齐）
+    fn read_image_file(path: &str) -> Option<super::CapturedImage> {
         if !super::is_image_extension(path) {
             return None;
         }
@@ -449,19 +483,17 @@ mod win {
                 return None;
             }
         };
-        match super::image_file_to_png(&bytes) {
-            Ok(png) => Some(png),
-            Err(err) => {
-                eprintln!("剪贴板图片读取：文件转 PNG 失败（{err}）");
-                None
-            }
-        }
+        let file_name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        Some(super::CapturedImage { bytes, file_name })
     }
 
-    /// 读剪贴板图片（三级链：PNG 注册格式原字节直取 → CF_DIB 编码转 PNG → CF_HDROP
-    /// 文件引用读盘转 PNG）。打开失败/格式缺席返回 None——热键路径静默、手动路径可见
-    /// 报错由调用层分派
-    pub fn read_clipboard_image() -> Option<Vec<u8>> {
+    /// 读剪贴板图片（三级链：PNG 注册格式原字节 → CF_DIB 编码转 PNG → CF_HDROP 文件引用
+    /// **原字节**）。PNG/DIB 分支 file_name=None；文件分支带文件名（PL025）。打开失败/
+    /// 格式缺席返回 None——热键路径静默、手动路径可见报错由调用层分派
+    pub fn read_clipboard_image() -> Option<super::CapturedImage> {
         if unsafe { OpenClipboard(0) } == 0 {
             eprintln!("剪贴板图片读取：打开失败（占用竞争，下次捕获自愈）");
             return None;
@@ -482,11 +514,17 @@ mod win {
         };
         unsafe { CloseClipboard() };
         if has_png {
-            return raw;
+            return raw.map(|bytes| super::CapturedImage {
+                bytes,
+                file_name: None,
+            });
         }
         if let Some(dib) = raw {
             return match super::encode_png_from_dib(&dib) {
-                Ok(png) => Some(png),
+                Ok(png) => Some(super::CapturedImage {
+                    bytes: png,
+                    file_name: None,
+                }),
                 Err(err) => {
                     eprintln!("剪贴板图片读取：CF_DIB 编码失败（{err}）");
                     None
@@ -520,17 +558,35 @@ mod win {
         unsafe { CloseClipboard() };
         result
     }
+
+    /// 写剪贴板文件引用（CF_HDROP，PL025 文件图复制回）：EmptyClipboard 后一次
+    /// SetClipboardData（DROPFILES 数据块）；任一步失败严格报错
+    pub fn write_clipboard_files(paths: &[&std::path::Path]) -> Result<(), ClipboardImageError> {
+        if unsafe { OpenClipboard(0) } == 0 {
+            return Err(ClipboardImageError::Open);
+        }
+        let result = (|| {
+            if unsafe { EmptyClipboard() } == 0 {
+                return Err(ClipboardImageError::Empty);
+            }
+            let buf = super::build_dropfiles(paths);
+            set_bytes(CF_HDROP, &buf).map_err(|_| ClipboardImageError::Set("CF_HDROP"))?;
+            Ok(())
+        })();
+        unsafe { CloseClipboard() };
+        result
+    }
 }
 
 /// 读剪贴板图片（Windows 实装；其余平台恒 None 回落文本链路）
 #[cfg(target_os = "windows")]
-pub fn read_clipboard_image() -> Option<Vec<u8>> {
+pub fn read_clipboard_image() -> Option<CapturedImage> {
     win::read_clipboard_image()
 }
 
 /// 读剪贴板图片（非 Windows 占位：图捕获不可用，热键/手动均回落文本）
 #[cfg(not(target_os = "windows"))]
-pub fn read_clipboard_image() -> Option<Vec<u8>> {
+pub fn read_clipboard_image() -> Option<CapturedImage> {
     None
 }
 
@@ -543,6 +599,18 @@ pub fn write_clipboard_image(png: &[u8]) -> Result<(), ClipboardImageError> {
 /// 写剪贴板图片（非 Windows 明确报暂不支持——延后基线，严格报错非降级）
 #[cfg(not(target_os = "windows"))]
 pub fn write_clipboard_image(_png: &[u8]) -> Result<(), ClipboardImageError> {
+    Err(ClipboardImageError::UnsupportedPlatform)
+}
+
+/// 写剪贴板文件引用（Windows CF_HDROP 实装，PL025 文件图复制回）
+#[cfg(target_os = "windows")]
+pub fn write_clipboard_files(paths: &[&std::path::Path]) -> Result<(), ClipboardImageError> {
+    win::write_clipboard_files(paths)
+}
+
+/// 写剪贴板文件引用（非 Windows 明确报暂不支持）
+#[cfg(not(target_os = "windows"))]
+pub fn write_clipboard_files(_paths: &[&std::path::Path]) -> Result<(), ClipboardImageError> {
     Err(ClipboardImageError::UnsupportedPlatform)
 }
 
@@ -563,17 +631,6 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .expect("夹具编码必须成功");
         out
-    }
-
-    #[test]
-    fn base64_rfc4648_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 
     #[test]
@@ -685,6 +742,22 @@ mod tests {
         out
     }
 
+    /// 独立证据夹具：image crate 直接编码 2×2 JPEG（嗅探用，有损不比对像素）
+    fn fixture_jpeg() -> Vec<u8> {
+        let mut img = image::RgbImage::new(2, 2);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgb([(x * 100) as u8, (y * 100) as u8, 128]);
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("JPEG 夹具编码必须成功");
+        out
+    }
+
     #[test]
     fn is_image_extension_truth_table() {
         for name in [
@@ -709,45 +782,35 @@ mod tests {
         assert!(!source_file_within_limit(MAX_SOURCE_FILE_BYTES + 1));
     }
 
+    // —— PL025 格式嗅探 + CF_HDROP 数据块（纯逻辑面）——
+
     #[test]
-    fn png_file_passes_through_unchanged() {
-        let png = fixture_png();
-        assert_eq!(image_file_to_png(&png).expect("直通必须成功"), png);
+    fn validate_image_bytes_sniffs_supported_formats() {
+        // PNG/JPEG/BMP 嗅探通过；垃圾字节拒（UnsupportedFormat）
+        assert!(validate_image_bytes(&fixture_png()).is_ok());
+        assert!(validate_image_bytes(&fixture_bmp()).is_ok());
+        assert!(validate_image_bytes(&fixture_jpeg()).is_ok());
+        assert!(matches!(
+            validate_image_bytes(b"definitely not an image"),
+            Err(BubbleError::UnsupportedFormat)
+        ));
     }
 
     #[test]
-    fn bmp_file_decodes_to_png_pixels_preserved() {
-        // 无损 BMP → PNG：解码像素与夹具逐像素一致（JPEG 有损故另测）
-        let bmp = fixture_bmp();
-        let png = image_file_to_png(&bmp).expect("转 PNG 必须成功");
-        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
-        let (w, h, rgba) = decode_to_rgba(&png).expect("解码必须成功");
-        assert_eq!((w, h), (2, 2));
-        assert_eq!(&rgba[0..4], &[11, 22, 33, 255]);
-        assert_eq!(&rgba[12..16], &[111, 122, 133, 255]);
-    }
-
-    #[test]
-    fn jpeg_file_decodes_to_png() {
-        // 有损 JPEG → PNG：只断言可解码且尺寸一致（像素不逐点比对，有损不可精确）
-        let mut img = image::RgbImage::new(2, 2);
-        for (x, y, p) in img.enumerate_pixels_mut() {
-            *p = image::Rgb([(x * 100) as u8, (y * 100) as u8, 128]);
+    fn build_dropfiles_header_and_termination() {
+        // DROPFILES 头 20 字节（pFiles=20/fWide=1）+ 路径宽字符 + 双 NUL 终止
+        let p = std::path::Path::new("C:\\tmp\\a.png");
+        let buf = build_dropfiles(&[p]);
+        assert_eq!(&buf[0..4], &20u32.to_le_bytes(), "pFiles = 20");
+        assert_eq!(&buf[16..20], &1i32.to_le_bytes(), "fWide = TRUE");
+        assert_eq!(&buf[buf.len() - 4..], &[0u8, 0, 0, 0], "双 NUL 终止");
+        let mut want = Vec::new();
+        for u in "C:\\tmp\\a.png".encode_utf16() {
+            want.extend_from_slice(&u.to_le_bytes());
         }
-        let mut jpg = Vec::new();
-        image::DynamicImage::ImageRgb8(img)
-            .write_to(
-                &mut std::io::Cursor::new(&mut jpg),
-                image::ImageFormat::Jpeg,
-            )
-            .expect("JPEG 夹具编码必须成功");
-        let png = image_file_to_png(&jpg).expect("JPEG 转 PNG 必须成功");
-        let (w, h, _) = decode_to_rgba(&png).expect("解码必须成功");
-        assert_eq!((w, h), (2, 2));
-    }
-
-    #[test]
-    fn garbage_bytes_rejected() {
-        assert!(image_file_to_png(b"definitely not an image").is_err());
+        assert!(
+            buf.windows(want.len()).any(|w| w == want.as_slice()),
+            "路径宽字符在数据块内"
+        );
     }
 }

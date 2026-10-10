@@ -8,9 +8,6 @@ use thiserror::Error;
 /// 气泡文本长度上限（按字符数；A002-P2-2 定案——气泡 = 短片段语义，防超长剪贴板无界入库，可调）
 pub const MAX_BUBBLE_TEXT_LEN: usize = 2_000;
 
-/// 单图字节上限（PNG 编码后落库字节；4MB 足够全屏截图，可调，PL024）
-pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
-
 /// 气泡业务错误：捕获文本非法
 #[derive(Debug, Error)]
 pub enum BubbleError {
@@ -20,10 +17,7 @@ pub enum BubbleError {
     /// 文本超出 MAX_BUBBLE_TEXT_LEN 上限
     #[error("气泡内容过长（上限 {MAX_BUBBLE_TEXT_LEN} 字符）")]
     TooLong,
-    /// 图片超出 MAX_IMAGE_BYTES 上限（PL024）
-    #[error("图片过大（上限 {MAX_IMAGE_BYTES} 字节）")]
-    ImageTooLong,
-    /// 图片格式暂不支持（PNG 魔数不符，或 DIB 罕见变体——PL024 严格抛错主线）
+    /// 图片格式暂不支持（格式嗅探不认——PL025 起由 clipboard_image::validate_image_bytes 判定）
     #[error("图片格式暂不支持")]
     UnsupportedFormat,
 }
@@ -65,21 +59,6 @@ pub fn validate_bubble_text(text: &str) -> Result<(), BubbleError> {
     }
     if text.trim().chars().count() > MAX_BUBBLE_TEXT_LEN {
         return Err(BubbleError::TooLong);
-    }
-    Ok(())
-}
-
-/// PNG 文件签名（RFC 2083 固定 8 字节魔数；clipboard_image 文件分支复用，PL024.8b）
-pub(crate) const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-
-/// 图片校验：PNG 魔数 + 字节上限（入库前唯一闸口，PL024；魔数在先——垃圾字节
-/// 直接报格式，不浪费上限比较）
-pub fn validate_image_png(bytes: &[u8]) -> Result<(), BubbleError> {
-    if !bytes.starts_with(&PNG_MAGIC) {
-        return Err(BubbleError::UnsupportedFormat);
-    }
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(BubbleError::ImageTooLong);
     }
     Ok(())
 }
@@ -126,29 +105,7 @@ mod tests {
         ));
     }
 
-    // —— PL024.1 图片校验与类型契约（TDD 红灯）——
-
-    #[test]
-    fn image_validation_magic_and_limit() {
-        // 合法头 + 少量载荷 = 接受；魔数不符 = UnsupportedFormat；超上限 = ImageTooLong
-        let mut png = PNG_MAGIC.to_vec();
-        png.extend_from_slice(&[0u8; 32]);
-        assert!(validate_image_png(&png).is_ok());
-        assert!(matches!(
-            validate_image_png(b"not a png at all"),
-            Err(BubbleError::UnsupportedFormat)
-        ));
-        let mut big = PNG_MAGIC.to_vec();
-        big.resize(MAX_IMAGE_BYTES + 1, 0);
-        assert!(matches!(
-            validate_image_png(&big),
-            Err(BubbleError::ImageTooLong)
-        ));
-        assert!(matches!(
-            validate_image_png(&[]),
-            Err(BubbleError::UnsupportedFormat)
-        ));
-    }
+    // —— PL024.1 类型契约（图片校验 PL025 起移入 clipboard_image::validate_image_bytes）——
 
     #[test]
     fn bubble_kind_serializes_as_plain_string() {

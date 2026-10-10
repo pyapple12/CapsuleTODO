@@ -5,19 +5,25 @@
 //! 用户定案（2026-09-30）：无选区/复制失败 = 静默（不回退捕获旧剪贴板）；
 //! 不设设置板开关。实现注记：编排跑热键线程（沿 PL015.4 直调先例，行为等价）。
 
+use crate::clipboard_image::CapturedImage;
+
 /// 轮询步进（毫秒，真实调用；测试注入 0 步进零真实等待）
 pub const POLL_INTERVAL_MS: u64 = 10;
 
 /// 等剪贴板变化总超时（毫秒；无选区/管理员窗拒绝合成时到点静默）
 pub const WAIT_TIMEOUT_MS: u64 = 300;
 
-/// 圈选等待命中（PL024 双通道演进）：文本变化或图片出现，图优先
+/// 圈选等待命中（PL024 双通道；PL025 图片随命中携带来源名）
 pub enum CaptureHit {
     /// 剪贴板新文本（圈选复制；入库校验/去重由命令层裁决，此处不重复裁决）
     Text(String),
-    /// 剪贴板出现图片（PNG 字节随命中携带——等待期读到的图必为圈选新图，
-    /// 快照期已有图被前置检测拦截）
-    Image(Vec<u8>),
+    /// 剪贴板出现图片（原字节 + 来源文件名随命中携带——文件分支带名、截图分支 None）
+    Image {
+        /// 图片原字节（PL025 落盘直写）
+        bytes: Vec<u8>,
+        /// 文件来源文件名（截图 = None）
+        file_name: Option<String>,
+    },
 }
 
 /// 等剪贴板出现"相对快照的新文本，或相对快照的新图片"（10ms 步进轮询纯状态机，
@@ -45,13 +51,16 @@ pub fn wait_clipboard_capture(
     step_ms: u64,
     mut now_ms: impl FnMut() -> u64,
     mut read_text: impl FnMut() -> Option<String>,
-    mut read_image: impl FnMut() -> Option<Vec<u8>>,
+    mut read_image: impl FnMut() -> Option<CapturedImage>,
 ) -> Option<CaptureHit> {
     let deadline = now_ms() + timeout_ms;
     loop {
-        if let Some(png) = read_image() {
-            if before_image != Some(png.as_slice()) {
-                return Some(CaptureHit::Image(png));
+        if let Some(img) = read_image() {
+            if before_image != Some(img.bytes.as_slice()) {
+                return Some(CaptureHit::Image {
+                    bytes: img.bytes,
+                    file_name: img.file_name,
+                });
             }
         }
         if let Some(text) = read_text() {
@@ -61,8 +70,11 @@ pub fn wait_clipboard_capture(
             }
         }
         if now_ms() >= deadline {
-            // 兜底：无新内容但快照已有图 → 收快照图（截图场景）
-            return before_image.map(|b| CaptureHit::Image(b.to_vec()));
+            // 兜底：无新内容但快照已有图 → 收快照图（截图场景）；快照图无来源名
+            return before_image.map(|b| CaptureHit::Image {
+                bytes: b.to_vec(),
+                file_name: None,
+            });
         }
         std::thread::sleep(std::time::Duration::from_millis(step_ms));
     }
@@ -146,6 +158,7 @@ pub use win::{foreground_is_console, synthesize_ctrl_c};
 #[cfg(test)]
 mod tests {
     use super::{wait_clipboard_capture, CaptureHit};
+    use crate::clipboard_image::CapturedImage;
 
     /// 递增假时钟（毫秒）：tick 返回累加值，保证轮询有限轮收敛（step=0 零真实等待）
     struct Clock(u64);
@@ -157,8 +170,16 @@ mod tests {
     }
 
     /// 无图读函数（文本通道测试共用：图片通道恒缺席）
-    fn no_image() -> Option<Vec<u8>> {
+    fn no_image() -> Option<CapturedImage> {
         None
+    }
+
+    /// 构造命中图片（截图分支：无来源名）
+    fn cap(bytes: Vec<u8>) -> CapturedImage {
+        CapturedImage {
+            bytes,
+            file_name: None,
+        }
     }
 
     #[test]
@@ -287,9 +308,9 @@ mod tests {
             0,
             || clock.tick(1),
             || Some("圈选新文本".to_string()),
-            || Some(vec![1, 2, 3]),
+            || Some(cap(vec![1, 2, 3])),
         );
-        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![1, 2, 3]));
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![1, 2, 3]));
     }
 
     #[test]
@@ -309,11 +330,11 @@ mod tests {
                 if calls < 3 {
                     None
                 } else {
-                    Some(vec![9])
+                    Some(cap(vec![9]))
                 }
             },
         );
-        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![9]));
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![9]));
         assert_eq!(calls, 3);
     }
 
@@ -331,9 +352,9 @@ mod tests {
             0,
             || clock.tick(50),
             || None,
-            || Some(before_img.clone()),
+            || Some(cap(before_img.clone())),
         );
-        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == before_img));
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == before_img));
     }
 
     #[test]
@@ -352,13 +373,13 @@ mod tests {
             || {
                 calls += 1;
                 if calls < 3 {
-                    Some(before_img.clone())
+                    Some(cap(before_img.clone()))
                 } else {
-                    Some(vec![2u8, 2])
+                    Some(cap(vec![2u8, 2]))
                 }
             },
         );
-        assert!(matches!(got, Some(CaptureHit::Image(png)) if png == vec![2u8, 2]));
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![2u8, 2]));
         assert_eq!(calls, 3);
     }
 

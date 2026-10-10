@@ -70,6 +70,70 @@ pub fn system_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// FNV-1a 64 位内容哈希（hex 16 位）：图片去重判据（PL025，零新依赖手写）
+fn fnv1a_hex(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// 同 stamp 已存在的气泡图片文件夹最大序号（PL025；无则 0）
+fn max_bubble_seq(images_dir: &Path, stamp: &str) -> u32 {
+    let prefix = format!("bubble_{stamp}_");
+    let mut max_n = 0u32;
+    if let Ok(entries) = std::fs::read_dir(images_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Some(rest) = name.strip_prefix(&prefix) {
+                    if let Ok(n) = rest.parse::<u32>() {
+                        max_n = max_n.max(n);
+                    }
+                }
+            }
+        }
+    }
+    max_n
+}
+
+/// 下一个气泡图片文件夹名 `bubble_{stamp}_{n}`（PL025）：n = 同 stamp 最大序号 + 1
+fn next_bubble_folder(images_dir: &Path, stamp: &str) -> String {
+    format!("bubble_{stamp}_{}", max_bubble_seq(images_dir, stamp) + 1)
+}
+
+/// 净化文件名（PL025 文件图内层名）：取末段 + 替换 Windows 非法字符；空则回退 `image`
+fn sanitize_file_name(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image");
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        "image".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 从 image_file 相对路径取所属文件夹（PL025 删气泡删文件夹）
+fn folder_of(rel: &str) -> String {
+    rel.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_else(|| rel.to_string())
+}
+
 /// SQLite 清单存储（rusqlite Connection 非 Sync，跨线程共享须经 Mutex）
 pub struct Storage {
     conn: Connection,
@@ -171,6 +235,7 @@ impl Storage {
         }
         self.migrate_sort_order()?;
         self.migrate_bubble_kind()?;
+        self.migrate_bubble_image_file()?;
         Ok(())
     }
 
@@ -210,10 +275,9 @@ impl Storage {
         Ok(())
     }
 
-    /// PL024 数据迁移：bubbles 补 kind/image 两列（幂等——先探列再 ALTER，沿 PL013
-    /// 先例）。存量回填语义：kind = 'text'（DEFAULT 承担），image = NULL；新库建表后
-    /// 同样走本函数补齐（建表语句保持原样，让"旧 schema → 迁移"路径与新库路径
-    /// 汇合同一份代码）
+    /// PL024 数据迁移：bubbles 补 kind 列（幂等——先探列再 ALTER，沿 PL013 先例）。
+    /// 存量回填 kind = 'text'（DEFAULT 承担）；**不再新建 image 列**（PL025 载荷落盘化，
+    /// 老库的 image 列由 migrate_blobs_to_files + drop_image_column 处理）
     fn migrate_bubble_kind(&self) -> Result<(), StorageError> {
         let bubble_cols = self.column_set("bubbles")?;
         if !bubble_cols.contains("kind") {
@@ -222,9 +286,74 @@ impl Storage {
                 [],
             )?;
         }
-        if !bubble_cols.contains("image") {
+        Ok(())
+    }
+
+    /// PL025 数据迁移：bubbles 补 image_file/image_hash/image_source 三列（幂等，沿 PL013
+    /// 先例）。image_source 默认 'screenshot'（存量 PL024 图为图片粘贴语义）
+    fn migrate_bubble_image_file(&self) -> Result<(), StorageError> {
+        let bubble_cols = self.column_set("bubbles")?;
+        if !bubble_cols.contains("image_file") {
             self.conn
-                .execute("ALTER TABLE bubbles ADD COLUMN image BLOB", [])?;
+                .execute("ALTER TABLE bubbles ADD COLUMN image_file TEXT", [])?;
+        }
+        if !bubble_cols.contains("image_hash") {
+            self.conn
+                .execute("ALTER TABLE bubbles ADD COLUMN image_hash TEXT", [])?;
+        }
+        if !bubble_cols.contains("image_source") {
+            self.conn.execute(
+                "ALTER TABLE bubbles ADD COLUMN image_source TEXT NOT NULL DEFAULT 'screenshot'",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// PL025 存量 BLOB → 文件迁移（幂等）：kind='image' 且 image 非空且 image_file 为空的行
+    /// → 写盘 `bubble_{stamp}_{n}/snap_{stamp}_{n}.png` + 回填 image_file（**含子目录**）/
+    /// image_hash + image_source='screenshot' + image=NULL。须在 drop_image_column 之前调用；
+    /// 新库无 image 列则直接跳过。`stamp` 由调用方给（一次迁移共用，n 递增）
+    pub fn migrate_blobs_to_files(
+        &self,
+        images_dir: &Path,
+        stamp: &str,
+    ) -> Result<(), StorageError> {
+        if !self.column_set("bubbles")?.contains("image") {
+            return Ok(());
+        }
+        let rows: Vec<(i64, Vec<u8>)> = self
+            .conn
+            .prepare(
+                "SELECT id, image FROM bubbles
+                 WHERE kind = 'image' AND image IS NOT NULL
+                   AND (image_file IS NULL OR image_file = '')",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let base = max_bubble_seq(images_dir, stamp) + 1;
+        for (offset, (id, blob)) in rows.into_iter().enumerate() {
+            let seq = base + offset as u32;
+            let folder = format!("bubble_{stamp}_{seq}");
+            let inner = format!("snap_{stamp}_{seq}.png");
+            let dir = images_dir.join(&folder);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(&inner), &blob)?;
+            let rel = format!("{folder}/{inner}");
+            self.conn.execute(
+                "UPDATE bubbles SET image_file = ?1, image_hash = ?2,
+                     image_source = 'screenshot', image = NULL WHERE id = ?3",
+                rusqlite::params![rel, fnv1a_hex(&blob), id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// PL025 退役 image 列（迁移后调用；列存在才删，幂等）
+    pub fn drop_image_column(&self) -> Result<(), StorageError> {
+        if self.column_set("bubbles")?.contains("image") {
+            self.conn
+                .execute("ALTER TABLE bubbles DROP COLUMN image", [])?;
         }
         Ok(())
     }
@@ -415,62 +544,92 @@ impl Storage {
         }))
     }
 
-    /// 新增图片气泡（占位文本 + PNG 字节；**按内容去重**——同 PNG 字节已在库则返回
-    /// Duplicate 不入库，防重复入库[PL024.8x 用户反馈]）；排头插入与 add_bubble 同款
-    /// （sort_order = 现存最小值 − 1）。PNG 须先过 validate_image_png（魔数/上限校验
-    /// 执行点在命令层，同 trim 契约声明先例）
+    /// 新增图片气泡（PL025 落盘化）：算内容哈希（FNV-1a）→ 查重（同 hash 已在库返
+    /// Duplicate）→ 事务内 INSERT 取 id → 写盘 `bubble_{stamp}_{n}/{内层名}` + 生成
+    /// 大图预览 → UPDATE image_file（**相对路径含子目录**）。排头插入同 add_bubble。
+    /// `orig_name` = 文件来源原名（None = 截图）；bytes 须先过
+    /// clipboard_image::validate_image_bytes（格式嗅探执行点在命令层）
     pub fn add_image_bubble(
         &self,
+        images_dir: &Path,
         text: &str,
-        png: &[u8],
+        bytes: &[u8],
+        orig_name: Option<&str>,
+        stamp: &str,
     ) -> Result<BubbleAddOutcome, StorageError> {
-        if self.image_bytes_exist(png)? {
+        let hash = fnv1a_hex(bytes);
+        let dup: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM bubbles WHERE kind = 'image' AND image_hash = ?1",
+            [&hash],
+            |row| row.get(0),
+        )?;
+        if dup > 0 {
             return Ok(BubbleAddOutcome::Duplicate);
         }
-        self.conn.execute(
-            "INSERT INTO bubbles(text, kind, image, sort_order)
-             VALUES (?1, 'image', ?2, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM bubbles))",
-            rusqlite::params![text, png],
-        )?;
-        Ok(BubbleAddOutcome::Added(BubbleItem {
-            id: self.conn.last_insert_rowid(),
-            text: text.to_string(),
-            kind: crate::bubble::BubbleKind::Image,
-        }))
-    }
-
-    /// 图片内容去重判定（PL024.8x）：按字节长度预筛（廉价）+ 逐字节比对，命中即重复。
-    /// 气泡量小（≤20），预筛后通常 0~1 个候选
-    fn image_bytes_exist(&self, png: &[u8]) -> Result<bool, StorageError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT image FROM bubbles WHERE kind = 'image' AND length(image) = ?1")?;
-        let mut rows = stmt.query(rusqlite::params![png.len() as i64])?;
-        while let Some(row) = rows.next()? {
-            let blob: Option<Vec<u8>> = row.get(0)?;
-            if blob.as_deref() == Some(png) {
-                return Ok(true);
+        let source = if orig_name.is_some() {
+            "file"
+        } else {
+            "screenshot"
+        };
+        let folder = next_bubble_folder(images_dir, stamp);
+        let seq = folder.rsplit('_').next().unwrap_or("1");
+        let inner = match orig_name {
+            Some(name) => sanitize_file_name(name),
+            None => format!("snap_{stamp}_{seq}.png"),
+        };
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<BubbleAddOutcome, StorageError> {
+            self.conn.execute(
+                "INSERT INTO bubbles(text, kind, image_hash, image_source, sort_order)
+                 VALUES (?1, 'image', ?2, ?3,
+                         (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM bubbles))",
+                rusqlite::params![text, hash, source],
+            )?;
+            let id = self.conn.last_insert_rowid();
+            let dir = images_dir.join(&folder);
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(&inner), bytes)?;
+            // 大图预览（失败降级不阻断——详情退回原图）
+            if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
+                if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
+                    eprintln!("图片预览写入失败（降级用原图）：{err}");
+                }
+            }
+            let rel = format!("{folder}/{inner}");
+            self.conn.execute(
+                "UPDATE bubbles SET image_file = ?1 WHERE id = ?2",
+                rusqlite::params![rel, id],
+            )?;
+            Ok(BubbleAddOutcome::Added(BubbleItem {
+                id,
+                text: text.to_string(),
+                kind: crate::bubble::BubbleKind::Image,
+            }))
+        })();
+        match result {
+            Ok(outcome) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(outcome)
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("图片入库事务回滚失败：{rollback}");
+                }
+                Err(err)
             }
         }
-        Ok(false)
     }
 
-    /// 读图片气泡的 PNG 字节（详情板与复制回取数源）：不存在 NotFound 严格报错，
-    /// 文本气泡返回 None（正常态非错误——调用面只对 kind=Image 调用，防御兜底）
-    pub fn get_bubble_image(&self, id: i64) -> Result<Option<Vec<u8>>, StorageError> {
+    /// 读图片气泡的落盘相对文件名 + 来源（详情/复制回取数源，PL025）：不存在 NotFound
+    /// 严格报错；文本气泡或无文件名返回 None（正常态非错误——调用面只对 kind=Image 调用）
+    pub fn get_bubble_image_file(&self, id: i64) -> Result<Option<(String, String)>, StorageError> {
         self.get_bubble(id)?;
-        let img: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT image FROM bubbles WHERE id = ?1",
-                rusqlite::params![id],
-                |row| row.get(0),
-            )
-            .map_err(|err| match err {
-                rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(id),
-                other => StorageError::Sqlite(other),
-            })?;
-        Ok(img)
+        let (file, source): (Option<String>, String) = self.conn.query_row(
+            "SELECT image_file, image_source FROM bubbles WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(file.map(|f| (f, source)))
     }
 
     /// 气泡列表：按 sort_order 升序（拖拽序；新捕获排头插入 = 展示序与实验场
@@ -571,21 +730,34 @@ impl Storage {
             })
     }
 
-    /// 删除单条气泡；零行删除返回 NotFound
-    pub fn remove_bubble(&self, id: i64) -> Result<(), StorageError> {
-        let changed = self
+    /// 删除单条气泡；返回其**所属文件夹**相对路径（供调用方递归删，best-effort）；零行返回 NotFound
+    pub fn remove_bubble(&self, id: i64) -> Result<Option<String>, StorageError> {
+        let rel: Option<Option<String>> = self
             .conn
-            .execute("DELETE FROM bubbles WHERE id = ?1", rusqlite::params![id])?;
-        if changed == 0 {
+            .query_row(
+                "SELECT image_file FROM bubbles WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(rel) = rel else {
             return Err(StorageError::NotFound(id));
-        }
-        Ok(())
+        };
+        self.conn
+            .execute("DELETE FROM bubbles WHERE id = ?1", rusqlite::params![id])?;
+        Ok(rel.map(|r| folder_of(&r)))
     }
 
-    /// 一键清空气泡，返回清除条数
-    pub fn clear_bubbles(&self) -> Result<usize, StorageError> {
+    /// 一键清空气泡：返回（清除条数, 所属**文件夹**相对路径列表——供调用方递归删 best-effort）
+    pub fn clear_bubbles(&self) -> Result<(usize, Vec<String>), StorageError> {
+        let rels: Vec<String> = self
+            .conn
+            .prepare("SELECT image_file FROM bubbles WHERE image_file IS NOT NULL")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
         let removed = self.conn.execute("DELETE FROM bubbles", [])?;
-        Ok(removed)
+        let folders = rels.iter().map(|r| folder_of(r)).collect();
+        Ok((removed, folders))
     }
 
     /// 白板内容（单行表；无行返回空串——首启正常态，非错误）
@@ -730,7 +902,7 @@ mod tests {
         let st = storage();
         st.add_bubble("一").expect("写入必须成功").added_item();
         st.add_bubble("二").expect("写入必须成功").added_item();
-        let removed = st.clear_bubbles().expect("清空必须成功");
+        let (removed, _rels) = st.clear_bubbles().expect("清空必须成功");
         assert_eq!(removed, 2);
         assert_eq!(st.list_bubbles().expect("读取必须成功").len(), 0);
     }
@@ -774,9 +946,23 @@ mod tests {
 
     // ===== PL024.1 图片气泡存储（TDD 红灯） =====
 
-    /// 最小合法 PNG 形态（8 字节魔数 + 少量载荷；魔数与 bubble.rs 单源语义一致）
+    /// 图片内容夹具（storage 层不校验格式——任意字节即可；格式校验在命令层）
     fn png_bytes() -> Vec<u8> {
         vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3]
+    }
+
+    /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images）
+    fn temp_images_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "capsule-todo-images-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
+        dir
     }
 
     #[test]
@@ -797,62 +983,119 @@ mod tests {
 
     #[test]
     fn add_image_bubble_dedupes_by_content() {
-        // 图片按内容去重（PL024.8x）：同 PNG 字节第二次返回 Duplicate 不入库；
-        // 不同字节仍入库；列表 kind = Image（载荷不带图）
+        // 图片按内容去重（PL025）：同字节第二次 Duplicate；不同字节入库；子文件夹 + 回填
         let st = storage();
+        let dir = temp_images_dir();
         let png = png_bytes();
         let a = st
-            .add_image_bubble("🖼 截图 261009143205", &png)
+            .add_image_bubble(&dir, "🖼️ 截图 261009143205", &png, None, "261009143205")
             .expect("首次必须成功")
             .added_item();
         let dup = st
-            .add_image_bubble("🖼 截图 261009143206", &png)
+            .add_image_bubble(&dir, "🖼️ 截图 261009143206", &png, None, "261009143206")
             .expect("去重判定必须成功");
-        assert!(dup.is_duplicate(), "同 PNG 字节应判重复");
+        assert!(dup.is_duplicate(), "同字节应判重复");
         let mut other = png.clone();
         other.push(0);
         let b = st
-            .add_image_bubble("🖼 截图 261009143207", &other)
+            .add_image_bubble(
+                &dir,
+                "🖼️ 图片 示例.png",
+                &other,
+                Some("示例.png"),
+                "261009143207",
+            )
             .expect("不同字节必须成功")
             .added_item();
         let items = st.list_bubbles().expect("读取必须成功");
         assert_eq!(items.len(), 2);
-        assert!(
-            items
-                .iter()
-                .all(|it| it.kind == crate::bubble::BubbleKind::Image),
-            "列表 kind = Image（载荷不带图）"
-        );
+        assert!(items
+            .iter()
+            .all(|it| it.kind == crate::bubble::BubbleKind::Image));
+        // 截图：文件夹 bubble_{stamp}_1 + 内层 snap_{stamp}_1.png
+        let (rel_a, src_a) = st
+            .get_bubble_image_file(a.id)
+            .expect("读取必须成功")
+            .expect("应有文件");
+        assert_eq!(rel_a, "bubble_261009143205_1/snap_261009143205_1.png");
+        assert_eq!(src_a, "screenshot");
+        assert_eq!(std::fs::read(dir.join(&rel_a)).expect("回读必须成功"), png);
+        // 文件图：内层原名
+        let (rel_b, src_b) = st
+            .get_bubble_image_file(b.id)
+            .expect("读取必须成功")
+            .expect("应有文件");
+        assert_eq!(rel_b, "bubble_261009143207_1/示例.png");
+        assert_eq!(src_b, "file");
         assert_eq!(
-            st.get_bubble_image(a.id).expect("读取必须成功").as_deref(),
-            Some(&png[..]),
-            "图片字节完整回读"
-        );
-        assert_eq!(
-            st.get_bubble_image(b.id).expect("读取必须成功").as_deref(),
-            Some(&other[..])
+            std::fs::read(dir.join(&rel_b)).expect("回读必须成功"),
+            other
         );
     }
 
     #[test]
-    fn get_bubble_image_text_none_and_missing_errors() {
+    fn migrate_blobs_to_files_and_drop_column_idempotent() {
+        // 老库（含 image 列）存量 BLOB → 写盘 + 回填 + 清空；二次跑零变化；drop 幂等
+        let st = storage();
+        st.conn
+            .execute("ALTER TABLE bubbles ADD COLUMN image BLOB", [])
+            .expect("模拟老库加列必须成功");
+        st.conn
+            .execute(
+                "INSERT INTO bubbles(text, kind, image) VALUES ('🖼 截图 1', 'image', ?1)",
+                rusqlite::params![png_bytes()],
+            )
+            .expect("插存量 blob 必须成功");
+        let dir = temp_images_dir();
+        st.migrate_blobs_to_files(&dir, "261010120000")
+            .expect("迁移必须成功");
+        let (file, blob): (Option<String>, Option<Vec<u8>>) = st
+            .conn
+            .query_row(
+                "SELECT image_file, image FROM bubbles WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("读回必须成功");
+        let rel = file.expect("image_file 应回填");
+        assert_eq!(rel, "bubble_261010120000_1/snap_261010120000_1.png");
+        assert!(blob.is_none(), "BLOB 应清空");
+        assert!(dir.join(&rel).is_file(), "文件应落盘");
+        st.migrate_blobs_to_files(&dir, "261010120000")
+            .expect("二次迁移幂等");
+        st.drop_image_column().expect("drop 必须成功");
+        assert!(!st
+            .column_set("bubbles")
+            .expect("探列必须成功")
+            .contains("image"));
+        st.drop_image_column().expect("drop 幂等");
+    }
+
+    #[test]
+    fn get_bubble_image_file_text_none_and_missing_errors() {
         // 文本气泡 = None（非错误）；不存在 = NotFound 严格报错
         let st = storage();
         let item = st.add_bubble("文本").expect("写入必须成功").added_item();
-        assert_eq!(st.get_bubble_image(item.id).expect("读取必须成功"), None);
+        assert_eq!(
+            st.get_bubble_image_file(item.id).expect("读取必须成功"),
+            None
+        );
         assert!(matches!(
-            st.get_bubble_image(99),
+            st.get_bubble_image_file(99),
             Err(StorageError::NotFound(99))
         ));
     }
 
     #[test]
     fn add_bubble_text_path_stays_text_kind() {
-        // 文本路径回归锁定：kind = Text（image 列 NULL 语义由 get_bubble_image None 证）
+        // 文本路径回归锁定：kind = Text（无 image_file 由 get_bubble_image_file None 证）
         let st = storage();
         let item = st.add_bubble("文本").expect("写入必须成功").added_item();
         assert_eq!(item.kind, crate::bubble::BubbleKind::Text);
-        assert_eq!(st.get_bubble_image(item.id).expect("读取必须成功"), None);
+        assert_eq!(
+            st.get_bubble_image_file(item.id).expect("读取必须成功"),
+            None
+        );
     }
 
     #[test]
