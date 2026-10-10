@@ -23,6 +23,9 @@ dist/
 release/*.exe
 release/*.zip
 
+## 素材设计源（PSD 等设计源文件不入库；导出的 png/jpg 入库供 README 引用）
+*.psd
+
 ## Tauri 生成（schema 与平台文件）
 core/gen/
 
