@@ -306,6 +306,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or(true);
                 if let Ok(hwnd) = window.hwnd() {
                     glass_backdrop::apply_frame_style(hwnd.0 as isize, dark);
+                    // 系统圆角（与两个托盘窗同款调用）：DWM 切掉卡片 CSS 圆角外的
+                    // 窗口直角区。主窗关 DWM 投影（shadow:false）后失去隐式圆角，
+                    // 须显式补上，否则两个上角露出窗口方角
+                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
                 }
             }
             // 全屏让位监视（PL003，Windows 实机验证平台）
