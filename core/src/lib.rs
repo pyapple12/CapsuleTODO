@@ -66,6 +66,23 @@ mod win_input {
     }
 }
 
+/// 非 Windows 空桩（PL026：调用点零 cfg）：无 Win32 键态查询，恒"未按下"
+/// ——吸附状态机的"左键仍按住"判据退化为仅靠 Moved 静默（等价现状该行不编译进
+/// 非 Windows 的行为）
+#[cfg(not(target_os = "windows"))]
+mod win_input {
+    /// 鼠标左键是否按下（非 Windows 空桩：恒 false）
+    pub fn left_down() -> bool {
+        false
+    }
+
+    /// 鼠标右键是否按下（非 Windows 空桩：恒 false）
+    #[allow(dead_code)]
+    pub fn right_down() -> bool {
+        false
+    }
+}
+
 /// 贴边吸附判定与落位（PL017.4）：读开关（锁失败跳过——吸附是体验增强层，
 /// 容错白名单已登记 FIX006.14）→ 取所在显示器 → snap_position 算修正位 → 与当前位不同
 /// 才 set_position（幂等防环：吸附位仍在阈值内，不判等会 Moved→snap 死循环）。
@@ -297,27 +314,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 置顶开关（PL017.1）：conf 静态 true 仅初值，按 config.json 校正生效
             window.set_always_on_top(saved.always_on_top)?;
             // 窗口框架整定（SYSTEMBACKDROP 实验）：深色模式声明（背板基调对齐主题）
-            // + 激活边框隐藏（Win11 活动描边显形修复）
-            #[cfg(target_os = "windows")]
-            {
-                let dark = window
-                    .theme()
-                    .map(|t| t == tauri::Theme::Dark)
-                    .unwrap_or(true);
-                if let Ok(hwnd) = window.hwnd() {
-                    glass_backdrop::apply_frame_style(hwnd.0 as isize, dark);
-                    // 系统圆角（与两个托盘窗同款调用）：DWM 切掉卡片 CSS 圆角外的
-                    // 窗口直角区。主窗关 DWM 投影（shadow:false）后失去隐式圆角，
-                    // 须显式补上，否则两个上角露出窗口方角
-                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
-                }
-            }
-            // 全屏让位监视（PL003，Windows 实机验证平台）
-            #[cfg(target_os = "windows")]
+            // + 激活边框隐藏（Win11 活动描边显形修复）。PL026：调用点零 cfg——
+            // 平台分叉收在 glass_backdrop（非 Windows 空桩）
+            let dark = window
+                .theme()
+                .map(|t| t == tauri::Theme::Dark)
+                .unwrap_or(true);
+            glass_backdrop::apply_frame_style(&window, dark);
+            // 系统圆角（与两个托盘窗同款调用）：DWM 切掉卡片 CSS 圆角外的
+            // 窗口直角区。主窗关 DWM 投影（shadow:false）后失去隐式圆角，
+            // 须显式补上，否则两个上角露出窗口方角
+            glass_backdrop::apply_round_corners(&window);
+            // 全屏让位监视（PL003，Windows 实机验证平台；PL026 调用点零 cfg）
             fullscreen::spawn_fullscreen_watcher(app.handle().clone());
             // 气泡热键（PL015）：启动注册全局热键，触发即捕获剪贴板入气泡；
-            // 注册失败落日志不阻断启动（白名单：热键缺失不阻断主流程）
-            #[cfg(target_os = "windows")]
+            // 注册失败落日志不阻断启动（白名单：热键缺失不阻断主流程）。
+            // PL026：调用点零 cfg——非 Windows 由 hotkey 模块空桩承接
             {
                 let hotkey_text = app
                     .state::<AppContext>()
@@ -474,9 +486,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?;
                 // DWM 系统圆角（PL018，用户问诊直角暗角）：DWM 切掉 CSS 圆角外的
                 // 窗口直角区——预览窗视觉与内容圆角统一（Win11 原生浮窗同款）
-                if let Ok(hwnd) = preview.hwnd() {
-                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
-                }
+                glass_backdrop::apply_round_corners(&preview);
                 if let Err(err) = preview.hide() {
                     eprintln!("预览窗首绘后隐藏失败：{err}");
                 }
@@ -503,9 +513,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .shadow(false)
                 .build()?;
                 // DWM 系统圆角（预览窗同款）：DWM 切掉 CSS 圆角外的窗口直角区
-                if let Ok(hwnd) = menu_win.hwnd() {
-                    glass_backdrop::apply_round_corners(hwnd.0 as isize);
-                }
+                glass_backdrop::apply_round_corners(&menu_win);
                 // 创建期 inner_size 宽度被 WebView2 最小 bounds 钳制（实测 60/100
                 // 均被抬到 136 逻辑；高度不受影响）——创建后 set_size 重设（预览窗
                 // set_size 精确生效先例）
@@ -573,7 +581,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let now = crate::tray::now_ms();
                 let last = LAST_MOVED_MS.swap(now, Ordering::Relaxed);
                 let dragging = now.saturating_sub(last) <= DRAG_QUIET_MS;
-                #[cfg(target_os = "windows")]
                 let dragging = dragging || win_input::left_down();
                 if dragging {
                     DRAG_ACTIVE.store(true, Ordering::Relaxed);
@@ -582,7 +589,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let win = window.clone();
                     std::thread::spawn(move || loop {
                         std::thread::sleep(Duration::from_millis(100));
-                        #[cfg(target_os = "windows")]
                         if win_input::left_down() {
                             continue; // 左键仍按住 = 还在拖（悬停/慢速不误吸）
                         }
@@ -606,20 +612,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if window.label() != "main" {
                     return;
                 }
-                #[cfg(target_os = "windows")]
-                {
-                    // 系统背板聚焦联动（SYSTEMBACKDROP 实验）：聚焦挂系统亚克力，
-                    // 失焦回纯透明；失败落日志维持前态（下次焦点事件自愈）
-                    if let Ok(hwnd) = window.hwnd() {
-                        glass_backdrop::set_focused_backdrop(hwnd.0 as isize, *focused);
-                    }
-                    // 前端分态纱随事件翻转（.focused class）；发送失败由下次焦点事件纠正
-                    if let Err(err) = window.emit("window-focus", focused) {
-                        eprintln!("window-focus 事件发送失败：{err}");
-                    }
+                // PL026：调用点零 cfg——平台分叉收在 glass_backdrop（非 Windows 空桩）
+                // 系统背板聚焦联动（SYSTEMBACKDROP 实验）：聚焦挂系统亚克力，
+                // 失焦回纯透明；失败落日志维持前态（下次焦点事件自愈）
+                glass_backdrop::set_focused_backdrop(window, *focused);
+                // 前端分态纱随事件翻转（.focused class）；发送失败由下次焦点事件纠正
+                if let Err(err) = window.emit("window-focus", focused) {
+                    eprintln!("window-focus 事件发送失败：{err}");
                 }
-                #[cfg(not(target_os = "windows"))]
-                let _ = (focused, window);
             }
         })
         .build(tauri::generate_context!())?

@@ -322,6 +322,18 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
         .map_err(|_| "热键注册结果等待超时".to_string())?
 }
 
+// —— 非 Windows 空桩（PL026：调用点零 cfg；行为等价现状"跳过热键注册、不报错"）——
+
+/// 设置热键触发回调（非 Windows 空桩：无全局热键，静默 no-op）
+#[cfg(not(target_os = "windows"))]
+pub fn set_on_hotkey(_callback: Box<dyn Fn() + Send>) {}
+
+/// 启动（或替换）全局热键线程（非 Windows 空桩：恒 `Ok`——真注册语义仅 Windows 有）
+#[cfg(not(target_os = "windows"))]
+pub fn reregister(_combo: HotkeyCombo) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

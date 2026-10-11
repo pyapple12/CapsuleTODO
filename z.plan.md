@@ -1069,3 +1069,20 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 > - **补修（2026-10-10 目验反馈，PL025.8）**：①失效块溢出（`.detail-image-broken` 补 `box-sizing: border-box`）②详情删除后气泡列表不刷新（`bubble_remove`/`bubble_clear` 发 `bubble-changed`）③失效文案加粗 + 阴影（字号维持 12px）④失效删除按钮对齐「一键清空」样式 + 按下即时视觉（不做二态确认）
 >
 > 状态：✅ 已完成（2026-10-10——初版 `PL025.Na`、目验修订 `PL025.Nb`、补修 `PL025.8` 全落并门禁绿；版本 V0.2.2.3 已提交推送 `de4a57f`；执行拆条见 x.progress.md PL025 组）
+
+---
+
+## 附录 PL026：平台分支约定统一（FFI 能力模块收窗口类型 + 非 Windows 空桩，调用点零 cfg）（2026-10-11 立项）
+
+> 背景：项目现存**两种平台分支形态并存**——①**FFI 能力族**（`glass_backdrop.rs` / `hotkey.rs` / `capture.rs` / `clipboard_image.rs`）：**不 import tauri**、公开函数收裸句柄（`isize`）、`#[cfg(target_os = "windows")]` 收在文件内 → **cfg 漏到调用点**（`lib.rs` 9 处 + `commands/bubble.rs` 4 处），并留下 `#[cfg(not(target_os = "windows"))] let _ = (focused, window);` 这类"消 unused 告警"的疤痕；②**集成族**（`tray.rs` / `fullscreen.rs`）：收 `&AppHandle` / `&WebviewWindow`，调用点无 cfg。macOS/Linux 适配为既定下一件大事（平台数将到 3），形态①的调用点成本会随平台数线性增长。
+> 判据（2026-10-11 用户讨论定案）：**「调用点零分支」⇔「模块收窗口类型」⇔「模块 import tauri」是一体三面，不可拆**——因为 `WebviewWindow::hwnd()` 本身是 Windows-only，只要调用点自己提句柄，调用点就必然要 cfg。故"模块纯度"与"调用点零分支"是**真·二选一**；本项目取「平台知识集中 + 调用点零分支」一侧（平台数将到 3，收益成立）。
+> 方案要点：
+>
+> - **目标形态（每 FFI 能力模块）**：①公开函数**收 Tauri 类型**（`&WebviewWindow` / `&AppHandle`，按需）；②Windows 分支**内部**完成句柄提取（`w.hwnd()`）与 FFI 调用；③**非 Windows 定义同名空桩**（`#[cfg(not(target_os = "windows"))] pub fn …(…) {}`）→ **调用点零 cfg**；④**私有纯 FFI 核保留**（收 `isize`，如 `apply_frame_style_raw`）——保住裸句柄入口，供将来非窗口调用者复用。常量与 FFI `extern` 声明仍 `#[cfg(target_os = "windows")]` 收在文件内
+> - **调用点清理**：`core/src/lib.rs` 与 `core/src/commands/bubble.rs` 的 `#[cfg(target_os = "windows")]` 包裹按对象逐处收掉；`let _ = (…)` 消警疤痕删除
+> - **规则改写**：AGENTS 的"禁 import tauri"**收窄为「纯逻辑模块禁 import tauri」**——即 `todo.rs` / `bubble.rs` / `whiteboard.rs` / `snap.rs` / `storage.rs` / `settings.rs` / `paths.rs` 等**真能 `cargo test`** 的模块保持纯净；**FFI 能力模块豁免**（本就不可单测，规则本意〔保业务逻辑可单测〕不涉）
+> - **红线**：**`snap.rs` 等纯逻辑模块保持纯**（真单测价值，不可连带放松）；**行为零变化**（只改组织形态，不改任何 FFI 调用语义与参数）；FFI 核不删；门禁全绿
+> - **分期（pilot 先行）**：先只做 `glass_backdrop` 一模块 + 其调用点（pilot），验证形态可行、门禁与 live 全绿后，再滚到 `hotkey` → `capture` / `clipboard_image`；避免一次性大改
+> - **边界**：非 Windows 空桩为**静默 no-op**（与现"调用点不调"等价，非新增容错面）；本机仅 Windows 实机可验，非 Windows 分支以**读码核对 + `cargo check --target`** 兜底；`tray.rs` / `fullscreen.rs` 已是对照形态（收 Tauri 类型），**不动**
+>
+> 状态：✅ 已完成（2026-10-11——阶段 A/B/D 全落并全量门禁绿；`core/src/lib.rs` 的 `#[cfg(target_os = "windows")]` 计数 **9 → 3**；C 阶段经研究判定无需改动；实施中修正：形态需 `WinHandle` trait 层、补做 `fullscreen`/`win_input`；live 用户目验通过；执行拆条见 x.progress.md PL026 组）

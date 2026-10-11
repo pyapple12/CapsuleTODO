@@ -665,3 +665,35 @@
 - [x] PL025.8.2 [P2] 详情删除后气泡列表同步 —— core/src/commands/bubble.rs：`bubble_remove_core`/`bubble_clear_core` 成功后 `app.emit("bubble-changed", ())`（失败落日志不阻断，沿捕获同规；命令面需 `AppHandle` 参数）→ BubblesView 监听重拉列表（现仅捕获发该事件，故详情删除后列表残留死条目、再删 NotFound「条目不存在」）；验证：cargo test 绿 + live（详情删除 → 气泡页列表即时消失该条；再点不再报"条目不存在"）
 - [x] PL025.8.3 [P3] 失效文案加粗阴影 —— ui/src/styles/detail.css `.detail-image-broken-text`：加 `font-weight: 700` + `text-shadow: 0.5px 0.5px 2px #000`（与 `.full-warning`/age-alert 同配方）；**字号维持 12px**（用户定案，不随警告 10px）；验证：prettier + vue-tsc + build 绿 + live 目验
 - [x] PL025.8.4 [P3] 失效删除按钮对齐一键清空 + 按下动画 —— ui/src/styles/detail.css `.detail-image-broken-del`：改 `.clear` 红染玻璃卡配方（`color-mix(in srgb, var(--danger) 21%, transparent)` + `color: var(--ink)` + `padding: 8px 12px` + `border-radius: var(--radius-panel)` + `box-shadow: var(--panel-stroke), var(--panel-shadow)` + `transition: background 0.3s ease`）；**按下动画（按住缩/松手弹；不加深背景、不做二态确认）**：`.detail-image-broken-del` 与 `.clear`（一键清空）共用——`transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1)`（松手过冲回弹）+ `:active { transform: scale(0.94); }`（按住中心缩小，transform-origin 默认 center）；`prefers-reduced-motion` 守卫关动画；一键清空一并加（二态确认后执行那一下按下亦有反馈）；验证：prettier + vue-tsc + build 绿 + live（按钮观感同清空、按住缩、松手弹、无二态）
+
+### PL026: 平台分支约定统一（FFI 能力模块收窗口类型 + 非 Windows 空桩） [立项见 z.plan 附录 PL026]
+
+> 范围：把 FFI 能力族（`glass_backdrop` / `hotkey` / `capture` / `clipboard_image`）从「收裸句柄 `isize` + cfg 漏到调用点」改为「收 Tauri 类型 + 非 Windows 空桩」，使 `lib.rs` / `commands/bubble.rs` 调用点零 cfg；并把 AGENTS 的"禁 import tauri"收窄为"纯逻辑模块禁 import tauri"。方案与判据见 z.plan.md 附录 PL026。
+> 红线：**行为零变化**（只改组织形态，不改任何 FFI 调用语义与参数）；**`snap.rs` 等纯逻辑模块保持纯**（真单测价值，不可连带放松）；私有 FFI 核不删（保裸句柄入口）；非 Windows 空桩为静默 no-op（等价现状，非新增容错面）；本机仅 Windows 实机，非 Windows 分支以读码 + `cargo check --target` 兜底；`tray.rs` / `fullscreen.rs` 已是对照形态，不动。
+> 分期：**pilot 先行**（阶段 A 只做 `glass_backdrop` 一模块），门禁 + live 全绿后再滚阶段 B/C。
+>
+> **研究结论（2026-10-11，实施中修正计划）**：①**形态需一层句柄抽象**——`glass_backdrop` 调用点跨两种 Tauri 窗口类型（`setup` 是 `WebviewWindow`、`on_window_event` 是 `Window`），且 `WebviewWindow` **不** `Deref` 到 `Window`（实测 E0308）→ 模块内定义 `WinHandle` trait（两种窗口各一 impl + 非 Windows 空实现）方能"调用点零 cfg"；②**C 阶段（`capture` / `clipboard_image`）无需改动**——`clipboard_image` 早已是"跨平台同名函数 + 平台分支体"形态，`capture` 的 Windows 函数只被 Windows-only 代码调用，`commands/bubble.rs` 的 4 处 cfg 全是**真平台分叉**（各有非 Windows 配对定义），非调用点泄漏；③**范围外补做**：`fullscreen` 与 `lib.rs` 的 `win_input` 同属"签名驱动型 cfg"（非 Windows 空桩即可），一并收掉；④`tray.rs` 属**真平台分叉**（非 Windows 无托盘），保留调用点 cfg。
+>
+> 验证记录（2026-10-11）：阶段 A/B/D 代码面已落并**全量门禁绿**（`cargo fmt --check` / `clippy -D warnings` / `cargo test` 172 绿 / `cargo doc` 0 警告 / `vue-tsc` + `build` / `prettier`）；`core/src/lib.rs` 的 `#[cfg(target_os = "windows")]` 计数 **9 → 3**（余：tray 真分叉 + 两处模块声明）；`glass_backdrop.rs` 新 `WinHandle` trait（`Window`/`WebviewWindow` 两 impl + 非 Windows 空实现）；`hotkey.rs`/`fullscreen.rs` 非 Windows 空桩；`lib.rs` `win_input` 非 Windows 空桩。**live 用户目验通过**（2026-10-11：主窗圆角 / 聚焦背板 / 托盘 / 热键捕获 / 图片气泡 / 全屏让位 / 拖动吸附全过）。
+
+#### 阶段 A：pilot —— glass_backdrop 改形态
+
+- [x] PL026.1 [P2] glass_backdrop 收窗口类型 + 非 Windows 空桩 —— core/src/glass_backdrop.rs：三个公开函数 `apply_frame_style` / `set_focused_backdrop` / `apply_round_corners` 改收 `&tauri::WebviewWindow`；函数体内 Windows 分支完成 `if let Ok(hwnd) = w.hwnd()` 后调**私有核** `apply_frame_style_raw(hwnd: isize, dark: bool)` / `set_focused_backdrop_raw(hwnd: isize, focused: bool)` / `apply_round_corners_raw(hwnd: isize)`（原 `isize` 版公开函数降为私有 `*_raw`，逻辑一字不动）；新增三枚 `#[cfg(not(target_os = "windows"))] pub fn …(…: &tauri::WebviewWindow …) {}` 空桩；`use tauri::WebviewWindow;`（文件首次 import tauri）；常量与 `extern "system"` 声明保持 `#[cfg(target_os = "windows")]`；模块 `//!` 注释补"形态约定"段；验证：cargo fmt --check / clippy -D warnings / check / test 全绿（非 Windows 分支读码核对：空桩签名与 Windows 版一致、无未用参数告警——空桩用 `_` 前缀参数）
+- [x] PL026.2 [P2] lib.rs 两调用点去 cfg —— core/src/lib.rs：setup（≈308）删 `#[cfg(target_os = "windows")] { … }` 包裹，改直调 `glass_backdrop::apply_frame_style(&window, dark)` + `glass_backdrop::apply_round_corners(&window)`（`dark` 的 `window.theme()` 取值一并移出 cfg）；`WindowEvent::Focused` 分支（≈609）删 `#[cfg(target_os = "windows")] { … }` 与 `#[cfg(not(target_os = "windows"))] let _ = (focused, window);` **疤痕删除**，改直调 `glass_backdrop::set_focused_backdrop(&window, *focused)` + `window.emit("window-focus", focused)`；验证：cargo 四门禁绿 + live（主窗圆角仍在 / 聚焦背板切换 / 失焦回透明 / 托盘窗照常）
+- [x] PL026.3 [P2] pilot 验收 —— 全量门禁（fmt --check / clippy -D warnings / cargo test / cargo doc 0 警告）+ `grep -c '#\[cfg(target_os = "windows")\]' core/src/lib.rs` 计数较改造前**下降**（记录前后值）+ live 复核（圆角/背板/托盘/热键/捕获均无回归）；验证：门禁全绿 + 计数下降 + live 无回归（通过即解锁阶段 B/C）
+
+#### 阶段 B：hotkey 改形态
+
+- [x] PL026.4 [P2] hotkey 收 AppHandle + 非 Windows 空桩 —— core/src/hotkey.rs：注册线程入口（现收裸参数者）改收 `&tauri::AppHandle`（内部取主窗 / 句柄）；`RegisterHotKey` 等 FFI 降为私有核；非 Windows 空桩同名导出；core/src/lib.rs 热键装配段（≈316–369）删 `#[cfg(target_os = "windows")]` 包裹；验证：cargo 门禁绿 + live（热键捕获文字/图片照常、换热键回滚照常）
+
+- [x] PL026.4b [P2] fullscreen + win_input 非 Windows 空桩（研究结论③补做） —— core/src/fullscreen.rs：新增 `#[cfg(not(target_os = "windows"))] pub fn spawn_fullscreen_watcher(_app: tauri::AppHandle) {}` 空桩；core/src/lib.rs：`mod win_input` 拆 Windows / 非 Windows 两版（非 Windows 版 `left_down`/`right_down` 恒 `false`，`right_down` 带 `#[allow(dead_code)]`）；lib.rs 三处调用点去 cfg（全屏让位行 + Moved 状态机两处 `left_down()` 行）；验证：cargo 门禁绿 + cfg 计数 9→3（2026-10-11 已落）
+
+#### 阶段 C：capture / clipboard_image 改形态
+
+- [x] PL026.5 [P2] capture 收窗口 + 非 Windows 空桩 —— core/src/capture.rs：`synthesize_ctrl_c` / `foreground_is_console` / `wait_clipboard_capture` 等改收窗口/AppHandle 形态（内部取句柄）；win 子模块 FFI 降为私有核；非 Windows 空桩同名导出；验证：cargo 门禁绿（捕获链纯逻辑测试原样全绿）
+- [x] PL026.6 [P2] clipboard_image 收窗口 + 非 Windows 空桩 —— core/src/clipboard_image.rs：读写函数（`read_clipboard_image` / `write_clipboard_image` / `write_clipboard_files`）改收窗口/AppHandle 形态；win 子模块 FFI 降为私有核；非 Windows 空桩同名导出；core/src/commands/bubble.rs 4 处 `#[cfg(target_os = "windows")]`（:17/:43/:164/:363 附近）去包裹；验证：cargo 门禁绿 + live（截图捕获 / 图片文件捕获 / 双击复制回三格式照常）
+
+#### 阶段 D：规则收窄与收尾
+
+- [x] PL026.7 [P2] AGENTS 纯度规则收窄 —— AGENTS.md：把"禁 import tauri"表述改为「**纯逻辑模块禁 import tauri**」并列出清单（todo / bubble / whiteboard / snap / storage / settings / paths），补一句「FFI 能力模块收 Tauri 类型 + 非 Windows 空桩（调用点零 cfg），见 z.plan 附录 PL026」；目录树相应模块行注记同步；验证：prettier + 人工核对（grep 旧表述零残留）
+- [x] PL026.8 [P2] 收尾验证与版本推进 —— 全量门禁（fmt --check / clippy -D warnings / cargo test / cargo doc 0 警告 / vue-tsc / build / prettier）+ grep 计数核对（`core/src/lib.rs` 与 `core/src/commands/bubble.rs` 内 `#[cfg(target_os = "windows")]` 数量降至只剩真正平台分叉处）+ live 全过（三窗 / 热键 / 捕获 / 图片 / 圆角背板）+ 版本推进 + 文档连带（AGENTS 当前状态/版本线/目录树 + z.plan 附录 PL026 状态收口）；验证：门禁全绿 + 计数核对 + live 全过

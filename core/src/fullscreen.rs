@@ -171,6 +171,10 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
     });
 }
 
+/// 启动全屏让位后台线程（非 Windows 空桩：无全屏让位，静默 no-op）
+#[cfg(not(target_os = "windows"))]
+pub fn spawn_fullscreen_watcher(_app: tauri::AppHandle) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
