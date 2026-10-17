@@ -214,3 +214,142 @@
   font-size: 12px;
   color: var(--danger);
 }
+
+/* —— PL027 详情块序列（一段一行一块 + 图块混排）—— */
+
+/* 块列表滚动容器（id 沿用 detail-note：帘特判与板内套件零改动） */
+.note-shell.note-blocks {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 2px;
+}
+
+.note-block {
+  position: relative;
+  display: block;
+}
+
+/* 文本块：自动增高 textarea（高度由 JS 按 scrollHeight 定） */
+.note-block-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  padding: 2px 12px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.note-block-text::-webkit-scrollbar {
+  display: none;
+}
+
+.note-block-text::placeholder {
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+/* 图块：与气泡详情图同款尺寸配方（宽 100% / 高自适应 / 同圆角） */
+.note-block-image {
+  padding: 4px 12px;
+}
+
+.note-block-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-panel);
+  cursor: pointer;
+  transition: box-shadow 0.18s ease;
+}
+
+/* 选中态：玻璃描边高亮（用现有令牌，不新造视觉体系） */
+.note-block-image.note-block-selected .note-block-img {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* 悬停右上浮出小 ×（淡入 + 轻微放大；reduced-motion 守卫） */
+.note-block-del {
+  position: absolute;
+  top: 6px;
+  right: 14px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: color-mix(in srgb, var(--danger) 72%, transparent);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--panel-stroke), var(--panel-shadow);
+  opacity: 0;
+  transform: scale(0.86);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+  pointer-events: none;
+}
+
+.note-block-image:hover .note-block-del,
+.note-block-image.note-block-selected .note-block-del {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.note-block-del:active {
+  transform: scale(0.9);
+}
+
+/* 键盘焦点命中面（选中态键盘删：透明覆盖层，聚焦即选中） */
+.note-block-hit {
+  position: absolute;
+  inset: 0;
+  outline: none;
+}
+
+/* 删除动效：高度塌缩 + 淡出（max-height 由 JS 钉住实测高再收到 0） */
+.note-block-leaving {
+  transition:
+    max-height 0.18s ease,
+    opacity 0.18s ease;
+}
+
+/* 拖拽：ghost 留槽（剥视觉）+ 让位过渡 */
+.note-block.note-ghost {
+  visibility: hidden;
+}
+
+.note-block.shifting {
+  transition: transform 0.16s ease;
+}
+
+/* 失效态文案（图块文件缺失：可删） */
+.note-block-broken {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger);
+  text-shadow: 0.5px 0.5px 2px #000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-block-del,
+  .note-block-img,
+  .note-block-leaving,
+  .note-block.shifting {
+    transition: none;
+  }
+}

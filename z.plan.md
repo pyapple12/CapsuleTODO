@@ -1078,11 +1078,53 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 > 判据（2026-10-11 用户讨论定案）：**「调用点零分支」⇔「模块收窗口类型」⇔「模块 import tauri」是一体三面，不可拆**——因为 `WebviewWindow::hwnd()` 本身是 Windows-only，只要调用点自己提句柄，调用点就必然要 cfg。故"模块纯度"与"调用点零分支"是**真·二选一**；本项目取「平台知识集中 + 调用点零分支」一侧（平台数将到 3，收益成立）。
 > 方案要点：
 >
-> - **目标形态（每 FFI 能力模块）**：①公开函数**收 Tauri 类型**（`&WebviewWindow` / `&AppHandle`，按需）；②Windows 分支**内部**完成句柄提取（`w.hwnd()`）与 FFI 调用；③**非 Windows 定义同名空桩**（`#[cfg(not(target_os = "windows"))] pub fn …(…) {}`）→ **调用点零 cfg**；④**私有纯 FFI 核保留**（收 `isize`，如 `apply_frame_style_raw`）——保住裸句柄入口，供将来非窗口调用者复用。常量与 FFI `extern` 声明仍 `#[cfg(target_os = "windows")]` 收在文件内
+> - **目标形态（每 FFI 能力模块）**：①公开函数**收 Tauri 类型或定义同名非 Windows 空桩**（实施落三型——`glass_backdrop` 收泛型 `&impl WinHandle`〔`Window` / `WebviewWindow` 双 impl；两调用点窗口类型不同且 `WebviewWindow` 不 Deref 到 `Window`〕；`hotkey` 签名不变、只加空桩〔其分叉是「函数存在与否」而非句柄提取〕；`fullscreen` 收 `&AppHandle` 并加空桩）；②Windows 分支**内部**完成句柄提取（`w.hwnd()`）与 FFI 调用；③**非 Windows 定义同名空桩**（`#[cfg(not(target_os = "windows"))] pub fn …(…) {}`）→ **调用点零 cfg**；④**私有纯 FFI 核保留**（收 `isize`，如 `apply_frame_style_raw`）——保住裸句柄入口，供将来非窗口调用者复用。常量与 FFI `extern` 声明仍 `#[cfg(target_os = "windows")]` 收在文件内
 > - **调用点清理**：`core/src/lib.rs` 与 `core/src/commands/bubble.rs` 的 `#[cfg(target_os = "windows")]` 包裹按对象逐处收掉；`let _ = (…)` 消警疤痕删除
 > - **规则改写**：AGENTS 的"禁 import tauri"**收窄为「纯逻辑模块禁 import tauri」**——即 `todo.rs` / `bubble.rs` / `whiteboard.rs` / `snap.rs` / `storage.rs` / `settings.rs` / `paths.rs` 等**真能 `cargo test`** 的模块保持纯净；**FFI 能力模块豁免**（本就不可单测，规则本意〔保业务逻辑可单测〕不涉）
 > - **红线**：**`snap.rs` 等纯逻辑模块保持纯**（真单测价值，不可连带放松）；**行为零变化**（只改组织形态，不改任何 FFI 调用语义与参数）；FFI 核不删；门禁全绿
 > - **分期（pilot 先行）**：先只做 `glass_backdrop` 一模块 + 其调用点（pilot），验证形态可行、门禁与 live 全绿后，再滚到 `hotkey` → `capture` / `clipboard_image`；避免一次性大改
-> - **边界**：非 Windows 空桩为**静默 no-op**（与现"调用点不调"等价，非新增容错面）；本机仅 Windows 实机可验，非 Windows 分支以**读码核对 + `cargo check --target`** 兜底；`tray.rs` / `fullscreen.rs` 已是对照形态（收 Tauri 类型），**不动**
+> - **边界**：非 Windows 空桩为**静默 no-op**（与现"调用点不调"等价，非新增容错面）；本机仅 Windows 实机可验，非 Windows 分支以**读码核对 + `cargo check --target`** 兜底；`tray.rs` 已是对照形态（收 Tauri 类型），**不动**；`fullscreen.rs` 原为 Windows-only 导出，本轮补非 Windows 空桩（实施修正）
 >
 > 状态：✅ 已完成（2026-10-11——阶段 A/B/D 全落并全量门禁绿；`core/src/lib.rs` 的 `#[cfg(target_os = "windows")]` 计数 **9 → 3**；C 阶段经研究判定无需改动；实施中修正：形态需 `WinHandle` trait 层、补做 `fullscreen`/`win_input`；live 用户目验通过；执行拆条见 x.progress.md PL026 组）
+
+---
+
+## 附录 PL027：详情图文混排（一段一行块模型 + Ctrl+V 粘贴插图 + 域内引用计数 + 拖拽调序）（2026-10-17 立项）
+
+> 背景：详情板 `todos.note` 是单列纯文本 + 单个 textarea（PL010），图无法落在文字之间。用户要求"详情文字区可粘截图、图插在文字之间"，并定案**一段文字一个块**（换行即新块）。气泡域与详情域**数据与生命周期隔离**（气泡行为零变化），**能通用的函数抽取通用化**（不两边各一份）。
+> 方案要点（2026-10-17 用户定案）：
+>
+> - **块模型**：新表 `note_blocks(id, todo_id, sort_order, kind 'text'|'image', text, image_hash, image_file)`；不变量四条——① 至少一个文本块（可空）② **文本块不含 `\n`**（换行 = 新块）③ 相邻文本块是 Enter 的正常产物，**不自动合并**（合并只由显式按键触发）④ 块数 ≤ **100**
+> - **块编辑（前端即时本地，Rust 只把关保存校验）**：`Enter` 光标处拆块；`Backspace`@块首——上一块是文字 → 合并（光标落合并点）、上一块是图 → 删该图；`Delete` **只作用本块内**（块尾无动作），**永不涉及下方块**；图块**选中**态 `Backspace`/`Delete` 均删；全程 `isComposing` 守卫
+> - **粘贴（唯一插图入口，不做板内按钮）**：`paste` 事件 + `clipboardData` 同步预判（主腿）／`keydown Ctrl+V` + Rust 探测（兜底腿，需 live 实测）；命中图 → Rust 落盘 + 光标处切分插入；**多行文本按行拆成多块**；**非图片文件回落文本粘贴**（粘出路径文本，不吞粘贴）；**选区替换**（块内选区 → 文本被替换为图，块变 3 个——每块一个 textarea，选区天然不跨块，这是唯一形态）
+> - **图片（参考气泡命名规则改前缀 + 尺寸/缩略图与气泡一致）**：落盘 `note_{yyMMddHHmmss}_{n}/{snap_{stamp}_{n}.png | 净化原名}`；预览阈值与生成**复用** `clipboard_image::generate_preview`（宽 > 2000px 或 > 2MB → `preview.png` 长边 ≤ 1600）；详情取数**预览优先**；**域内引用计数**——同 hash **复用同一文件**（`SELECT image_file FROM note_blocks WHERE image_hash=? AND image_file IS NOT NULL LIMIT 1`），引用数 = `COUNT(*) FROM note_blocks WHERE image_hash=?`，**归零才删文件夹**；**不建 `image_source` 列**（本期无复制回）
+> - **删除与生命周期**：图块三入口（悬停右上 **×**／下方文字块首 `Backspace`／选中态键盘删）+ **双击开原图**（`util::open_path_with_default`，与气泡同款 `ShellExecuteW`）；**删图不自动合并**相邻文字块；删除**不做二态确认**（单击即删 + 动效：× 淡入、图块塌缩淡出）；删条目 + 归档 7 天回收**连带释放引用**
+> - **拖拽调序**：**仅图块可拖**（文字块不参与，不能手动调整上下关系），可拖到最前/最后；复用 `useDragReorder` 机制（长按 0.25s、让位、边缘自动滚），落点提交 `note_reorder`
+> - **前端载体**：文本区改**块序列**（文本块 = 自动增高 textarea；图块 = `<img>` 复用 `.detail-image` 尺寸配方），滚动容器**沿用 `id="detail-note"`**（`useVeils` / `useBoardRead` / `useGlassBar` 既有 id 特判与套件挂载**零改动**），`rowSel` 改 `.note-block`
+> - **Ctrl+Enter**：保存未决草稿并关板——**仅详情文本块响应**（标题框／气泡只读板／其他输入面一律不响应；可复用面记入 `y.problems.md` #6）
+> - **通用件处理（判据 = 函数现在住在哪个文件）**：`commands/bubble.rs`（**气泡专属文件**）里的通用件 `local_stamp` / `civil_from_days` / `open_path_with_default` **抽出 → 新建 `core/src/util.rs`**；`storage.rs`（**独立文件**）里的命名扫描**就地参数化前缀**（`max_seq` / `next_seq_folder`，气泡传 `"bubble"`、详情传 `"note"`）；`storage.rs` / `clipboard_image.rs` **其余一行不动**（独立文件被两域调用即正确形态）
+> - **退役**：`todos.note` 列迁移后 **DROP**（沿 PL025 `drop_image_column` 先例）；`TodoItem.note` 字段与 `todo_set_note` 命令**删除**（`types.ts` + `mock-invoke.ts` 镜像同步）；`has_note` 改"**任一块非空**"（文本 trim 非空 或 存在图块——**纯图条目亮红点**）；长度口径改"文本块字符总和 ≤ 10000"
+> - **版本**：feat → `core/Cargo.toml` 0.2.2 → **0.2.3**
+>
+> 红线：**气泡域行为零变化**（只做"通用件迁出 + 命名参数化"两处纯搬家）；迁移幂等且失败严格报错（不静默丢笔记）；**块不变量在 Rust 保存路径硬校验**（违者严格报错）；**引用归零才删文件**（防误删）；无新增容错面（图片删除 best-effort 须先登记白名单）；非 Windows 分支以读码核对兜底（本机仅 Windows 实机可验）
+>
+> 状态：✅ 已完成（2026-10-18，V0.2.3——PL027.1–.17 全落并全量门禁绿（cargo **189 测试** / clippy / doc 0 警告 / `vue-tsc` + build / prettier）；IAB 冒烟 4 断言过 + **抓修 1 真 bug**（切源 flush 早于块载入 → 空列表覆盖 → 开板即报"详情块为空"）；live 用户目验**"基本满意"**；**遗留 5 条改进项**（占位文案仅首块 + 空块归一化规则 / Ctrl+Enter 提到板级 / 顶端溶解带切首行 / 图块 × 被覆盖层遮挡与点别处不清选中 / 贴图顶替空块与首尾不多建块）待同步定案后另立批；执行记录见 x.progress.md PL027 组）
+
+---
+
+## 附录 PATCH002：详情块模型目验修补批（占位/空块归一化 + 板级 Ctrl+Enter + 顶距还原 + 图块选中态 + 贴图建块规则）（2026-10-18 立项）
+
+> 背景：PL027 详情图文混排落地后，用户 live 目验反馈 5 条；逐条对齐后集中修补。**气泡域零影响**（既有气泡测试原样全绿为准）。
+> 方案要点（2026-10-18 用户逐条对齐定案）：
+>
+> - **占位文案仅首块**：`DetailOverlay.vue` 文本块 `placeholder` 仅在 `index === 0` 渲染（整条全空时那唯一的空文本块即首块）
+> - **空块归一化**（前端即时 + Rust 把关 + 迁移归一）：前端纯函数 `normalizeBlocks`（合并连续空块 / 删前导空块 / 结果为空补一个空文本块）在拆块、合并、删除、粘贴后统一调用；`todo::validate_note_blocks` 增两条不变量（**禁前导空块 / 禁连续空块**，违者严格报错）；`storage::migrate_note_to_blocks` 建块后按同规则就地归一化
+> - **Ctrl+Enter 提到板级**：由"文本块 keydown"上移为 **window 级 keydown**（`isOpen` 时挂、关板/卸载摘），保留 `isComposing` 守卫；详情板之外一律不响应
+> - **顶距还原**：块列表"首行到容器顶"恢复 **8px**（与改块模型前 `.detail-note` 一致）——**其余间距/字号/软边/滚动观感零变化**。根因：改块模型时该距离被压到 6px，**恰等于板内阅读顶部软边高度**（`board-read.css` 硬编码 6px），首行贴顶即被切
+> - **图块选中态**：删除 `.note-block-hit` 覆盖层（它遮挡右上 ×）；图块容器 `tabindex="0"` + 单击选中 + 选中态 `Backspace`/`Delete` 删；window mousedown 补"点图块之外 → 清选中"
+> - **贴图建块规则**（`storage::add_note_image_block`）：上段为空 → 原块**改为图块**（不留前导空块）；下段为空 → **不建尾随文本块**，**但图成为该 todo 最后一块时补一个空文本块**（否则图后无法输入）；空块贴图 → 图顶替；保底：结果无文本块 → 补一个空文本块
+> - **版本**：fix → `core/Cargo.toml` 0.2.3 → **0.2.4**（沿 PATCH001 先例推进三段）
+>
+> 红线：**除"恢复 8px 顶距"外，间距/字号/观感零变化**（顶部软边与滚动观感必须保留）；**气泡域零影响**；前端即时归一化 + Rust 保存校验的职责边界不变；归一化**只作用于空块**（有内容的块一字不动），非"静默改数据"；无新增容错面。
+>
+> 状态：🚧 已立项待实施（2026-10-18；执行拆条见 x.progress.md PATCH002 组）

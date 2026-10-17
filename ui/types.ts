@@ -19,11 +19,29 @@ export interface TodoItem {
   created_at: number | null;
   /** 完成时刻 epoch 毫秒（勾选置值、退回清空） */
   done_at: number | null;
-  /** 详情板笔记（自由文本） */
-  note: string;
-  /** 笔记有无裁决（Rust trim 判空单源下发，红点指示依据——前端禁自行判空） */
+  /** 详情有无裁决（PL027 改口径：任一块非空——存在图块或存在 trim 非空文本块；
+   * Rust SQL 单源下发，红点指示依据——前端禁自行判空） */
   has_note: boolean;
 }
+
+/** 详情块类型（镜像 NoteBlockKind，PL027） */
+export type NoteBlockKind = "Text" | "Image";
+
+/** 详情块（镜像 NoteBlockView）：note = 有序块序列（一段一行一块，图块插在文字之间） */
+export interface NoteBlock {
+  /** 块唯一标识（本地新块在保存前为 0） */
+  id: number;
+  /** 块类型 */
+  kind: NoteBlockKind;
+  /** 文本内容（图块恒空串） */
+  text: string;
+  /** 图片绝对路径（图块专用，文本块 null）——有预览时后端回预览路径（详情秒开） */
+  image_path: string | null;
+}
+
+/** 粘贴插图结果（镜像 NotePasteOutcome，PL027）：image = 已插入并回新块列表；
+ * no_image = 剪贴板无图（前端回落文本粘贴） */
+export type NotePasteOutcome = { status: "image"; blocks: NoteBlock[] } | { status: "no_image" };
 
 /** 清单视图条目（镜像 TodoView = TodoItem 扁平 + 龄期档位） */
 export type TodoView = TodoItem & {

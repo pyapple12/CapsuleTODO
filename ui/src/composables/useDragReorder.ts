@@ -52,8 +52,8 @@ interface DragCtx {
 
 /** 拖拽目标注册项（差异点全在此——机制本体零差异） */
 export interface DragTarget {
-  /** 目标名（清单 todos / 气泡 bubbles——对应 invoke 命令前缀） */
-  name: "todos" | "bubbles";
+  /** 目标名（清单 todos / 气泡 bubbles / 详情块 note——对应 invoke 命令前缀） */
+  name: "todos" | "bubbles" | "note";
   /** 列表容器 id（scopeId：todo-active / bubble-list） */
   scopeId: string;
   /** 行选择器（命中与快照用） */
@@ -68,6 +68,8 @@ export interface DragTarget {
   commit: (ctx: { id: number; toIdx: number }) => void;
   /** 收场重绘（无论是否换位都重拉——行本体以（可能新）顺序收回列表） */
   rerender: () => void;
+  /** 目标自有强制重建（可选；缺省回落全局 forceRemount——详情块不重建清单列表） */
+  forceRemount?: () => void;
 }
 
 /** 组件层注入钩子（清单掐 detailOpenTimer / 气泡掐 bubbleCopyTimer；suppress 写回；
@@ -154,7 +156,62 @@ export const DRAG_TARGETS: DragTarget[] = [
       hookBag.rerenderBubbles?.(); // 收场重拉走 hookBag（同清单路，见上注）
     },
   },
+  {
+    // PL027 详情块（**仅图块可拖**：文字块拖动会与文本选择/光标冲突；拖图即改变它与
+    // 文字块的相对顺序，文字块随让位自动重排）。槽位号 = 渲染序号（1 起）——块 id 在
+    // 本地新块落库前为 0，用序号做 DOM 标识；落点提交交给组件 hook 换算成真实块 id
+    name: "note",
+    scopeId: "detail-note",
+    rowSel: ".note-block",
+    itemSel: ".note-block",
+    ghostClass: "note-block note-ghost",
+    onDown(_row, e) {
+      if (!(e.target as HTMLElement).closest(".note-block-image")) return false;
+      noteHooks.onDown?.(); // 起拖前 flush 未决保存（保证块 id 已回填）
+      return true;
+    },
+    commit(ctx) {
+      const ul = document.getElementById("detail-note");
+      if (!ul) return;
+      const slots = [...ul.querySelectorAll(".note-block")]
+        .map((r) => Number((r as HTMLElement).dataset.rowId))
+        .filter((slot) => slot !== ctx.id);
+      slots.splice(ctx.toIdx, 0, ctx.id);
+      noteHooks.commit?.(slots);
+    },
+    rerender() {
+      noteHooks.rerender?.();
+    },
+    forceRemount() {
+      noteHooks.forceRemount?.(); // 详情块重建与清单/气泡列表无关
+    },
+  },
 ];
+
+/** 详情块拖拽钩子（组件层注入：起拖 flush / 落点提交 / 收场重绘；机制本体零差异） */
+const noteHooks: {
+  onDown?: () => void;
+  commit?: (slots: number[]) => void;
+  rerender?: () => void;
+  forceRemount?: () => void;
+} = {};
+
+/**
+ * 安装详情块拖拽钩子（DetailOverlay 挂载时调用一次）
+ * @param hooks onDown（起拖前 flush 保存）/ commit（槽位序 → 真实块序落库）/
+ *   rerender（收场重拉块列表）/ forceRemount（块列表强制重建）
+ */
+export function installNoteDragHooks(hooks: {
+  onDown: () => void;
+  commit: (slots: number[]) => void;
+  rerender: () => void;
+  forceRemount: () => void;
+}): void {
+  noteHooks.onDown = hooks.onDown;
+  noteHooks.commit = hooks.commit;
+  noteHooks.rerender = hooks.rerender;
+  noteHooks.forceRemount = hooks.forceRemount;
+}
 
 // 组件层注入的收场重拉句柄：cancelPendingClick / markSuppress / rerenderTodos /
 // rerenderBubbles（四个钩子全部由 installDragTargets 注册——组合式不持组件引用）
@@ -403,7 +460,7 @@ export function useDragReorder(): void {
     ctx.ghost.remove(); // 占位符使命完成
     ctx.li.remove(); // 重挂的行本体由重建收回列表
     if (ctx.fromIdx !== ctx.toIdx) ctx.t.commit(ctx); // 一次性提交：落点重排（invoke 落库）
-    hookBag.forceRemount?.(); // vnode↔DOM 断链修复：整列表强制重建（design 全量重绘同构）
+    (ctx.t.forceRemount ?? hookBag.forceRemount)?.(); // 目标自有重建优先（详情块不重建清单）
     ctx.t.rerender(); // 收场重拉：行本体以新顺序收回列表
   };
 

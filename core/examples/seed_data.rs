@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use capsule_todo::paths;
 use capsule_todo::storage::{BubbleAddOutcome, Storage};
+use capsule_todo::todo::{NoteBlock, NoteBlockKind};
 
 const HOUR: i64 = 3600 * 1000;
 const DAY: i64 = 24 * HOUR;
@@ -89,6 +90,13 @@ fn main() {
         }
     };
     println!("目标库：{}", db.display());
+    let images_dir = match paths::images_dir() {
+        Ok(p) => p,
+        Err(err) => {
+            eprintln!("定位图片目录失败：{err}");
+            std::process::exit(1);
+        }
+    };
 
     // 可拨动注入时钟：从当前时刻起，逐条拨到目标 created_at/done_at
     let clock = Arc::new(AtomicI64::new(now_ms()));
@@ -137,7 +145,19 @@ fn main() {
             } else {
                 NOTE_POOL[i % NOTE_POOL.len()]
             };
-            storage.set_note(item.id, note).expect("写笔记必须成功");
+            // PL027：详情为块模型（一段一行一块）——按行拆块注入
+            let blocks: Vec<NoteBlock> = note
+                .split('\n')
+                .map(|line| NoteBlock {
+                    id: 0,
+                    kind: NoteBlockKind::Text,
+                    text: line.trim_end_matches('\r').to_string(),
+                    image_file: None,
+                })
+                .collect();
+            storage
+                .set_note_blocks(&images_dir, item.id, &blocks)
+                .expect("写详情块必须成功");
         }
     }
 

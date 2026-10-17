@@ -17,6 +17,7 @@ pub mod snap;
 pub mod storage;
 pub mod todo;
 pub mod tray;
+pub mod util;
 pub mod whiteboard;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -226,7 +227,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 失败严格报错不静默丢图）
     let images = paths::images_dir()?;
     storage
-        .migrate_blobs_to_files(&images, &commands::bubble::local_stamp())
+        .migrate_blobs_to_files(&images, &util::local_stamp())
         .map_err(|err| format!("图片存量迁移失败：{err}"))?;
     storage
         .drop_image_column()
@@ -259,11 +260,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_add,
             commands::todo::todo_toggle,
             commands::todo::todo_rename,
-            commands::todo::todo_set_note,
             commands::todo::todo_remove,
             commands::todo::todo_list,
             commands::todo::todo_archive_list,
             commands::todo::todo_reorder,
+            commands::todo::note_blocks_list,
+            commands::todo::note_blocks_save,
+            commands::todo::note_paste_image,
+            commands::todo::note_reorder,
+            commands::todo::note_open_image,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
             commands::bubble::bubble_get_image_path,

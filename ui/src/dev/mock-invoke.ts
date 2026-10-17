@@ -6,19 +6,30 @@
 // 内存种子沿 design/assets/js/state.js 实验场定案（8 清单含归档 + 5 气泡 + 长文白板），
 // 使冒烟断言可与实验场形态互相印证。
 
-/** 待办条目（镜像 ui/types.ts TodoItem：PL010 三字段扩容后契约对齐） */
+/** 待办条目（镜像 ui/types.ts TodoItem：PL010 三字段扩容后契约对齐；PL027 退役 note） */
 interface MockTodo {
   id: number;
   text: string;
   done: boolean;
   created_at: number | null;
   done_at: number | null;
-  note: string;
-  /** 笔记有无裁决（镜像 Rust has_note：trim 判空单源，PL023） */
+  /** 详情有无裁决（镜像 Rust has_note：PL027 口径 = 任一块非空） */
   has_note: boolean;
   /** 拖拽排序键（PL013；种子行未赋值回退 id 序） */
   sort_order?: number;
 }
+
+/** 详情块（镜像 NoteBlockView，PL027） */
+interface MockNoteBlock {
+  id: number;
+  kind: "Text" | "Image";
+  text: string;
+  image_path: string | null;
+}
+
+/** 详情图块 mock 图（data URL 直用，前端 resolveImageSrc 放行 data: 前缀） */
+const MOCK_NOTE_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
 
 /** 龄期档位（镜像 AgeLevel） */
 type MockAgeLevel = "None" | "Yellow" | "Red";
@@ -88,23 +99,47 @@ const WEEK_NOTE = `本周完成事项：
 const state = {
   todoSeq: 0,
   bubbleSeq: 0,
+  noteBlockSeq: 0,
   todos: [] as MockTodo[],
   bubbles: [] as MockBubble[],
+  /** 详情块表（todoId → 有序块序列，PL027） */
+  noteBlocks: new Map<number, MockNoteBlock[]>(),
   whiteboard: "",
 };
+
+/** 文本 → 详情块（一段一行一块；镜像 Rust 迁移语义） */
+function splitLines(text: string): MockNoteBlock[] {
+  return text.split("\n").map((line) => ({
+    id: ++state.noteBlockSeq,
+    kind: "Text" as const,
+    text: line.replace(/\r$/, ""),
+    image_path: null,
+  }));
+}
+
+/** has_note 重算（镜像 Rust：任一块非空——图块或 trim 非空文本块） */
+function recomputeHasNote(todoId: number): void {
+  const item = state.todos.find((x) => x.id === todoId);
+  if (!item) return;
+  const list = state.noteBlocks.get(todoId) ?? [];
+  item.has_note = list.some((b) => b.kind === "Image" || b.text.trim() !== "");
+}
 
 /** 种子装载（装载时快照 Date.now，断言可复现） */
 function seed(): void {
   const now = Date.now();
-  const t = (text: string, done: boolean, ageHours = 0, note = ""): MockTodo => ({
-    id: ++state.todoSeq,
-    text,
-    done,
-    created_at: now - ageHours * HOUR,
-    done_at: done ? now : null,
-    note,
-    has_note: note.trim() !== "",
-  });
+  const t = (text: string, done: boolean, ageHours = 0, noteText = ""): MockTodo => {
+    const item: MockTodo = {
+      id: ++state.todoSeq,
+      text,
+      done,
+      created_at: now - ageHours * HOUR,
+      done_at: done ? now : null,
+      has_note: noteText.trim() !== "",
+    };
+    state.noteBlocks.set(item.id, splitLines(noteText));
+    return item;
+  };
   state.todos = [
     t("买牛奶", false, 0, "2L 全脂一盒\n鸡蛋一排\n顺路取快递"),
     t("写周报", false, 30, WEEK_NOTE),
@@ -173,10 +208,10 @@ const handlers: Record<string, CommandHandler> = {
       done: false,
       created_at: Date.now(),
       done_at: null,
-      note: "",
       has_note: false,
     };
     state.todos.push(item);
+    state.noteBlocks.set(item.id, splitLines(""));
     return item;
   },
   todo_toggle: (args) => {
@@ -197,14 +232,69 @@ const handlers: Record<string, CommandHandler> = {
     item.text = text.trim();
     return item;
   },
-  todo_set_note: (args) => {
-    const id = Number(args.id);
-    const item = state.todos.find((x) => x.id === id);
-    if (!item) throw `待办条目不存在：${id}`;
-    item.note = String(args.note ?? "");
-    item.has_note = item.note.trim() !== ""; // 裁决随写重算（对齐 Rust 派生语义，PL023）
+  note_blocks_list: (args) => {
+    const todoId = Number(args.todoId);
+    if (!state.todos.some((x) => x.id === todoId)) throw `待办条目不存在：${todoId}`;
+    return state.noteBlocks.get(todoId) ?? [];
+  },
+  note_blocks_save: (args) => {
+    const todoId = Number(args.todoId);
+    if (!state.todos.some((x) => x.id === todoId)) throw `待办条目不存在：${todoId}`;
+    const input = (args.blocks ?? []) as Array<{
+      id: number;
+      kind: "Text" | "Image";
+      text: string;
+    }>;
+    // 不变量（镜像 Rust todo::validate_note_blocks）
+    if (!input.some((b) => b.kind === "Text")) throw "详情块为空（至少保留一个文本块）";
+    if (input.some((b) => b.kind === "Text" && /[\n\r]/.test(b.text))) throw "文本块不允许含换行";
+    const old = state.noteBlocks.get(todoId) ?? [];
+    const saved: MockNoteBlock[] = input.map((b) => {
+      const prev = old.find((x) => x.id === b.id);
+      return {
+        id: b.id > 0 ? b.id : ++state.noteBlockSeq,
+        kind: b.kind,
+        text: b.text,
+        image_path: b.kind === "Image" ? (prev?.image_path ?? MOCK_NOTE_IMAGE) : null,
+      };
+    });
+    state.noteBlocks.set(todoId, saved);
+    recomputeHasNote(todoId);
+    return saved;
+  },
+  note_paste_image: (args) => {
+    const todoId = Number(args.todoId);
+    const blockId = Number(args.blockId);
+    const list = state.noteBlocks.get(todoId) ?? [];
+    const idx = list.findIndex((b) => b.id === blockId);
+    if (idx < 0) throw `详情块不存在：${blockId}`;
+    list[idx].text = String(args.before ?? "");
+    list.splice(
+      idx + 1,
+      0,
+      { id: ++state.noteBlockSeq, kind: "Image", text: "", image_path: MOCK_NOTE_IMAGE },
+      {
+        id: ++state.noteBlockSeq,
+        kind: "Text",
+        text: String(args.after ?? ""),
+        image_path: null,
+      },
+    );
+    state.noteBlocks.set(todoId, list);
+    recomputeHasNote(todoId);
+    return { status: "image", blocks: list };
+  },
+  note_reorder: (args) => {
+    const todoId = Number(args.todoId);
+    const ids = (args.ids ?? []) as number[];
+    const list = state.noteBlocks.get(todoId) ?? [];
+    const byId = new Map(list.map((b) => [b.id, b]));
+    const reordered = ids.map((id) => byId.get(id)).filter((b): b is MockNoteBlock => b != null);
+    if (reordered.length !== list.length) throw "重排 id 集合不合法：详情块集";
+    state.noteBlocks.set(todoId, reordered);
     return null;
   },
+  note_open_image: () => null,
   todo_archive_list: () =>
     state.todos
       .filter((t) => t.done)
@@ -214,6 +304,7 @@ const handlers: Record<string, CommandHandler> = {
     const idx = state.todos.findIndex((x) => x.id === id);
     if (idx < 0) throw `待办条目不存在：${id}`;
     state.todos.splice(idx, 1);
+    state.noteBlocks.delete(id); // PL027：连带清块（镜像 Rust 连带删除）
     return null;
   },
   // 重排（PL013）：ids = 未完成条目目标全量序——校验语义对齐 Rust（长度/幽灵/重复）

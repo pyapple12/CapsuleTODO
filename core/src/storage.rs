@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
 use crate::bubble::BubbleItem;
-use crate::todo::TodoItem;
+use crate::todo::{NoteBlock, NoteBlockKind, TodoItem};
 
 /// 气泡新增结果（PL015.5 去重裁决）：重复文本拒入库不是错误——手动捕获据此切换
 /// "重复捕获，无效！"占字态，热键路径据此静默；Added 携带回填 id 的新条目
@@ -80,9 +80,10 @@ fn fnv1a_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-/// 同 stamp 已存在的气泡图片文件夹最大序号（PL025；无则 0）
-fn max_bubble_seq(images_dir: &Path, stamp: &str) -> u32 {
-    let prefix = format!("bubble_{stamp}_");
+/// 同 stamp 已存在的图片文件夹最大序号（PL027 参数化：`prefix` 由调用域给——
+/// 气泡传 `"bubble"`、详情传 `"note"`；无则 0）
+pub(crate) fn max_seq(images_dir: &Path, prefix: &str, stamp: &str) -> u32 {
+    let prefix = format!("{prefix}_{stamp}_");
     let mut max_n = 0u32;
     if let Ok(entries) = std::fs::read_dir(images_dir) {
         for entry in entries.flatten() {
@@ -98,9 +99,12 @@ fn max_bubble_seq(images_dir: &Path, stamp: &str) -> u32 {
     max_n
 }
 
-/// 下一个气泡图片文件夹名 `bubble_{stamp}_{n}`（PL025）：n = 同 stamp 最大序号 + 1
-fn next_bubble_folder(images_dir: &Path, stamp: &str) -> String {
-    format!("bubble_{stamp}_{}", max_bubble_seq(images_dir, stamp) + 1)
+/// 下一个图片文件夹名 `{prefix}_{stamp}_{n}`（PL027 参数化）：n = 同 stamp 最大序号 + 1
+pub(crate) fn next_seq_folder(images_dir: &Path, prefix: &str, stamp: &str) -> String {
+    format!(
+        "{prefix}_{stamp}_{}",
+        max_seq(images_dir, prefix, stamp) + 1
+    )
 }
 
 /// 净化文件名（PL025 文件图内层名）：取末段 + 替换 Windows 非法字符；空则回退 `image`
@@ -195,6 +199,15 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS whiteboard (
                 id      INTEGER PRIMARY KEY CHECK (id = 1),
                 content TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS note_blocks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                todo_id    INTEGER NOT NULL,
+                sort_order INTEGER NOT NULL,
+                kind       TEXT NOT NULL DEFAULT 'text',
+                text       TEXT NOT NULL DEFAULT '',
+                image_hash TEXT,
+                image_file TEXT
             );",
         )?;
         self.migrate()?;
@@ -213,10 +226,11 @@ impl Storage {
         Ok(cols)
     }
 
-    /// PL010 数据迁移：todos 补 created_at/done_at/note 三列（幂等——先探列再 ALTER）。
-    /// 存量回填语义：created_at/done_at = NULL（不模拟历史时间，龄期裁决对 NULL 恒无提醒）；
-    /// note = ''（自由文本缺省）。新库建表后同样走本函数补齐（建表语句保持 V0.1.1 原样，
-    /// 让"旧 schema → 迁移"路径与新库路径汇合同一份代码）
+    /// PL010 数据迁移：todos 补 created_at/done_at 两列（幂等——先探列再 ALTER；
+    /// **PL027 起 note 列不再新建**：其语义已由 note_blocks 块模型取代，见
+    /// `migrate_note_to_blocks` + `drop_note_column`）。存量回填语义：created_at/done_at
+    /// = NULL（不模拟历史时间，龄期裁决对 NULL 恒无提醒）。新库建表后同样走本函数补齐
+    /// （建表语句保持 V0.1.1 原样，让"旧 schema → 迁移"路径与新库路径汇合同一份代码）
     fn migrate(&self) -> Result<(), StorageError> {
         let existing = self.column_set("todos")?;
         if !existing.contains("created_at") {
@@ -227,15 +241,11 @@ impl Storage {
             self.conn
                 .execute("ALTER TABLE todos ADD COLUMN done_at INTEGER", [])?;
         }
-        if !existing.contains("note") {
-            self.conn.execute(
-                "ALTER TABLE todos ADD COLUMN note TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
         self.migrate_sort_order()?;
         self.migrate_bubble_kind()?;
         self.migrate_bubble_image_file()?;
+        self.migrate_note_to_blocks()?;
+        self.drop_note_column()?;
         Ok(())
     }
 
@@ -331,7 +341,7 @@ impl Storage {
             )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
-        let base = max_bubble_seq(images_dir, stamp) + 1;
+        let base = max_seq(images_dir, "bubble", stamp) + 1;
         for (offset, (id, blob)) in rows.into_iter().enumerate() {
             let seq = base + offset as u32;
             let folder = format!("bubble_{stamp}_{seq}");
@@ -358,6 +368,52 @@ impl Storage {
         Ok(())
     }
 
+    /// PL027 数据迁移：`todos.note`（单列纯文本）→ `note_blocks` 文本块（**一段一行一块**）。
+    /// 存量 note 按 `\n` 拆成多个文本块（`\r` 一并剥除），空 note 建一个空文本块
+    /// （不变量：至少一个文本块）。幂等：该 todo 已有块则跳过；无 note 列（新库/已迁移）
+    /// 直接跳过。须在 `drop_note_column` 之前调用
+    pub fn migrate_note_to_blocks(&self) -> Result<(), StorageError> {
+        if !self.column_set("todos")?.contains("note") {
+            return Ok(());
+        }
+        let rows: Vec<(i64, String)> = self
+            .conn
+            .prepare("SELECT id, note FROM todos")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (todo_id, note) in rows {
+            let existing: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1",
+                [todo_id],
+                |row| row.get(0),
+            )?;
+            if existing > 0 {
+                continue;
+            }
+            let lines: Vec<String> = note
+                .split('\n')
+                .map(|line| line.trim_end_matches('\r').to_string())
+                .collect();
+            for (i, line) in lines.iter().enumerate() {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', ?3)",
+                    rusqlite::params![todo_id, i as i64, line],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// PL027 退役 note 列（迁移后调用；列存在才删，幂等）
+    pub fn drop_note_column(&self) -> Result<(), StorageError> {
+        if self.column_set("todos")?.contains("note") {
+            self.conn
+                .execute("ALTER TABLE todos DROP COLUMN note", [])?;
+        }
+        Ok(())
+    }
+
     /// 新增待办（文本须先经 todo::validate_text 业务校验，且调用方须传 **trim 后**
     /// 文本——trim 执行点在命令层，直调本方法绕过命令层即失守此契约，FIX009.7
     /// 对齐 add_bubble 同款声明），返回含回填 id 的条目；
@@ -367,8 +423,8 @@ impl Storage {
     pub fn add(&self, text: &str) -> Result<TodoItem, StorageError> {
         let now = (self.now)();
         self.conn.execute(
-            "INSERT INTO todos(text, done, created_at, note, sort_order)
-             VALUES (?1, 0, ?2, '', (
+            "INSERT INTO todos(text, done, created_at, sort_order)
+             VALUES (?1, 0, ?2, (
                  SELECT COALESCE(MIN(sort_order), 0) - 1 FROM todos WHERE done = 0
              ))",
             rusqlite::params![text, now],
@@ -379,7 +435,6 @@ impl Storage {
             done: false,
             created_at: Some(now),
             done_at: None,
-            note: String::new(),
             has_note: false,
         })
     }
@@ -414,38 +469,31 @@ impl Storage {
         self.get(id)
     }
 
-    /// 写笔记（全文覆盖）；零行返回 NotFound
-    pub fn set_note(&self, id: i64, note: &str) -> Result<(), StorageError> {
-        let changed = self.conn.execute(
-            "UPDATE todos SET note = ?2 WHERE id = ?1",
-            rusqlite::params![id, note],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id));
-        }
-        Ok(())
-    }
-
-    /// 行映射（get/list 共用；NULL 时刻映射 Option::None；has_note 由此单点派生，
-    /// toggle/rename 经 get(id) 自动覆盖——PL023）
+    /// 行映射（get/list 共用；NULL 时刻映射 Option::None；`has_note` 由 SELECT 里的
+    /// EXISTS 子查询单点派生——PL027 改口径为「**任一块非空**」：存在图块 或 存在
+    /// trim 非空文本块；toggle/rename 经 get(id) 自动覆盖）
     fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoItem> {
-        let note: String = row.get(5)?;
         Ok(TodoItem {
             id: row.get(0)?,
             text: row.get(1)?,
             done: row.get::<_, i64>(2)? != 0,
             created_at: row.get(3)?,
             done_at: row.get(4)?,
-            has_note: !note.trim().is_empty(),
-            note,
+            has_note: row.get::<_, i64>(5)? != 0,
         })
     }
+
+    /// 条目查询列清单（get/list/list_done 三处共用；第 6 列 = has_note 的 EXISTS 子查询）。
+    /// 仅内部字面量拼接（无外部注入面，沿 column_set 的 format! 先例）
+    const TODO_COLUMNS: &str = "id, text, done, created_at, done_at,
+         EXISTS(SELECT 1 FROM note_blocks nb WHERE nb.todo_id = todos.id
+                AND (nb.kind = 'image' OR TRIM(nb.text) <> ''))";
 
     /// 读取单条；不存在返回 NotFound
     pub fn get(&self, id: i64) -> Result<TodoItem, StorageError> {
         self.conn
             .query_row(
-                "SELECT id, text, done, created_at, done_at, note FROM todos WHERE id = ?1",
+                &format!("SELECT {} FROM todos WHERE id = ?1", Self::TODO_COLUMNS),
                 rusqlite::params![id],
                 Self::row_to_item,
             )
@@ -455,8 +503,13 @@ impl Storage {
             })
     }
 
-    /// 删除条目；零行删除返回 NotFound
+    /// 删除条目；零行删除返回 NotFound。PL027：**连带删除该条目的详情块行**（其图片
+    /// 文件由调用方经 `sweep_orphan_note_images` 释放——此时引用已归零）
     pub fn remove(&self, id: i64) -> Result<(), StorageError> {
+        self.conn.execute(
+            "DELETE FROM note_blocks WHERE todo_id = ?1",
+            rusqlite::params![id],
+        )?;
         let changed = self
             .conn
             .execute("DELETE FROM todos WHERE id = ?1", rusqlite::params![id])?;
@@ -471,10 +524,11 @@ impl Storage {
     /// 非 NULL 同值按 id 次级排序——SQLite ASC 中 NULL 恒排最前，迁移满射回填后无
     /// NULL，此处为防御，FIX011.3 措辞精确化）
     pub fn list(&self) -> Result<Vec<TodoItem>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, text, done, created_at, done_at, note FROM todos
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM todos
              ORDER BY done ASC, sort_order ASC, id ASC",
-        )?;
+            Self::TODO_COLUMNS
+        ))?;
         let rows = stmt.query_map([], Self::row_to_item)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -482,11 +536,12 @@ impl Storage {
     /// 归档视图：已完成条目按 done_at 倒序（最新完成的在最上，V0.015 用户定案）；
     /// done_at 相同（同秒完成/迁移 NULL 行）按 id 倒序保持稳定序
     pub fn list_done(&self) -> Result<Vec<TodoItem>, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, text, done, created_at, done_at, note FROM todos
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM todos
              WHERE done = 1
              ORDER BY done_at DESC, id DESC",
-        )?;
+            Self::TODO_COLUMNS
+        ))?;
         let rows = stmt.query_map([], Self::row_to_item)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -496,12 +551,335 @@ impl Storage {
     /// 先例）；未完成条目（done = 0）不在谓词内。cutoff 由调用方按业务常量
     /// todo::ARCHIVE_RETENTION_MS 计算——存储层不持保留期策略。
     pub fn purge_expired_done(&self, cutoff: i64) -> Result<usize, StorageError> {
+        // PL027：连带删除待回收条目的详情块行（先删块再删条目——子查询须在条目还在时求值）；
+        // 其图片文件由调用方经 sweep_orphan_note_images 释放（此时引用已归零）
+        self.conn.execute(
+            "DELETE FROM note_blocks WHERE todo_id IN (
+                 SELECT id FROM todos WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1
+             )",
+            rusqlite::params![cutoff],
+        )?;
         let changed = self.conn.execute(
             "DELETE FROM todos
              WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1",
             rusqlite::params![cutoff],
         )?;
         Ok(changed)
+    }
+
+    // —— PL027 详情块（note_blocks：一段一行一块 + 图块混排，域内引用计数）——
+
+    /// 详情块行映射（读路径共用；kind 未知值宽容回落 Text，沿 row_to_bubble 先例）
+    fn row_to_note_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteBlock> {
+        Ok(NoteBlock {
+            id: row.get(0)?,
+            kind: match row.get::<_, String>(1)?.as_str() {
+                "image" => NoteBlockKind::Image,
+                _ => NoteBlockKind::Text,
+            },
+            text: row.get(2)?,
+            image_file: row.get(3)?,
+        })
+    }
+
+    /// 读该条目的详情块（sort_order 升序 = 展示序，id 兜底）
+    pub fn note_blocks(&self, todo_id: i64) -> Result<Vec<NoteBlock>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, text, image_file FROM note_blocks
+             WHERE todo_id = ?1 ORDER BY sort_order ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([todo_id], Self::row_to_note_block)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 读单个块；不存在 NotFound（开原图取数源，PL027）
+    pub fn get_note_block(&self, id: i64) -> Result<NoteBlock, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT id, kind, text, image_file FROM note_blocks WHERE id = ?1",
+                [id],
+                Self::row_to_note_block,
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => StorageError::NotFound(id),
+                other => StorageError::Sqlite(other),
+            })
+    }
+
+    /// 该条目全部图块的图片相对路径（释放/迁移用）
+    fn note_image_paths(&self, todo_id: i64) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT image_file FROM note_blocks WHERE todo_id = ?1 AND image_file IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([todo_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 释放详情图引用（PL027 域内引用计数）：该文件**已无任何块引用**才递归删其
+    /// `note_{…}` 文件夹；删除失败 best-effort 落日志不阻断（文件残留代价小于阻断用户操作）
+    fn release_note_image(&self, images_dir: &Path, rel: &str) -> Result<(), StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM note_blocks WHERE image_file = ?1",
+            [rel],
+            |row| row.get(0),
+        )?;
+        if count > 0 {
+            return Ok(());
+        }
+        let dir = images_dir.join(folder_of(rel));
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            eprintln!("详情图文件夹删除失败（best-effort 不阻断）：{err}");
+        }
+        Ok(())
+    }
+
+    /// 孤儿清扫式引用释放（PL027；供删条目 / 归档回收后调用）：删除 `images/` 下所有
+    /// **已无块引用**的 `note_*` 文件夹（与精确释放等价，且顺带清理崩溃遗留孤儿文件）；
+    /// **只扫 `note_` 前缀**（气泡 `bubble_*` 域一行不碰）。返回清理的文件夹数
+    pub fn sweep_orphan_note_images(&self, images_dir: &Path) -> Result<usize, StorageError> {
+        let entries = match std::fs::read_dir(images_dir) {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("详情图清扫跳过（目录不可读）：{err}");
+                return Ok(0);
+            }
+        };
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with("note_") || !entry.path().is_dir() {
+                continue;
+            }
+            let referenced: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE image_file LIKE ?1",
+                [format!("{name}/%")],
+                |row| row.get(0),
+            )?;
+            if referenced > 0 {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_dir_all(entry.path()) {
+                eprintln!("详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}");
+                continue;
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
+    /// 全量覆盖写块（PL027）：事务内**按 id 差分 upsert**（id > 0 = 更新、id = 0 = 新增），
+    /// 并删除清单外的旧块（图块 id 恒 > 0——新图块只由粘贴命令产生）。形态不变量由调用方
+    /// 经 `todo::validate_note_blocks` 把关。**被移除图块的文件引用一并精确释放**（块集
+    /// 变更即引用集变更的固有语义）。返回落库后的新块列表（含回填 id）
+    pub fn set_note_blocks(
+        &self,
+        images_dir: &Path,
+        todo_id: i64,
+        blocks: &[NoteBlock],
+    ) -> Result<Vec<NoteBlock>, StorageError> {
+        let old_paths = self.note_image_paths(todo_id)?;
+        let keep_ids: Vec<i64> = blocks.iter().map(|b| b.id).filter(|id| *id > 0).collect();
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            let existing: Vec<i64> = self
+                .conn
+                .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1")?
+                .query_map([todo_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for id in existing {
+                if !keep_ids.contains(&id) {
+                    self.conn
+                        .execute("DELETE FROM note_blocks WHERE id = ?1", [id])?;
+                }
+            }
+            for (i, block) in blocks.iter().enumerate() {
+                match block.kind {
+                    NoteBlockKind::Text => {
+                        let text = block.text.as_str();
+                        if block.id > 0 {
+                            let changed = self.conn.execute(
+                                "UPDATE note_blocks SET sort_order = ?2, kind = 'text', text = ?3,
+                                     image_hash = NULL, image_file = NULL
+                                 WHERE id = ?1 AND todo_id = ?4",
+                                rusqlite::params![block.id, i as i64, text, todo_id],
+                            )?;
+                            if changed == 0 {
+                                return Err(StorageError::NotFound(block.id));
+                            }
+                        } else {
+                            self.conn.execute(
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                                 VALUES (?1, ?2, 'text', ?3)",
+                                rusqlite::params![todo_id, i as i64, text],
+                            )?;
+                        }
+                    }
+                    NoteBlockKind::Image => {
+                        // 图块只可能来自粘贴命令（落盘 + hash 已就位）——此处只改序
+                        let changed = self.conn.execute(
+                            "UPDATE note_blocks SET sort_order = ?2, kind = 'image'
+                             WHERE id = ?1 AND todo_id = ?3",
+                            rusqlite::params![block.id, i as i64, todo_id],
+                        )?;
+                        if changed == 0 {
+                            return Err(StorageError::NotFound(block.id));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("详情块写入事务回滚失败：{rollback}");
+                }
+                return Err(err);
+            }
+        }
+        // 释放不再被引用的图文件（旧路径 − **落库后仍存的**路径；引用数归零才删）。
+        // 用落库后查询而非入参推断：入参只带 {id, kind, text}，图块文件信息在库内
+        let surviving = self.note_image_paths(todo_id)?;
+        for rel in old_paths {
+            if !surviving.contains(&rel) {
+                self.release_note_image(images_dir, &rel)?;
+            }
+        }
+        self.note_blocks(todo_id)
+    }
+
+    /// 粘贴插图（PL027）：图片字节 → **同 hash 复用同一文件**（域内引用计数，命中不写盘）
+    /// 或新落盘 `note_{stamp}_{n}/…`（内层名：截图 `snap_{stamp}_{n}.png` / 文件图净化原名；
+    /// 大图预览阈值同气泡）→ 事务内把 `block_id` 的文本按 `before` / `after` 切成两块 +
+    /// 中间插图块（保持 sort_order 连续）→ 返回新块列表。调用方须先 `validate_image_bytes`
+    /// 与 `validate_note_blocks`；`before`/`after` 由前端按光标/选区本地切好（免 UTF-16 换算）
+    #[allow(clippy::too_many_arguments)] // 粘贴操作的完整输入集（切分点/字节/来源名/时间戳），
+                                         // 打包成结构体只会把参数搬到别处、无实益
+    pub fn add_note_image_block(
+        &self,
+        images_dir: &Path,
+        todo_id: i64,
+        block_id: i64,
+        before: &str,
+        after: &str,
+        bytes: &[u8],
+        orig_name: Option<&str>,
+        stamp: &str,
+    ) -> Result<Vec<NoteBlock>, StorageError> {
+        let hash = fnv1a_hex(bytes);
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT image_file FROM note_blocks
+                 WHERE image_hash = ?1 AND image_file IS NOT NULL LIMIT 1",
+                [&hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let rel = match existing {
+            Some(rel) => rel,
+            None => {
+                let folder = next_seq_folder(images_dir, "note", stamp);
+                let seq = folder.rsplit('_').next().unwrap_or("1");
+                let inner = match orig_name {
+                    Some(name) => sanitize_file_name(name),
+                    None => format!("snap_{stamp}_{seq}.png"),
+                };
+                let dir = images_dir.join(&folder);
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join(&inner), bytes)?;
+                if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
+                    if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
+                        eprintln!("详情图预览写入失败（降级用原图）：{err}");
+                    }
+                }
+                format!("{folder}/{inner}")
+            }
+        };
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            let order: i64 = self.conn.query_row(
+                "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                rusqlite::params![block_id, todo_id],
+                |row| row.get(0),
+            )?;
+            // 该块之后的块后移 2（腾出图块与 after 文本块的位置）
+            self.conn.execute(
+                "UPDATE note_blocks SET sort_order = sort_order + 2
+                 WHERE todo_id = ?1 AND sort_order > ?2",
+                rusqlite::params![todo_id, order],
+            )?;
+            // 原块 = before 文本块（保持原 sort_order）
+            self.conn.execute(
+                "UPDATE note_blocks SET text = ?2, kind = 'text' WHERE id = ?1",
+                rusqlite::params![block_id, before],
+            )?;
+            self.conn.execute(
+                "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                 VALUES (?1, ?2, 'image', ?3, ?4)",
+                rusqlite::params![todo_id, order + 1, hash, rel],
+            )?;
+            self.conn.execute(
+                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                 VALUES (?1, ?2, 'text', ?3)",
+                rusqlite::params![todo_id, order + 2, after],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("插图事务回滚失败：{rollback}");
+                }
+                return Err(err);
+            }
+        }
+        self.note_blocks(todo_id)
+    }
+
+    /// 删除单个详情块（PL027 图块删除/合并残留）：连带释放该图块文件引用；零行 NotFound
+    pub fn remove_note_block(&self, images_dir: &Path, id: i64) -> Result<(), StorageError> {
+        let rel: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT image_file FROM note_blocks WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let changed = self
+            .conn
+            .execute("DELETE FROM note_blocks WHERE id = ?1", [id])?;
+        if changed == 0 {
+            return Err(StorageError::NotFound(id));
+        }
+        if let Some(rel) = rel {
+            self.release_note_image(images_dir, &rel)?;
+        }
+        Ok(())
+    }
+
+    /// 详情块重排（图块拖拽落点提交）：id 集合须与该 todo 现存块完全一致（长度/幽灵/重复），
+    /// 通过则按序 UPDATE sort_order（沿 reorder_todos 先例）
+    pub fn reorder_note_blocks(&self, todo_id: i64, ids: &[i64]) -> Result<(), StorageError> {
+        let mut existing: Vec<i64> = self
+            .conn
+            .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1")?
+            .query_map([todo_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        existing.sort_unstable();
+        Self::validate_reorder_ids(ids, &existing, "详情块集")?;
+        for (i, id) in ids.iter().enumerate() {
+            self.conn.execute(
+                "UPDATE note_blocks SET sort_order = ?2 WHERE id = ?1",
+                rusqlite::params![id, i as i64],
+            )?;
+        }
+        Ok(())
     }
 
     /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）。
@@ -571,7 +949,7 @@ impl Storage {
         } else {
             "screenshot"
         };
-        let folder = next_bubble_folder(images_dir, stamp);
+        let folder = next_seq_folder(images_dir, "bubble", stamp);
         let seq = folder.rsplit('_').next().unwrap_or("1");
         let inner = match orig_name {
             Some(name) => sanitize_file_name(name),
@@ -1142,14 +1520,84 @@ mod tests {
     fn migration_adds_columns_and_backfills() {
         let st = legacy_storage();
         st.init().expect("迁移必须成功");
-        // 迁移后新字段可读写：存量行 created_at/done_at = NULL（不模拟时间）、note = ''
+        // 迁移后新字段可读写：存量行 created_at/done_at = NULL（不模拟时间）；
+        // PL027：无 note 列的旧库无笔记可迁（note 列不再新建），块集为空
         let items = st.list().expect("读取必须成功");
         assert_eq!(items.len(), 2);
         for it in &items {
             assert_eq!(it.created_at, None, "存量行 created_at 必须为 NULL");
             assert_eq!(it.done_at, None, "存量行 done_at 必须为 NULL");
-            assert_eq!(it.note, "", "存量行 note 必须回填空串");
+            assert!(!it.has_note, "无块 → has_note 不亮");
+            assert!(st.note_blocks(it.id).expect("读块必须成功").is_empty());
         }
+    }
+
+    /// 造 PL010 期库（todos 含 note 列、无 note_blocks）——测 PL027 笔记→块迁移
+    fn pl010_storage_with_notes() -> Storage {
+        let conn = Connection::open_in_memory().expect("内存库必须可开");
+        conn.execute_batch(
+            "CREATE TABLE todos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                done_at INTEGER,
+                note TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO todos(text, done, created_at, note) VALUES
+                ('单行', 0, 1, '只有一行'),
+                ('多行', 0, 2, '第一行
+第二行'),
+                ('空笔记', 0, 3, '');",
+        )
+        .expect("造 PL010 期库必须成功");
+        Storage {
+            conn,
+            now: Arc::new(system_now),
+        }
+    }
+
+    #[test]
+    fn migration_splits_note_into_blocks_and_drops_column() {
+        // PL027：存量 note（单行/多行/空）→ 文本块（一段一行一块）；迁移后 note 列退役
+        let st = pl010_storage_with_notes();
+        st.init().expect("迁移必须成功");
+        let items = st.list().expect("读取必须成功");
+        let id_of = |text: &str| -> i64 {
+            items
+                .iter()
+                .find(|i| i.text == text)
+                .map(|i| i.id)
+                .expect("存量行必须在")
+        };
+        let single = st.note_blocks(id_of("单行")).expect("读块必须成功");
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].text, "只有一行");
+        let multi = st.note_blocks(id_of("多行")).expect("读块必须成功");
+        assert_eq!(multi.len(), 2, "多行按换行拆成两块");
+        assert_eq!(multi[0].text, "第一行");
+        assert_eq!(multi[1].text, "第二行");
+        let empty = st.note_blocks(id_of("空笔记")).expect("读块必须成功");
+        assert_eq!(
+            empty.len(),
+            1,
+            "空 note → 一个空文本块（不变量：至少一个文本块）"
+        );
+        assert_eq!(empty[0].text, "");
+        assert!(st.get(id_of("单行")).expect("读必须成功").has_note);
+        assert!(!st.get(id_of("空笔记")).expect("读必须成功").has_note);
+        // 幂等：二次 init 不重复建块
+        st.init().expect("二次迁移必须幂等");
+        assert_eq!(
+            st.note_blocks(id_of("多行")).expect("读块必须成功").len(),
+            2
+        );
+        // note 列已退役（再读该列必然报错）
+        assert!(st
+            .conn
+            .query_row("SELECT note FROM todos LIMIT 1", [], |row| row
+                .get::<_, String>(0))
+            .is_err());
     }
 
     #[test]
@@ -1161,14 +1609,15 @@ mod tests {
     }
 
     #[test]
-    fn new_row_gets_created_at_and_empty_note() {
-        // 注入固定时间源：add 落 created_at = now
+    fn new_row_gets_created_at_and_no_blocks() {
+        // 注入固定时间源：add 落 created_at = now（PL027：新行无块、has_note 不亮）
         let fixed = 1_700_000_000_000i64;
         let st = Storage::open_in_memory_with_now(Arc::new(move || fixed)).expect("库必须可开");
         let item = st.add("新条目").expect("写入必须成功");
         assert_eq!(item.created_at, Some(fixed));
         assert_eq!(item.done_at, None);
-        assert_eq!(item.note, "");
+        assert!(!item.has_note);
+        assert!(st.note_blocks(item.id).expect("读块必须成功").is_empty());
         let read = st.get(item.id).expect("读取必须成功");
         assert_eq!(read.created_at, Some(fixed));
     }
@@ -1376,7 +1825,7 @@ mod tests {
         let item = st.add("旧名").expect("写入必须成功");
         let renamed = st.rename(item.id, "新名").expect("改名必须成功");
         assert_eq!(renamed.text, "新名");
-        assert_eq!(renamed.note, "", "改名不触碰笔记");
+        assert!(!renamed.has_note, "改名不触碰详情");
         assert!(matches!(
             st.rename(99, "x"),
             Err(StorageError::NotFound(99))
@@ -1384,34 +1833,44 @@ mod tests {
     }
 
     #[test]
-    fn set_note_roundtrip() {
+    fn has_note_reflects_blocks() {
+        // PL027 口径：**任一块非空**——文本块 trim 非空 或 存在图块（纯图条目也亮）
         let st = storage();
-        let item = st.add("任务").expect("写入必须成功");
-        st.set_note(item.id, "第一版笔记\n第二行")
-            .expect("写笔记必须成功");
-        let read = st.get(item.id).expect("读取必须成功");
-        assert_eq!(read.note, "第一版笔记\n第二行");
-        st.set_note(item.id, "").expect("清空笔记必须成功");
-        assert_eq!(st.get(item.id).expect("读取必须成功").note, "");
-        assert!(matches!(
-            st.set_note(99, "x"),
-            Err(StorageError::NotFound(99))
-        ));
-    }
-
-    #[test]
-    fn has_note_derives_from_note_trim() {
-        // PL023.1："有笔记"裁决字段（trim 判空单源）——非空白亮、纯空白与空串不亮
-        //（validate_note 允许空白入库，红点语义只认 trim 后非空，PL023 定案）
-        let st = storage();
+        let dir = temp_images_dir();
         let item = st.add("任务").expect("写入必须成功");
         assert!(!st.get(item.id).expect("读取必须成功").has_note);
-        st.set_note(item.id, "有内容").expect("写笔记必须成功");
-        assert!(st.get(item.id).expect("读取必须成功").has_note);
-        st.set_note(item.id, "   ").expect("写纯空白必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "有内容")])
+            .expect("写块必须成功");
+        assert!(
+            st.get(item.id).expect("读取必须成功").has_note,
+            "非空文本块 → 亮"
+        );
+        st.set_note_blocks(&dir, item.id, &[nb_text(saved[0].id, "   ")])
+            .expect("写纯空白必须成功");
+        assert!(
+            !st.get(item.id).expect("读取必须成功").has_note,
+            "纯空白文本块 → 不亮"
+        );
+        st.set_note_blocks(&dir, item.id, &[nb_text(saved[0].id, "")])
+            .expect("清空必须成功");
         assert!(!st.get(item.id).expect("读取必须成功").has_note);
-        st.set_note(item.id, "").expect("清空笔记必须成功");
-        assert!(!st.get(item.id).expect("读取必须成功").has_note);
+        // 纯图条目也亮（用户定案）
+        st.add_note_image_block(
+            &dir,
+            item.id,
+            saved[0].id,
+            "",
+            "",
+            &png_bytes(),
+            None,
+            "261018000000",
+        )
+        .expect("插图必须成功");
+        assert!(
+            st.get(item.id).expect("读取必须成功").has_note,
+            "纯图条目 → 亮"
+        );
     }
 
     // ===== PL013.1 排序持久化（TDD） =====
@@ -1594,5 +2053,333 @@ mod tests {
             .map(|it| it.id)
             .collect();
         assert_eq!(ids, vec![c.id, b.id, a.id], "新行落排头");
+    }
+
+    // ===== PL027 详情块（note_blocks：一段一行一块 + 图块混排 + 域内引用计数）TDD =====
+
+    /// 造块辅助（id = 0 = 新块）
+    fn nb_text(id: i64, text: &str) -> NoteBlock {
+        NoteBlock {
+            id,
+            kind: NoteBlockKind::Text,
+            text: text.to_string(),
+            image_file: None,
+        }
+    }
+
+    #[test]
+    fn note_blocks_table_ready_and_empty_by_default() {
+        let st = storage();
+        let item = st.add("任务").expect("写入必须成功");
+        assert!(st.note_blocks(item.id).expect("读块必须成功").is_empty());
+        assert!(!item.has_note, "新条目无详情内容");
+    }
+
+    #[test]
+    fn set_note_blocks_upserts_and_keeps_ids() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "第一行"), nb_text(0, "第二行")])
+            .expect("写块必须成功");
+        assert_eq!(saved.len(), 2);
+        assert!(saved[0].id > 0, "回填 id");
+        // 差分 upsert：改首块 + 追加一块 → 既有块 id 稳定（前端不重挂失焦点）
+        let first_id = saved[0].id;
+        let updated = st
+            .set_note_blocks(
+                &dir,
+                item.id,
+                &[
+                    nb_text(first_id, "改过的"),
+                    nb_text(saved[1].id, "第二行"),
+                    nb_text(0, "第三行"),
+                ],
+            )
+            .expect("再写必须成功");
+        assert_eq!(updated.len(), 3);
+        assert_eq!(updated[0].id, first_id, "既有块 id 稳定");
+        assert_eq!(updated[0].text, "改过的");
+        assert_eq!(updated[2].text, "第三行");
+    }
+
+    #[test]
+    fn paste_image_reuses_same_file_for_same_bytes() {
+        // 引用计数核心断言：同一张图两次插入 = 一份文件、两个块引用（不存两份）
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "文字",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        assert_eq!(after.len(), 3, "块变 3 个");
+        assert_eq!(after[1].kind, NoteBlockKind::Image);
+        let rel = after[1].image_file.clone().expect("图块必有文件");
+        // 第二次插入同字节（插到另一块）
+        let again = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                after[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000001",
+            )
+            .expect("再插必须成功");
+        let images: Vec<&NoteBlock> = again
+            .iter()
+            .filter(|b| b.kind == NoteBlockKind::Image)
+            .collect();
+        assert_eq!(images.len(), 2, "两个图块");
+        assert_eq!(images[0].image_file.as_deref(), Some(rel.as_str()));
+        assert_eq!(
+            images[1].image_file.as_deref(),
+            Some(rel.as_str()),
+            "同内容复用同一文件（不存两份）"
+        );
+        let folders = std::fs::read_dir(&dir)
+            .expect("目录可读")
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("note_"))
+            .count();
+        assert_eq!(folders, 1, "盘上只落一份文件");
+    }
+
+    #[test]
+    fn paste_image_splits_block_into_three() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "前半后半")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "前半",
+                "后半",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let texts: Vec<&str> = after.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["前半", "", "后半"],
+            "光标处切分 before/图/after"
+        );
+    }
+
+    #[test]
+    fn note_image_released_only_at_zero_reference() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let first = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let first_img_id = first[1].id;
+        let rel = first[1].image_file.clone().expect("有文件");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        assert!(folder.is_dir(), "落盘文件夹在");
+        // 第二个引用（同文件）
+        let two = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                first[2].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("再插必须成功");
+        assert_eq!(
+            two.iter()
+                .filter(|b| b.kind == NoteBlockKind::Image)
+                .count(),
+            2
+        );
+        // 删一个图块：文件仍在（还有引用）
+        st.remove_note_block(&dir, first_img_id)
+            .expect("删块必须成功");
+        assert!(folder.is_dir(), "仍有引用 → 文件保留");
+        // 删最后一个：文件夹消失
+        let last = st
+            .note_blocks(item.id)
+            .expect("读块必须成功")
+            .into_iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("还剩一个图块");
+        st.remove_note_block(&dir, last.id)
+            .expect("删最后一块必须成功");
+        assert!(!folder.is_dir(), "引用归零 → 文件夹删除");
+    }
+
+    #[test]
+    fn remove_todo_sweeps_orphan_note_images() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let rel = with_img[1].image_file.clone().expect("有文件");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        st.remove(item.id).expect("删条目必须成功");
+        assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 1);
+        assert!(!folder.is_dir(), "删条目后图片文件夹消失");
+    }
+
+    #[test]
+    fn purge_expired_sweeps_note_images() {
+        let (st, clock) = stepped_storage();
+        let dir = temp_images_dir();
+        let t0 = clock.load(Ordering::SeqCst);
+        let item = st.add("老条目").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let rel = with_img[1].image_file.clone().expect("有文件");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        st.toggle(item.id).expect("勾选必须成功");
+        clock.store(t0 + crate::todo::ARCHIVE_RETENTION_MS + 1, Ordering::SeqCst);
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+        assert_eq!(st.purge_expired_done(cutoff).expect("回收必须成功"), 1);
+        assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 1);
+        assert!(!folder.is_dir(), "归档回收后图片文件夹消失");
+    }
+
+    #[test]
+    fn reorder_note_blocks_roundtrip_and_mismatch() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(
+                &dir,
+                item.id,
+                &[nb_text(0, "甲"), nb_text(0, "乙"), nb_text(0, "丙")],
+            )
+            .expect("写块必须成功");
+        let ids: Vec<i64> = saved.iter().map(|b| b.id).collect();
+        st.reorder_note_blocks(item.id, &[ids[2], ids[0], ids[1]])
+            .expect("重排必须成功");
+        let texts: Vec<String> = st
+            .note_blocks(item.id)
+            .expect("读块必须成功")
+            .into_iter()
+            .map(|b| b.text)
+            .collect();
+        assert_eq!(texts, vec!["丙", "甲", "乙"]);
+        assert!(
+            st.reorder_note_blocks(item.id, &[ids[0]]).is_err(),
+            "部分集拒绝"
+        );
+        assert!(
+            st.reorder_note_blocks(item.id, &[ids[0], ids[1], 999])
+                .is_err(),
+            "幽灵 id 拒绝"
+        );
+    }
+
+    #[test]
+    fn note_preview_generated_for_large_image() {
+        // 预览阈值与气泡一致（宽 > 2000px 或 > 2MB）：2100×10 PNG → 生成 preview.png
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let big = {
+            let img = image::RgbaImage::new(2100, 10);
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("夹具编码必须成功");
+            out
+        };
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &big,
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let rel = after[1].image_file.clone().expect("有文件");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        assert!(folder.join("preview.png").is_file(), "大图生成预览");
+    }
+
+    #[test]
+    fn sweep_ignores_bubble_folders() {
+        // 域隔离红线：清扫只认 note_ 前缀，气泡 bubble_* 文件夹一行不碰
+        let st = storage();
+        let dir = temp_images_dir();
+        let bubble_dir = dir.join("bubble_261018000000_1");
+        std::fs::create_dir_all(&bubble_dir).expect("造气泡夹必须成功");
+        assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 0);
+        assert!(bubble_dir.is_dir(), "气泡文件夹不受详情清扫影响");
     }
 }

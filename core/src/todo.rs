@@ -1,6 +1,8 @@
 //! Todo 清单业务纯逻辑：DTO、文本/笔记校验、龄期裁决（禁 import tauri，业务纯逻辑约束）。
 //! PL002 起"单一事实源 = db"：存取与排序由 storage.rs（SQL）承载，本模块只剩契约与校验。
 //! PL010 扩容：created_at/done_at/note 三字段 + AgeLevel 龄期提醒裁决（时间源注入可测）。
+//! PL027 扩容：详情块模型（NoteBlockKind / NoteBlock / validate_note_blocks）——`todos.note`
+//! 单列纯文本退役，改"一段一行一块 + 图块混排"的有序块序列（不变量校验单点在此）。
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -10,6 +12,9 @@ pub const MAX_TEXT_LEN: usize = 24;
 
 /// 笔记长度上限（详情板自由文本；10K 足够防失控，可调）
 pub const MAX_NOTE_LEN: usize = 10_000;
+
+/// 详情块数上限（PL027：防失控，可调）
+pub const MAX_NOTE_BLOCKS: usize = 100;
 
 /// 龄期提醒黄字阈值：24 小时（毫秒；与实验场 V0.010 定案同源）
 pub const AGE_YELLOW_MS: i64 = 24 * 3600 * 1000;
@@ -33,6 +38,15 @@ pub enum TodoError {
     /// 笔记超出 MAX_NOTE_LEN 上限
     #[error("笔记超长（上限 {MAX_NOTE_LEN} 字符）")]
     NoteTooLong,
+    /// 详情块集为空（不变量：至少保留一个文本块）
+    #[error("详情块为空（至少保留一个文本块）")]
+    EmptyBlocks,
+    /// 文本块内含换行（一段一行：换行 = 新块）
+    #[error("文本块不允许含换行")]
+    NewlineInTextBlock,
+    /// 详情块数超出 MAX_NOTE_BLOCKS 上限
+    #[error("详情块数超限（上限 {MAX_NOTE_BLOCKS} 块）")]
+    TooManyBlocks,
 }
 
 /// 龄期提醒档位（前端据此渲染黄/红提醒行；无提醒 = None）
@@ -59,10 +73,8 @@ pub struct TodoItem {
     pub created_at: Option<i64>,
     /// 完成时刻（勾选置 now、退回清 NULL；归档板排序依据）
     pub done_at: Option<i64>,
-    /// 详情板笔记（自由文本，允许空白）
-    pub note: String,
-    /// 笔记有无裁决（trim 判空单源——"有内容"语义不散落前端，红点指示依据，PL023；
-    /// 纯空白笔记不算有内容，与清空笔记红点灭同一条规则）
+    /// 详情有无裁决（PL027 改口径：**任一块非空**——存在图块 或 存在 trim 非空文本块；
+    /// 语义单源在存储层 SQL 的 EXISTS 子查询，红点指示依据，前端禁自行判空）
     pub has_note: bool,
 }
 
@@ -78,9 +90,48 @@ pub fn validate_text(text: &str) -> Result<(), TodoError> {
     Ok(())
 }
 
-/// 笔记校验：仅长度上限（允许空白——笔记语义不同于标题）
-pub fn validate_note(note: &str) -> Result<(), TodoError> {
-    if note.chars().count() > MAX_NOTE_LEN {
+/// 详情块类型（PL027 跨进程 DTO 契约 = 前端 `types.ts` 镜像）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoteBlockKind {
+    /// 文本块（一段一行：内容不含换行）
+    Text,
+    /// 图片块（`image_file` 指向落盘相对路径）
+    Image,
+}
+
+/// 详情块（note = 有序块序列：一段一行一块，图块可插在文字之间）
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteBlock {
+    /// 块唯一标识（库内自增主键）
+    pub id: i64,
+    /// 块类型
+    pub kind: NoteBlockKind,
+    /// 文本内容（图块恒空串）
+    pub text: String,
+    /// 图片落盘相对路径（含子目录；图块专用，文本块恒 None）
+    pub image_file: Option<String>,
+}
+
+/// 详情块集校验（PL027 不变量四条）：① 块数 ≤ MAX_NOTE_BLOCKS ② 至少一个文本块
+/// ③ 文本块不含换行（`\n` / `\r`——一段一行，换行即新块）④ 文本块字符总和 ≤ MAX_NOTE_LEN。
+/// 违者严格报错（保存路径唯一把关点）
+pub fn validate_note_blocks(blocks: &[NoteBlock]) -> Result<(), TodoError> {
+    if blocks.len() > MAX_NOTE_BLOCKS {
+        return Err(TodoError::TooManyBlocks);
+    }
+    if !blocks.iter().any(|b| b.kind == NoteBlockKind::Text) {
+        return Err(TodoError::EmptyBlocks);
+    }
+    let mut total = 0usize;
+    for block in blocks {
+        if block.kind == NoteBlockKind::Text {
+            if block.text.contains('\n') || block.text.contains('\r') {
+                return Err(TodoError::NewlineInTextBlock);
+            }
+            total += block.text.chars().count();
+        }
+    }
+    if total > MAX_NOTE_LEN {
         return Err(TodoError::NoteTooLong);
     }
     Ok(())
@@ -161,19 +212,6 @@ mod tests {
         assert_eq!(age_level(Some(NOW - 100 * 3600 * 1000), NOW), AgeLevel::Red);
     }
 
-    // —— PL010.2 笔记校验 ——
-
-    #[test]
-    fn note_allows_blank_and_enforces_limit() {
-        assert!(validate_note("").is_ok());
-        assert!(validate_note("   \n 草稿 ").is_ok());
-        assert!(validate_note(&"记".repeat(MAX_NOTE_LEN)).is_ok());
-        assert!(matches!(
-            validate_note(&"记".repeat(MAX_NOTE_LEN + 1)),
-            Err(TodoError::NoteTooLong)
-        ));
-    }
-
     /// AgeLevel 序列化形态断言（serde 契约 = 前端 types.ts 镜像）
     #[test]
     fn age_level_serializes_as_plain_string() {
@@ -202,10 +240,86 @@ mod tests {
             done: false,
             created_at: None,
             done_at: None,
-            note: String::new(),
             has_note: false,
         };
         let json = serde_json::to_string(&item).expect("序列化必须成功");
         assert!(json.contains("\"has_note\":false"));
+    }
+
+    // —— PL027.4 详情块校验（TDD：先红后绿） ——
+
+    /// 造块辅助（只做形态，id 无意义）
+    fn block(kind: NoteBlockKind, text: &str) -> NoteBlock {
+        NoteBlock {
+            id: 0,
+            kind,
+            text: text.to_string(),
+            image_file: None,
+        }
+    }
+
+    #[test]
+    fn note_blocks_require_at_least_one_text_block() {
+        assert!(matches!(
+            validate_note_blocks(&[]),
+            Err(TodoError::EmptyBlocks)
+        ));
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Image, "")]),
+            Err(TodoError::EmptyBlocks)
+        ));
+        assert!(validate_note_blocks(&[block(NoteBlockKind::Text, "")]).is_ok());
+    }
+
+    #[test]
+    fn text_block_rejects_newline() {
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Text, "a\nb")]),
+            Err(TodoError::NewlineInTextBlock)
+        ));
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Text, "a\rb")]),
+            Err(TodoError::NewlineInTextBlock)
+        ));
+    }
+
+    #[test]
+    fn note_blocks_enforce_total_length() {
+        let ok = "字".repeat(MAX_NOTE_LEN);
+        assert!(validate_note_blocks(&[block(NoteBlockKind::Text, &ok)]).is_ok());
+        let too = "字".repeat(MAX_NOTE_LEN + 1);
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Text, &too)]),
+            Err(TodoError::NoteTooLong)
+        ));
+    }
+
+    #[test]
+    fn note_blocks_enforce_block_count() {
+        // 恰好 100 块过；101 块拒（边界两侧都断言）
+        let mut blocks = vec![block(NoteBlockKind::Text, "")];
+        for _ in 1..MAX_NOTE_BLOCKS {
+            blocks.push(block(NoteBlockKind::Image, ""));
+        }
+        assert_eq!(blocks.len(), MAX_NOTE_BLOCKS);
+        assert!(validate_note_blocks(&blocks).is_ok(), "恰好上限必须过");
+        blocks.push(block(NoteBlockKind::Image, ""));
+        assert!(matches!(
+            validate_note_blocks(&blocks),
+            Err(TodoError::TooManyBlocks)
+        ));
+    }
+
+    /// NoteBlockKind 序列化形态断言（serde 契约 = 前端 types.ts 镜像）
+    #[test]
+    fn note_block_kind_serializes_as_plain_string() {
+        assert_eq!(
+            serde_json::to_string(&NoteBlockKind::Text).expect("序列化必须成功"),
+            "\"Text\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NoteBlockKind::Image).expect("序列化必须成功"),
+            "\"Image\""
+        );
     }
 }

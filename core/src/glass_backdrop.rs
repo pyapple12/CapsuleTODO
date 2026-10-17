@@ -8,10 +8,11 @@
 //! 切换失败落日志维持前态（容错白名单 PL001.3 同款纪律：材质纯装饰层不阻断主流程）。
 //! Windows 专属；DwmSetWindowAttribute 为公开 API（dwmapi.lib 标准导入）。
 //!
-//! **形态约定（PL026）**：公开壳收 `&WebviewWindow`（模块内提句柄），非 Windows
-//! 定义同名空桩——调用点零 `#[cfg]`；私有 `*_raw` 收裸句柄，保留裸句柄入口供
-//! 将来非窗口调用者复用。本模块为 FFI 能力模块，豁免「纯逻辑模块禁 import tauri」，
-//! 依据见 z.plan.md 附录 PL026。
+//! **形态约定（PL026）**：公开壳收**泛型 `&impl WinHandle`**（`Window` / `WebviewWindow`
+//! 双 impl——两调用点窗口类型不同，且 `WebviewWindow` 不 Deref 到 `Window`，故需句柄
+//! 抽象层），非 Windows 定义同名空桩——调用点零 `#[cfg]`；私有 `*_raw` 收裸句柄，
+//! 保留裸句柄入口供将来非窗口调用者复用。本模块为 FFI 能力模块，豁免
+//! 「纯逻辑模块禁 import tauri」，依据见 z.plan.md 附录 PL026。
 
 use tauri::Window;
 

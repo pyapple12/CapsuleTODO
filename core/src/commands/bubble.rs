@@ -8,6 +8,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use super::{AppContext, CommandError};
 use crate::bubble::{validate_bubble_text, BubbleError, BubbleItem, BubbleSnapshot};
 use crate::storage::BubbleAddOutcome;
+use crate::util::{local_stamp, open_path_with_default};
 
 /// 热键触发路径（PL015.5）：热键线程直调（实现注记：未走 run_on_main_thread——
 /// 捕获流程仅读剪贴板 + 入库，AppContext 有锁保护、剪贴板插件跨线程安全，
@@ -36,79 +37,6 @@ pub fn image_label(file_name: Option<&str>) -> String {
 /// 截图占位文案 `🖼️ 截图 {yyMMddHHmmss}`
 pub fn screenshot_label() -> String {
     format!("🖼️ 截图 {}", local_stamp())
-}
-
-/// 本地时间戳 `yyMMddHHmmss`（PL025 命名与标签共用）：Windows GetLocalTime 直连取本地
-/// 时区（零依赖，kernel32 薄壳同 hotkey/capture FFI 先例）；非 Windows 退 UTC civil 推算
-#[cfg(target_os = "windows")]
-pub fn local_stamp() -> String {
-    #[repr(C)]
-    struct SystemTime {
-        year: u16,
-        month: u16,
-        day_of_week: u16,
-        day: u16,
-        hour: u16,
-        minute: u16,
-        second: u16,
-        millis: u16,
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetLocalTime(out: *mut SystemTime);
-    }
-    let mut t = SystemTime {
-        year: 0,
-        month: 0,
-        day_of_week: 0,
-        day: 0,
-        hour: 0,
-        minute: 0,
-        second: 0,
-        millis: 0,
-    };
-    unsafe { GetLocalTime(&mut t) };
-    format!(
-        "{:02}{:02}{:02}{:02}{:02}{:02}",
-        t.year % 100,
-        t.month,
-        t.day,
-        t.hour,
-        t.minute,
-        t.second
-    )
-}
-
-/// epoch 天数 → (年, 月, 日)（Howard Hinnant civil 算法，延后平台 UTC 标签用）
-#[cfg(not(target_os = "windows"))]
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// 本地时间戳（非 Windows：UTC 推算，延后平台占位实现）
-#[cfg(not(target_os = "windows"))]
-pub fn local_stamp() -> String {
-    let secs = crate::storage::system_now() / 1000;
-    let sod = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    format!(
-        "{:02}{:02}{:02}{:02}{:02}{:02}",
-        y % 100,
-        m,
-        d,
-        sod / 3600,
-        (sod % 3600) / 60,
-        sod % 60
-    )
 }
 
 /// 捕获剪贴板图片为新气泡（PL025 落盘化）：格式嗅探校验 + 落盘入库（按内容去重）。
@@ -356,47 +284,6 @@ pub fn bubble_open_image_core(
         return Err(CommandError::Bubble("图片文件已移动或删除".to_string()));
     }
     open_path_with_default(&abs).map_err(CommandError::Bubble)
-}
-
-/// 用系统默认程序打开文件（PL025）：Windows `ShellExecuteW`（返回 >32 = 成功约定）；
-/// 非 Windows 报暂不支持（延后基线）
-#[cfg(target_os = "windows")]
-pub fn open_path_with_default(path: &std::path::Path) -> Result<(), String> {
-    #[link(name = "shell32")]
-    extern "system" {
-        fn ShellExecuteW(
-            hwnd: isize,
-            op: *const u16,
-            file: *const u16,
-            params: *const u16,
-            dir: *const u16,
-            show: i32,
-        ) -> isize;
-    }
-    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-    let op = wide("open");
-    let file = wide(&path.to_string_lossy());
-    const SW_SHOWNORMAL: i32 = 1;
-    let ret = unsafe {
-        ShellExecuteW(
-            0,
-            op.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if ret <= 32 {
-        return Err(format!("系统打开失败（ShellExecute 返回 {ret}）"));
-    }
-    Ok(())
-}
-
-/// 非 Windows：打开原图暂不支持
-#[cfg(not(target_os = "windows"))]
-pub fn open_path_with_default(_path: &std::path::Path) -> Result<(), String> {
-    Err("当前平台暂不支持".to_string())
 }
 
 /// 复制回取数路由结果（PL025 按 kind + 来源分派；不跨 IPC 无需 Serialize）
