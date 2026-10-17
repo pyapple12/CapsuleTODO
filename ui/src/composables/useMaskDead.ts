@@ -1,19 +1,21 @@
 // ===== 罩死判定组合式（PL009.3 自 design/assets/js/drag-reorder.js 罩死段 1:1）：
 // 行侵入溶解带 ≥38% 整卡禁交互（点/双击/拖拽/删除/复制全失效 + 灰化）；迟滞 36%
 // 防阈值附近反复穿越闪烁；at-bottom 例外不计底带（V0.027 修复：短行贴底 14/35≈40%
-// 误判灰死而视觉并无溶解带）。数值零改动 =====
+// 误判灰死而视觉并无溶解带）。数值沿实测定案；罩死面 = 清单 + 气泡 + 归档三列表
+// （归档 2026-10-18 用户定案纳入；详情/气泡内容/白板不设罩死语义） =====
 import { registerMaskDeadHook } from "./useGlassBar";
 
 /** 罩死阈值（用户定案 2026-09-26 微调）：侵入超卡高 38% 即死 */
 export const MASK_FADE_RATIO = 0.38;
 /** 出死区迟滞（用户定案）：回到 36% 才摘罩死类 */
 export const MASK_FADE_HYST = 0.36;
-/** 顶部溶解带高（glass-bar.css 遮罩顶段同源） */
+/** 顶部罩死带高（罩死专用，与 CSS 软边**已解耦**：软边 PATCH002.12 起 14px / 贴顶 0）。
+ * 本值决定"顶部行滚出多少即禁点"——行高 40px 时：6 + x ≥ 0.38×40 → x ≥ 9.2px */
 export const MASK_BAND_TOP = 6;
 /** 底部溶解带高（--fade-btm calc(100%-14px) 同源） */
 export const MASK_BAND_BTM = 14;
 
-/** 罩死核算目标（清单 + 气泡；归档板无罩死语义——用户定案） */
+/** 罩死核算目标（清单 + 气泡 + 归档；详情/气泡内容/白板不设罩死语义） */
 interface MaskDeadTarget {
   listId: string;
   rowSel: string;
@@ -23,6 +25,8 @@ interface MaskDeadTarget {
 const MASK_DEAD_TARGETS: MaskDeadTarget[] = [
   { listId: "todo-active", rowSel: ".todo-row", itemSel: ".todo-item" },
   { listId: "bubble-list", rowSel: ".bubble-row", itemSel: ".bubble-row" },
+  // 归档列表：行结构与清单同款（.todo-item > .todo-row）→ 罩死样式零新增（todos.css 同源）
+  { listId: "archive-list", rowSel: ".todo-row", itemSel: ".todo-item" },
 ];
 
 /**

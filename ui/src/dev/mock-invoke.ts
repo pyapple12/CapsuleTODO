@@ -248,6 +248,7 @@ const handlers: Record<string, CommandHandler> = {
     // 不变量（镜像 Rust todo::validate_note_blocks）
     if (!input.some((b) => b.kind === "Text")) throw "详情块为空（至少保留一个文本块）";
     if (input.some((b) => b.kind === "Text" && /[\n\r]/.test(b.text))) throw "文本块不允许含换行";
+    // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
     const old = state.noteBlocks.get(todoId) ?? [];
     const saved: MockNoteBlock[] = input.map((b) => {
       const prev = old.find((x) => x.id === b.id);

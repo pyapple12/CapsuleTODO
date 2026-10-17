@@ -394,11 +394,27 @@ impl Storage {
                 .split('\n')
                 .map(|line| line.trim_end_matches('\r').to_string())
                 .collect();
-            for (i, line) in lines.iter().enumerate() {
+            // PATCH002 归一化：前导空行丢弃、连续空行合并（只留一个）；结果为空则补一个空块
+            let mut order = 0i64;
+            let mut prev_blank = true;
+            for line in &lines {
+                let blank = line.trim().is_empty();
+                if blank && prev_blank {
+                    continue;
+                }
                 self.conn.execute(
                     "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
                      VALUES (?1, ?2, 'text', ?3)",
-                    rusqlite::params![todo_id, i as i64, line],
+                    rusqlite::params![todo_id, order, line],
+                )?;
+                prev_blank = blank;
+                order += 1;
+            }
+            if order == 0 {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, 0, 'text', '')",
+                    [todo_id],
                 )?;
             }
         }
@@ -805,27 +821,80 @@ impl Storage {
                 rusqlite::params![block_id, todo_id],
                 |row| row.get(0),
             )?;
-            // 该块之后的块后移 2（腾出图块与 after 文本块的位置）
-            self.conn.execute(
-                "UPDATE note_blocks SET sort_order = sort_order + 2
-                 WHERE todo_id = ?1 AND sort_order > ?2",
+            let follows: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
                 rusqlite::params![todo_id, order],
+                |row| row.get(0),
             )?;
-            // 原块 = before 文本块（保持原 sort_order）
+            // PATCH002 建块规则：上段为空 → 原块**改图块**（顶替，不留前导空块）；
+            // 下段为空 → 不留尾块，**但图成为整条最后一块时补一个空文本块**（否则图后无法输入）
+            let keep_before = !before.trim().is_empty();
+            let keep_after = !after.trim().is_empty();
+            let tail_blank = !keep_after && follows == 0;
+            let shift = i64::from(keep_before) + i64::from(keep_after) + i64::from(tail_blank);
+            // 该块之后的块后移（腾出新增块的位置）
             self.conn.execute(
-                "UPDATE note_blocks SET text = ?2, kind = 'text' WHERE id = ?1",
-                rusqlite::params![block_id, before],
+                "UPDATE note_blocks SET sort_order = sort_order + ?3
+                 WHERE todo_id = ?1 AND sort_order > ?2",
+                rusqlite::params![todo_id, order, shift],
             )?;
-            self.conn.execute(
-                "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
-                 VALUES (?1, ?2, 'image', ?3, ?4)",
-                rusqlite::params![todo_id, order + 1, hash, rel],
+            let mut next = order + 1;
+            if keep_before {
+                // 原块保留为「上段」文本块，图块插在其后
+                self.conn.execute(
+                    "UPDATE note_blocks SET text = ?2, kind = 'text',
+                         image_hash = NULL, image_file = NULL
+                     WHERE id = ?1",
+                    rusqlite::params![block_id, before],
+                )?;
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                     VALUES (?1, ?2, 'image', ?3, ?4)",
+                    rusqlite::params![todo_id, next, hash, rel],
+                )?;
+                next += 1;
+            } else {
+                // 上段为空：原块直接变图块（顶替，不留前导空块）
+                self.conn.execute(
+                    "UPDATE note_blocks SET kind = 'image', text = '',
+                         image_hash = ?2, image_file = ?3
+                     WHERE id = ?1",
+                    rusqlite::params![block_id, hash, rel],
+                )?;
+            }
+            if keep_after {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', ?3)",
+                    rusqlite::params![todo_id, next, after],
+                )?;
+                next += 1;
+            }
+            if tail_blank {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', '')",
+                    rusqlite::params![todo_id, next],
+                )?;
+            }
+            // 保底：结果无文本块 → 补一个空文本块（"至少一个文本块"不变量）
+            let texts: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND kind = 'text'",
+                [todo_id],
+                |row| row.get(0),
             )?;
-            self.conn.execute(
-                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                 VALUES (?1, ?2, 'text', ?3)",
-                rusqlite::params![todo_id, order + 2, after],
-            )?;
+            if texts == 0 {
+                let last: i64 = self.conn.query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1",
+                    [todo_id],
+                    |row| row.get(0),
+                )?;
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', '')",
+                    rusqlite::params![todo_id, last],
+                )?;
+            }
             Ok(())
         })();
         match result {
@@ -1548,7 +1617,10 @@ mod tests {
                 ('单行', 0, 1, '只有一行'),
                 ('多行', 0, 2, '第一行
 第二行'),
-                ('空笔记', 0, 3, '');",
+                ('空笔记', 0, 3, ''),
+                ('空行归一', 0, 4, '
+
+正文');",
         )
         .expect("造 PL010 期库必须成功");
         Storage {
@@ -2118,8 +2190,8 @@ mod tests {
                 &dir,
                 item.id,
                 base[0].id,
-                "",
-                "文字",
+                "文",
+                "字",
                 &png_bytes(),
                 None,
                 "261018000000",
@@ -2201,8 +2273,8 @@ mod tests {
                 &dir,
                 item.id,
                 base[0].id,
-                "",
-                "",
+                "文",
+                "字",
                 &png_bytes(),
                 None,
                 "261018000000",
@@ -2267,7 +2339,13 @@ mod tests {
                 "261018000000",
             )
             .expect("插图必须成功");
-        let rel = with_img[1].image_file.clone().expect("有文件");
+        let rel = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("应有图块")
+            .image_file
+            .clone()
+            .expect("有文件");
         let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
         st.remove(item.id).expect("删条目必须成功");
         assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 1);
@@ -2295,7 +2373,13 @@ mod tests {
                 "261018000000",
             )
             .expect("插图必须成功");
-        let rel = with_img[1].image_file.clone().expect("有文件");
+        let rel = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("应有图块")
+            .image_file
+            .clone()
+            .expect("有文件");
         let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
         st.toggle(item.id).expect("勾选必须成功");
         clock.store(t0 + crate::todo::ARCHIVE_RETENTION_MS + 1, Ordering::SeqCst);
@@ -2367,7 +2451,13 @@ mod tests {
                 "261018000000",
             )
             .expect("插图必须成功");
-        let rel = after[1].image_file.clone().expect("有文件");
+        let rel = after
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("应有图块")
+            .image_file
+            .clone()
+            .expect("有文件");
         let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
         assert!(folder.join("preview.png").is_file(), "大图生成预览");
     }
@@ -2381,5 +2471,139 @@ mod tests {
         std::fs::create_dir_all(&bubble_dir).expect("造气泡夹必须成功");
         assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 0);
         assert!(bubble_dir.is_dir(), "气泡文件夹不受详情清扫影响");
+    }
+
+    // ===== PATCH002 贴图建块规则与迁移归一化（TDD） =====
+
+    #[test]
+    fn paste_into_blank_block_replaces_it_and_tails_when_last() {
+        // 空块贴图 → 图顶替；图成最后一块 → 末尾补一个空文本块
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        assert_eq!(after.len(), 2, "空块被图顶替 + 末尾补一个空块");
+        assert_eq!(after[0].kind, NoteBlockKind::Image);
+        assert_eq!(after[1].kind, NoteBlockKind::Text);
+        assert_eq!(after[1].text, "");
+    }
+
+    #[test]
+    fn paste_at_first_char_leaves_no_leading_block() {
+        // 现象②：首字前贴图 → [图][原文]，不留前导空块
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "原文")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "原文",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        assert_eq!(after.len(), 2, "不留前导空块");
+        assert_eq!(after[0].kind, NoteBlockKind::Image);
+        assert_eq!(after[1].kind, NoteBlockKind::Text);
+        assert_eq!(after[1].text, "原文");
+    }
+
+    #[test]
+    fn paste_at_end_of_middle_block_leaves_no_trailing_block() {
+        // 现象③：上块末字贴图、下面还有块 → [上文][图][下文]，不留尾随空块
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "上文"), nb_text(0, "下文")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "上文",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let kinds: Vec<NoteBlockKind> = after.iter().map(|b| b.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                NoteBlockKind::Text,
+                NoteBlockKind::Image,
+                NoteBlockKind::Text
+            ],
+            "不留尾随空块"
+        );
+        assert_eq!(after[0].text, "上文");
+        assert_eq!(after[2].text, "下文");
+    }
+
+    #[test]
+    fn paste_at_very_end_tails_blank_block() {
+        // 图成整条最后一块 → 末尾补一个空文本块（否则图后无法输入）
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "原文")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "原文",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        assert_eq!(after.len(), 3, "[原文][图][空块]");
+        assert_eq!(after[1].kind, NoteBlockKind::Image);
+        assert_eq!(after[2].kind, NoteBlockKind::Text);
+        assert_eq!(after[2].text, "");
+    }
+
+    #[test]
+    fn migration_normalizes_blank_lines() {
+        // 迁移归一化：存量「前导空行 + 连续空行」→ 只留正文块
+        let st = pl010_storage_with_notes();
+        st.init().expect("迁移必须成功");
+        let items = st.list().expect("读取必须成功");
+        let id = items
+            .iter()
+            .find(|i| i.text == "空行归一")
+            .map(|i| i.id)
+            .expect("存量行必须在");
+        let blocks = st.note_blocks(id).expect("读块必须成功");
+        assert_eq!(blocks.len(), 1, "前导/连续空行被归一化");
+        assert_eq!(blocks[0].text, "正文");
     }
 }

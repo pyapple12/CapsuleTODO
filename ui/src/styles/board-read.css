@@ -1,6 +1,7 @@
 /* ===== 滑杆与整板阅读样式（PL009 自 design/assets/css/glass-bar.css 1:1 落位）：
    玻璃滑杆浮钮 + @property 注册变量 + 溶解遮罩 + 边缘三角 + reduced-motion 守卫。
-   值零改动（软边 14px/三角 26px/浮钮 4×16/veil 0.22s·0.15s 全沿实测定案） ===== */
+   值沿实测定案（软边 14px/三角 26px/浮钮 4×16/veil 0.22s·0.15s）；顶部软边
+   PATCH002.12 由硬编码 6px 改为参数 --fade-top（默认 14px，贴顶时收到 0px） ===== */
 
 /* 玻璃滚动浮钮通用（用户定案 2026-09-22）：所有玻璃滚动容器统一——隐藏原生滑杆，
    换 4×16 透明玻璃浮钮（位置由 useGlassBar 按容器注入） */
@@ -52,6 +53,15 @@
   initial-value: 0px;
 }
 
+/* 顶部软边（PATCH002.12 用户定案）：原为 mask 里硬编码的 6px；注册为带类型的自定义
+   属性后可与 --fade-btm 一样参与 transition——useBoardRead 贴顶时收到 0px（首行距顶
+   8px 本就不该淡），滚过阈值回落 14px（上下软边对称） */
+@property --fade-top {
+  syntax: "<length-percentage>";
+  inherits: false;
+  initial-value: 14px;
+}
+
 /* 隐区位移（用户定案 2026-09-25）：气泡列表盒上探进捕获行背后 5.5px，渐显带随之
    上提——此属性把带的顶段下推，滚动越过阈值时 0.25s 回到原位 */
 @property --mask-shift {
@@ -61,17 +71,20 @@
 }
 
 /* ===== 整板阅读（滚动吸附已移除——滚动自由）：上下淡出遮罩让行的进出呈玻璃渐隐；
-   底部半截行由 useBoardRead 把 --fade-btm 推到该行顶、渐隐隐去，残余区亮出闪烁 ▼ ===== */
+   顶部软边由 --fade-top 控制（贴顶 0px / 滚过阈值 14px）；底部半截行由 useBoardRead
+   把 --fade-btm 推到该行顶、渐隐隐去，残余区亮出闪烁 ▼ ===== */
 .board-read {
   --fade-btm: calc(100% - 14px); /* 默认软边：底缘上 14px（用户定案回归） */
+  --fade-top: 14px; /* 顶部软边（PATCH002.12）：贴顶时被收到 0px */
   transition:
     --fade-btm 1s ease,
+    --fade-top 1s ease,
     --mask-shift 0.25s ease; /* 隐区位移 0.25s（用户定案） */
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,
     transparent var(--mask-shift, 0px),
-    #000 calc(var(--mask-shift, 0px) + 6px),
+    #000 calc(var(--mask-shift, 0px) + var(--fade-top, 14px)),
     #000 var(--fade-btm),
     transparent
   );
@@ -79,7 +92,7 @@
     to bottom,
     transparent 0,
     transparent var(--mask-shift, 0px),
-    #000 calc(var(--mask-shift, 0px) + 6px),
+    #000 calc(var(--mask-shift, 0px) + var(--fade-top, 14px)),
     #000 var(--fade-btm),
     transparent
   );
@@ -88,6 +101,12 @@
 /* 到底抬带单独时长（用户定案 2026-09-25）：贴底/落定到底走 100ms；滚离回落与
    半截行溶解仍走默认 1s（类随到底态挂摘） */
 .board-read.at-bottom {
+  transition-duration: 100ms;
+}
+
+/* 贴顶抬带单独时长（PATCH002.12，与 at-bottom 同规）：贴顶收起顶部软边走 100ms；
+   滚离回落仍走默认 1s（类随贴顶态挂摘） */
+.board-read.at-top {
   transition-duration: 100ms;
 }
 

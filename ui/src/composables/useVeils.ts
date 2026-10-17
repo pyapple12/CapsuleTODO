@@ -36,7 +36,7 @@ export function syncVeils(): void {
     const veil =
       g.scroller.id === "archive-list"
         ? !boardOpen
-        : g.scroller.id === "detail-note" || g.scroller.id === "detail-image-shell"
+        : g.scroller.id === "detail-note"
           ? !detailOpen
           : anyOpen;
     g.bar.classList.toggle("veiled", veil);
@@ -47,8 +47,7 @@ export function syncVeils(): void {
     if (r.el.id === "archive-list") continue;
     // 详情板实例随详情板开合隐现（板开时自家三角必须可见，不吃 anyOpen 的帘）——
     // 文本 textarea（detail-note）与图片壳（detail-image-shell，PL024.8c）两模式同规
-    const veil =
-      r.el.id === "detail-note" || r.el.id === "detail-image-shell" ? !detailOpen : anyOpen;
+    const veil = r.el.id === "detail-note" ? !detailOpen : anyOpen;
     for (const hint of r.hints) hint.classList.toggle("veiled", veil);
   }
 }

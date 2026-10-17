@@ -6,7 +6,8 @@ import DelButton from "./DelButton.vue";
 import NeonCheckbox from "./NeonCheckbox.vue";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
-import { pinLeaveHeight } from "../composables/useListRow";
+import { rowElById, pinLeaveHeight } from "../composables/useListRow";
+import { rowMaskDead } from "../composables/useMaskDead";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
@@ -226,6 +227,11 @@ const { confirmingId, setDelRef, onPress, onConfirm, onCancel } = useDelConfirmG
 
 // FIX007.9 收敛：退场钉高走 useListRow 共享件（导入名即模板 @before-leave 绑定名）
 
+// 罩死判定取元素入口（FIX007.9 共享件；页选择器 = 归档浮层）
+function rowEl(id: number): HTMLElement {
+  return rowElById(".archive-overlay", id);
+}
+
 /** 勾选退回（⑥ = design 归档分支时序 1:1）：invoke 成功后**乐观置位**——勾选框
  * 熄灭 + 删除线摘除（design input.checked=false + 摘 is-done 的立即置位，退回视觉
  * 起播），300ms 主拍播完才塌缩离场。逐行状态 + 逐行拍子（FIX003.5）：单值
@@ -235,6 +241,7 @@ const restoringIds = ref(new Set<number>());
 const restoreTimers = new Map<number, number>();
 // FIX010.12 登记维持现状：与 TodoList.toggle 同构状态机（登记理由见彼处注释）
 async function restore(item: TodoItem): Promise<void> {
+  if (rowMaskDead(rowEl(item.id))) return; // 罩死行退回失效（2026-10-18 用户定案：归档纳入罩死）
   // FIX007.4 in-flight 守卫：主拍在飞二次点击忽略（与 TodoList toggle 同病同修）
   if (restoreTimers.has(item.id)) return;
   // FIX008.7：哨兵先行覆盖 await 在飞期（TodoList 同款）；失败摘哨兵防行锁死
@@ -316,9 +323,11 @@ watch(
       >
         <li v-for="item in items" :key="item.id" class="todo-item">
           <!-- 整行点击驱动勾选退回（design 语义：checkbox pointer-events 关闭，
-               行 click 触发 toggle；删除钮 stop 自有语义） -->
+               行 click 触发 toggle；删除钮 stop 自有语义）。data-row-id = 罩死判定
+               取行入口（rowElById，2026-10-18 归档纳入罩死） -->
           <div
             class="todo-row"
+            :data-row-id="item.id"
             :class="{ 'is-done': !restoringIds.has(item.id) }"
             @click="restore(item)"
           >

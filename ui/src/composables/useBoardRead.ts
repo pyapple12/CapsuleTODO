@@ -1,7 +1,8 @@
 // ===== 整板阅读组合式（PL009.2 自 design/assets/js/glass-bar.js makeBoardRead 1:1）：
 // 上下溶解遮罩 + ▲▼ 边缘三角 + scrollend 收尾（半截行 --fade-btm 渐隐）+ 到底抬带
-// （at-bottom 100ms）+ 隐区位移（maskShift）。算法与数值零改动（顶 6/底 14 软边、
-// 三角 26px、padB 8、迟滞判定 ±2 全沿实测定案） =====
+// （at-bottom 100ms）+ 隐区位移（maskShift）。算法与数值沿实测定案（上下软边 14px、
+// 三角 26px、padB 8、迟滞判定 ±2）；顶部软边 PATCH002.12 参数化为 --fade-top，
+// 贴顶（scrollTop ≤ 2）收到 0px、滚过阈值回落 14px（与 at-bottom 同规） =====
 import { getCurrentInstance, onUnmounted } from "vue";
 
 /** 整板阅读实例（注册表条目：useVeils 帘联动按 el id 匹配） */
@@ -73,6 +74,15 @@ export function useBoardRead(
 
   /** 边缘三角几何与显隐：容器可滚动且未到对应尽头才显示；hintHost 场景走布局盒 */
   const sync = (): void => {
+    // 顶部软边对称分支（PATCH002.12，与底部 at-bottom 同规）：贴顶时上方没有被滚出的
+    // 内容，软边收到 0px（首行距顶 8px 本就不该淡）；滚过阈值回落到默认 14px
+    if (el.scrollTop <= 2) {
+      el.classList.add("at-top");
+      el.style.setProperty("--fade-top", "0px");
+    } else {
+      el.classList.remove("at-top");
+      el.style.removeProperty("--fade-top");
+    }
     let left: number;
     let top: number;
     let width: number;

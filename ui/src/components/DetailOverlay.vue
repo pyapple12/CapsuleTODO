@@ -165,6 +165,7 @@ async function loadBlocks(todoId: number): Promise<void> {
     const list = await invoke<NoteBlock[]>("note_blocks_list", { todoId });
     if (props.todo?.id !== todoId) return;
     blocks.value = toLocal(list);
+    blocks.value = normalizeBlocks(blocks.value);
     savedTodoId = todoId;
     savedSignature = signature(blocks.value);
     brokenKeys.value = [];
@@ -244,22 +245,19 @@ async function deleteBlock(index: number): Promise<void> {
   const at = blocks.value.findIndex((b) => b._key === block._key);
   if (at < 0) return;
   blocks.value.splice(at, 1);
+  scheduleSave();
   await saveBlocks();
 }
 
-/** 文本块键盘：Enter 拆块 / Ctrl+Enter 保存关板 / Backspace@块首（合并或删上图）；
- * Delete 不拦截（只作用本块内，永不涉及下方块）；全程 IME 守卫 */
+/** 文本块键盘：Enter 拆块 / Backspace@块首（合并或删上图）；Delete 不拦截
+ * （只作用本块内，永不涉及下方块）；Ctrl+Enter 由**板级** window 监听处理（PATCH002）；
+ * 全程 IME 守卫 */
 function onBlockKeydown(index: number, e: KeyboardEvent): void {
   if (e.isComposing) return;
   const el = e.target as HTMLTextAreaElement;
   const block = blocks.value[index];
   if (!block) return;
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    void saveAndClose();
-    return;
-  }
-  if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+  if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
     splitBlock(index, el.selectionStart ?? 0);
     return;
@@ -270,13 +268,47 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
     e.preventDefault();
     if (prev.kind === "Image") void deleteBlock(index - 1);
     else mergeWithPrev(index);
+    return;
+  }
+  // PATCH002.9 方向键跨块（方案乙）：↑/← 在"第一视觉行/块首"→ 上一块；↓/→ 在"末视觉行/块尾"→ 下一块
+  if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+    const at = el.selectionStart ?? 0;
+    const atEdge =
+      e.key === "ArrowLeft"
+        ? at === 0 && at === (el.selectionEnd ?? 0)
+        : caretVisualLine(el, at) === 0;
+    if (atEdge) {
+      e.preventDefault();
+      focusAdjacent(index - 1, "end");
+    }
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+    const at = el.selectionStart ?? 0;
+    const atEdge =
+      e.key === "ArrowRight"
+        ? at === el.value.length && at === (el.selectionEnd ?? 0)
+        : caretVisualLine(el, at) === lastVisualLine(el);
+    if (atEdge) {
+      e.preventDefault();
+      focusAdjacent(index + 1, "start");
+    }
+  }
+}
+
+/** 板级 Ctrl+Enter（PATCH002）：详情板**开着就响应**（焦点在标题框、或不在任何内容上也算）；
+ * 板外一律不响应；输入法组合态守卫 */
+function onWindowKeydown(e: KeyboardEvent): void {
+  if (!isOpen.value || e.isComposing) return;
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    void saveAndClose();
   }
 }
 
 /** 保存未决草稿并关板（Ctrl+Enter；**仅文本块响应**，其余输入面一律不响应） */
 async function saveAndClose(): Promise<void> {
-  clearTimeout(saveTimer);
-  await saveBlocks();
+  await normalizeAndFlush();
   close();
 }
 
@@ -329,7 +361,7 @@ async function pasteImageAt(
     });
     if (props.todo?.id !== todo.id) return;
     if (outcome.status === "image") {
-      blocks.value = toLocal(outcome.blocks);
+      blocks.value = normalizeBlocks(toLocal(outcome.blocks));
       savedSignature = signature(blocks.value);
       brokenKeys.value = [];
       void nextTick(() => autosizeAll());
@@ -389,13 +421,129 @@ async function openBlockImage(block: LocalBlock): Promise<void> {
   }
 }
 
-/** 图块键盘（选中态）：Backspace / Delete 均删 */
-function onImageKeydown(index: number, e: KeyboardEvent): void {
+/** 图块容器单击 → 选中（文本块的点击交给 textarea 自身处理） */
+function onBlockContainerClick(block: LocalBlock): void {
+  if (block.kind === "Image") selectedKey.value = block._key;
+}
+
+/** 图块容器键盘：选中态 Backspace/Delete 删；**方向键跳到相邻块**（PATCH002.9）；
+ * 文本块交给 textarea 自身处理器 */
+function onBlockContainerKeydown(index: number, e: KeyboardEvent): void {
+  if (blocks.value[index]?.kind !== "Image") return;
   if (e.isComposing) return;
   if (e.key === "Backspace" || e.key === "Delete") {
     e.preventDefault();
     void deleteBlock(index);
+    return;
   }
+  if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    focusAdjacent(index - 1, "end");
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+    e.preventDefault();
+    focusAdjacent(index + 1, "start");
+  }
+}
+
+// —— 空块归一化（PATCH002：合并连续空块 / 删前导空块 / 结果为空补一个空文本块）——
+
+/** 空文本块判定（trim 后为空） */
+function isBlank(block: LocalBlock): boolean {
+  return block.kind === "Text" && block.text.trim() === "";
+}
+
+/** 空块归一化：**合并连续空块 / 删前导空块 / 结果为空补一个空文本块**；
+ * 复用同一批对象（保 `_key`，不重挂 DOM） */
+function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
+  const out: LocalBlock[] = [];
+  for (const block of list) {
+    if (isBlank(block)) {
+      if (out.length === 0) continue; // 前导空块：丢弃
+      if (isBlank(out[out.length - 1])) continue; // 连续空块：合并
+    }
+    out.push(block);
+  }
+  if (!out.some((b) => b.kind === "Text")) {
+    out.push({ id: 0, kind: "Text", text: "", image_path: null, _key: localKey() });
+  }
+  return out;
+}
+
+/** **保存点**归一化 + 立即落库（PATCH002.8：Ctrl+Enter / 焦点离开块区 / 关板切源专用） */
+async function normalizeAndFlush(): Promise<void> {
+  clearTimeout(saveTimer);
+  const next = normalizeBlocks(blocks.value);
+  if (next.length !== blocks.value.length) {
+    blocks.value = next;
+  }
+  await saveBlocks();
+}
+
+// —— 方向键跨块（PATCH002.9 方案乙：隐藏镜像测视觉行）——
+
+/** 隐藏镜像元素（与文本块逐项同款样式；测光标视觉行） */
+let caretMirror: HTMLDivElement | null = null;
+
+/** 取/建镜像（惰性；样式每次同步——主题/字号可变） */
+function mirrorFor(el: HTMLTextAreaElement): HTMLDivElement {
+  if (!caretMirror) {
+    caretMirror = document.createElement("div");
+    caretMirror.style.position = "absolute";
+    caretMirror.style.visibility = "hidden";
+    caretMirror.style.pointerEvents = "none";
+    caretMirror.style.top = "0";
+    caretMirror.style.left = "-9999px";
+    document.body.appendChild(caretMirror);
+  }
+  const cs = getComputedStyle(el);
+  const m = caretMirror;
+  m.style.font = cs.font;
+  m.style.lineHeight = cs.lineHeight;
+  m.style.letterSpacing = cs.letterSpacing;
+  m.style.padding = cs.padding;
+  m.style.border = cs.border;
+  m.style.boxSizing = cs.boxSizing;
+  m.style.width = `${el.clientWidth}px`;
+  m.style.whiteSpace = "pre-wrap";
+  m.style.wordBreak = "break-word";
+  return m;
+}
+
+/** 光标所在视觉行（0 起）：文本前缀 + 标记 span → `span.offsetTop` ÷ 行高 */
+function caretVisualLine(el: HTMLTextAreaElement, at: number): number {
+  const m = mirrorFor(el);
+  m.textContent = el.value.slice(0, at);
+  const marker = document.createElement("span");
+  marker.textContent = "\u200b";
+  m.appendChild(marker);
+  const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 1;
+  return Math.max(0, Math.round(marker.offsetTop / lineHeight));
+}
+
+/** 文本总视觉行数 - 1（末行号）：标记落在全文末尾 */
+function lastVisualLine(el: HTMLTextAreaElement): number {
+  return caretVisualLine(el, el.value.length);
+}
+
+/** 跨块落点（PATCH002.9）：相邻块是文本 → 聚焦并把光标放到该端；是图块 → **选中它** */
+function focusAdjacent(index: number, edge: "start" | "end"): void {
+  const block = blocks.value[index];
+  if (!block) return;
+  if (block.kind === "Image") {
+    selectedKey.value = block._key;
+    return;
+  }
+  focusBlock(block._key, edge === "start" ? 0 : block.text.length);
+}
+
+/** 焦点离开块区（PATCH002.8 保存点）：归一化 + 立即落库 */
+function onBlocksFocusOut(e: FocusEvent): void {
+  const container = scrollEl.value;
+  const next = e.relatedTarget as Node | null;
+  if (container && next && container.contains(next)) return; // 仍在块区内
+  void normalizeAndFlush();
 }
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
@@ -476,27 +624,26 @@ const isOpen = ref(false);
 // 帘联动注册（FIX003.7）：详情开合进 useVeils 全局读取器（按容器 id=detail-note 特判）
 bindOverlayState("detail", () => isOpen.value);
 
-// 板内整板阅读 + 玻璃滑杆：挂**滚动容器**（id 沿用 detail-note → 帘特判与套件零改动）
-const shellEl = ref<HTMLElement | null>(null);
+// 板内整板阅读 + 玻璃滑杆：挂**内层滚动容器**（PATCH002.11 内外分层；id 沿用 detail-note → 帘特判零改动）
+const scrollEl = ref<HTMLElement | null>(null);
 interface DetailKit {
   boardRead: { sync: () => void; settle: () => void; destroy: () => void };
   glassBar: { sync: () => void; destroy: () => void };
 }
 let kit: DetailKit | null = null;
 
-/** 挂/卸套件（幂等：关板即卸——FIX013.5 显式清理先例） */
+/** 挂/卸套件（幂等：关板即卸——FIX013.5 显式清理先例）。
+ * PATCH002.10/.11：套件挂**内层滚动容器**（mask 只作用内容，不碰外壳的描边/落影）；
+ * `rowSel` **不传** → `settle()` 找不到行 → 回落 `.board-read` 默认 `--fade-btm`
+ * （**固定 14px 软边**，不再有"跨底缘扩大"的半截块溶解动效） */
 function syncKit(): void {
   kit?.boardRead.destroy();
   kit?.glassBar.destroy();
   kit = null;
-  if (!isOpen.value || !shellEl.value) return;
+  if (!isOpen.value || !scrollEl.value) return;
   kit = {
-    boardRead: useBoardRead(shellEl.value, {
-      gate: () => isOpen.value,
-      layout: true,
-      rowSel: ".note-block",
-    }),
-    glassBar: useGlassBar(shellEl.value, { anchor: overlay.value ?? undefined, right: 4 }),
+    boardRead: useBoardRead(scrollEl.value, { gate: () => isOpen.value, layout: true }),
+    glassBar: useGlassBar(scrollEl.value, { anchor: overlay.value ?? undefined, right: 4 }),
   };
 }
 
@@ -523,7 +670,7 @@ function open(): void {
     syncKit();
     autosizeAll();
     // 滚动复位（A4 = design resetDetailScroll）：换内容必归零
-    const shell = shellEl.value;
+    const shell = scrollEl.value;
     if (shell) {
       shell.scrollTop = 0;
       shell.dispatchEvent(new Event("scroll"));
@@ -683,31 +830,40 @@ async function flushPending(): Promise<void> {
         }),
     );
   }
-  // 详情块未决保存（PL027）：仅在 todo 模式、块已载入本条目、且有变更时落库
+  // 详情块未决保存（PL027）：仅在 todo 模式、块已载入本条目、且有变更时落库（保存点先归一化）
   if (
     props.todo != null &&
     savedTodoId === props.todo.id &&
     signature(blocks.value) !== savedSignature
   ) {
-    jobs.push(saveBlocks());
+    jobs.push(normalizeAndFlush());
   }
   await Promise.all(jobs);
 }
 
-// 板外收板（design 定案语义）：mousedown 落在 overlay 外即收板
+// 板外收板（design 定案语义）+ 板内点非图块清选中（PATCH002）
 function onGlobalDown(e: MouseEvent): void {
   if (!isOpen.value) return;
   const ov = overlay.value;
-  if (ov && !ov.contains(e.target as Node)) close();
+  const target = e.target as HTMLElement | null;
+  if (ov && ov.contains(e.target as Node)) {
+    if (selectedKey.value && !target?.closest(".note-block-image")) selectedKey.value = "";
+    return;
+  }
+  close();
 }
 window.addEventListener("mousedown", onGlobalDown, true);
+window.addEventListener("keydown", onWindowKeydown, true);
 
 onBeforeUnmount(() => {
   void flushPending();
   kit?.boardRead.destroy(); // 卸载即卸套件（FIX013.5 显式清理）
   kit?.glassBar.destroy();
   kit = null;
+  caretMirror?.remove(); // PATCH002.9：镜像元素一并清理
+  caretMirror = null;
   window.removeEventListener("mousedown", onGlobalDown, true);
+  window.removeEventListener("keydown", onWindowKeydown, true);
 });
 </script>
 
@@ -726,92 +882,93 @@ onBeforeUnmount(() => {
         />
       </div>
       <!-- 滚动容器：id 沿用 detail-note（帘特判与板内套件零改动） -->
-      <div
-        ref="shellEl"
-        id="detail-note"
-        class="note-shell"
-        :class="{
-          'bubble-shell': isBubbleMode,
-          'image-shell': isBubbleMode && bubbleImgSrc !== '',
-          'note-blocks': !isBubbleMode,
-        }"
-      >
-        <!-- bubble 模式：图片 / 全文只读（PL024/PL025 原样） -->
-        <template v-if="isBubbleMode">
-          <img
-            v-if="bubbleImgSrc && !imageError"
-            class="detail-image"
-            :src="bubbleImgSrc"
-            alt="气泡图片"
-            @error="onImageError"
-            @dblclick="onImageDblClick"
-          />
-          <div v-else-if="imageError" class="detail-image-broken">
-            <p class="detail-image-broken-text">{{ imageError }}</p>
-            <button class="detail-image-broken-del" @click="onDeleteImageBubble">删除气泡</button>
-          </div>
-          <textarea
-            v-else
-            class="detail-note bubble-note"
-            :value="bubbleText"
-            readonly
-            spellcheck="false"
-          ></textarea>
-        </template>
-        <!-- todo 模式：块序列（一段一行一块 + 图块混排） -->
-        <template v-else>
-          <div
-            v-for="(block, i) in blocks"
-            :key="block._key"
-            class="note-block"
-            :class="{
-              'note-block-image': block.kind === 'Image',
-              'note-block-selected': selectedKey === block._key,
-              'note-block-leaving': leavingKey === block._key,
-            }"
-            :data-row-id="i + 1"
-          >
-            <template v-if="block.kind === 'Image'">
-              <img
-                v-if="!brokenKeys.includes(block._key)"
-                class="note-block-img"
-                :src="blockSrc(block)"
-                alt="详情图片"
-                draggable="false"
-                @click="selectedKey = block._key"
-                @dblclick="openBlockImage(block)"
-                @error="onBlockImageError(block)"
-              />
-              <p v-else class="note-block-broken">图片文件已移动或删除</p>
-              <button
-                class="note-block-del"
-                type="button"
-                title="删除图片"
-                @click.stop="deleteBlock(i)"
-              >
-                ×
-              </button>
-              <span
-                class="note-block-hit"
-                tabindex="0"
-                @keydown="onImageKeydown(i, $event)"
-                @focus="selectedKey = block._key"
-              ></span>
-            </template>
+      <!-- PATCH002.11 内外分层：外壳只做圆角/描边/落影；套件挂**内层**（mask 不吃壳装饰） -->
+      <div class="note-shell">
+        <div
+          ref="scrollEl"
+          id="detail-note"
+          class="note-scroll"
+          :class="{
+            'bubble-shell': isBubbleMode,
+            'image-shell': isBubbleMode && bubbleImgSrc !== '',
+            'note-blocks': !isBubbleMode,
+          }"
+          @focusout="onBlocksFocusOut"
+        >
+          <!-- bubble 模式：图片 / 全文只读（PL024/PL025 原样） -->
+          <template v-if="isBubbleMode">
+            <img
+              v-if="bubbleImgSrc && !imageError"
+              class="detail-image"
+              :src="bubbleImgSrc"
+              alt="气泡图片"
+              @error="onImageError"
+              @dblclick="onImageDblClick"
+            />
+            <div v-else-if="imageError" class="detail-image-broken">
+              <p class="detail-image-broken-text">{{ imageError }}</p>
+              <button class="detail-image-broken-del" @click="onDeleteImageBubble">删除气泡</button>
+            </div>
             <textarea
               v-else
-              :ref="(el) => setTextEl(block._key, el)"
-              v-model="block.text"
-              class="note-block-text"
-              placeholder="添加描述、清单、想法…"
+              class="detail-note bubble-note"
+              :value="bubbleText"
+              readonly
               spellcheck="false"
-              rows="1"
-              @input="onBlockInput"
-              @keydown="onBlockKeydown(i, $event)"
-              @paste="onBlockPaste(i, $event)"
             ></textarea>
-          </div>
-        </template>
+          </template>
+          <!-- todo 模式：块序列（一段一行一块 + 图块混排） -->
+          <template v-else>
+            <div
+              v-for="(block, i) in blocks"
+              :key="block._key"
+              class="note-block"
+              :class="{
+                'note-block-image': block.kind === 'Image',
+                'note-block-selected': selectedKey === block._key,
+                'note-block-leaving': leavingKey === block._key,
+              }"
+              :data-row-id="i + 1"
+              :tabindex="block.kind === 'Image' ? 0 : undefined"
+              @click="onBlockContainerClick(block)"
+              @keydown="onBlockContainerKeydown(i, $event)"
+            >
+              <template v-if="block.kind === 'Image'">
+                <img
+                  v-if="!brokenKeys.includes(block._key)"
+                  class="note-block-img"
+                  :src="blockSrc(block)"
+                  alt="详情图片"
+                  draggable="false"
+                  @click="selectedKey = block._key"
+                  @dblclick="openBlockImage(block)"
+                  @error="onBlockImageError(block)"
+                />
+                <p v-else class="note-block-broken">图片文件已移动或删除</p>
+                <button
+                  class="note-block-del"
+                  type="button"
+                  title="删除图片"
+                  @click.stop="deleteBlock(i)"
+                >
+                  ×
+                </button>
+              </template>
+              <textarea
+                v-else
+                :ref="(el) => setTextEl(block._key, el)"
+                v-model="block.text"
+                class="note-block-text"
+                :placeholder="i === 0 ? '添加描述、清单、想法…' : ''"
+                spellcheck="false"
+                rows="1"
+                @input="onBlockInput"
+                @keydown="onBlockKeydown(i, $event)"
+                @paste="onBlockPaste(i, $event)"
+              ></textarea>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
   </div>

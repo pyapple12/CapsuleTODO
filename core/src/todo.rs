@@ -114,7 +114,9 @@ pub struct NoteBlock {
 
 /// 详情块集校验（PL027 不变量四条）：① 块数 ≤ MAX_NOTE_BLOCKS ② 至少一个文本块
 /// ③ 文本块不含换行（`\n` / `\r`——一段一行，换行即新块）④ 文本块字符总和 ≤ MAX_NOTE_LEN。
-/// 违者严格报错（保存路径唯一把关点）
+/// 违者严格报错（保存路径唯一把关点）。
+/// **PATCH002.8 修订**：空块（前导 / 连续）**不再是校验项**——空块规则是"显示 / 保存点"
+/// 规则（前端在保存点归一化），DB 允许编辑期的中间态（否则防抖自动保存会被拒）
 pub fn validate_note_blocks(blocks: &[NoteBlock]) -> Result<(), TodoError> {
     if blocks.len() > MAX_NOTE_BLOCKS {
         return Err(TodoError::TooManyBlocks);
@@ -296,8 +298,8 @@ mod tests {
 
     #[test]
     fn note_blocks_enforce_block_count() {
-        // 恰好 100 块过；101 块拒（边界两侧都断言）
-        let mut blocks = vec![block(NoteBlockKind::Text, "")];
+        // 恰好 100 块过；101 块拒（边界两侧都断言；首块为有内容文本块——空块规则见 PATCH002）
+        let mut blocks = vec![block(NoteBlockKind::Text, "内容")];
         for _ in 1..MAX_NOTE_BLOCKS {
             blocks.push(block(NoteBlockKind::Image, ""));
         }
@@ -321,5 +323,54 @@ mod tests {
             serde_json::to_string(&NoteBlockKind::Image).expect("序列化必须成功"),
             "\"Image\""
         );
+    }
+
+    // —— PATCH002.2/.8 空块规则：DB 侧不校验（显示/保存点规则在前端） ——
+
+    #[test]
+    fn note_blocks_accept_blank_arrangements() {
+        // PATCH002.8：空块不再是校验项——前导/连续空块**可入库**（编辑期中间态），
+        // 归一化只发生在前端"保存点"（Ctrl+Enter / 焦点离开 / 关板）
+        let blank = || block(NoteBlockKind::Text, "");
+        let content = || block(NoteBlockKind::Text, "内容");
+        let image = || NoteBlock {
+            id: 0,
+            kind: NoteBlockKind::Image,
+            text: String::new(),
+            image_file: Some("note_x/1.png".to_string()),
+        };
+        assert!(
+            validate_note_blocks(&[blank(), content()]).is_ok(),
+            "前导空块可入库"
+        );
+        assert!(
+            validate_note_blocks(&[content(), blank(), blank()]).is_ok(),
+            "连续空块可入库"
+        );
+        assert!(
+            validate_note_blocks(&[content(), blank(), content()]).is_ok(),
+            "内容｜空｜内容 过"
+        );
+        assert!(
+            validate_note_blocks(&[content(), blank()]).is_ok(),
+            "内容｜空 过"
+        );
+        assert!(
+            validate_note_blocks(&[blank()]).is_ok(),
+            "整条全空保留一个空块过"
+        );
+        assert!(
+            validate_note_blocks(&[image(), blank()]).is_ok(),
+            "图后空块过"
+        );
+        // 仍必须拒的：无文本块 / 换行 / 超长 / 块数超限
+        assert!(matches!(
+            validate_note_blocks(&[image()]),
+            Err(TodoError::EmptyBlocks)
+        ));
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Text, "a\nb")]),
+            Err(TodoError::NewlineInTextBlock)
+        ));
     }
 }

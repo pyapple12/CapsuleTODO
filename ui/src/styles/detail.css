@@ -85,23 +85,34 @@
 }
 
 /* 笔记卡壳（2026-09-25）：textarea 身兼滚动容器（要被 mask）与玻璃卡本体（不该被
-   mask）冲突——卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字墨迹 */
+   mask）冲突——卡外观移到壳上静止不动，textarea 透明填壳，mask 只淡文字墨迹。
+   PATCH002.11 内外分层：**壳只做装饰**（圆角/描边/落影），**内层 .note-scroll 才是滚动
+   容器与套件挂载点**——CSS mask 会作用于元素自身渲染，挂壳上会连壳的描边/落影一起淡掉 */
 .note-shell {
   flex: 1;
   min-height: 0;
+  overflow: hidden; /* 内层圆角随壳裁切 */
   border-radius: var(--radius-panel);
   background: var(--panel-bg);
   box-shadow: var(--panel-stroke), var(--panel-shadow);
 }
 
-/* 气泡图片模式（PL024）：img 接管板面，超高图由壳自行滚动（textarea 缺席，
+/* 内层滚动容器（透明、无描边/落影——mask 只作用于它，不动壳装饰） */
+.note-scroll {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: inherit;
+  overflow-y: auto;
+  overflow-x: hidden; /* 零横向滑杆：overflow-y:auto 会把 overflow-x 计算成 auto，须显式压住 */
+}
+
+/* 气泡图片模式（PL024）：img 接管板面，超高图由内层自行滚动（textarea 缺席，
    滑杆/阅读三角不挂载属可接受降态——图片模式无长文滚动需求） */
-.note-shell.image-shell {
+.note-scroll.image-shell {
   display: flex;
   align-items: safe center; /* 短图垂直居中；超高图退回顶部对齐（safe 防滚动容器裁头） */
   justify-content: center;
-  overflow-y: auto;
-  overflow-x: hidden; /* 零横向滑杆：overflow-y:auto 会把 overflow-x 计算成 auto，须显式压住（PL024.8c） */
 }
 
 .detail-image {
@@ -217,11 +228,11 @@
 
 /* —— PL027 详情块序列（一段一行一块 + 图块混排）—— */
 
-/* 块列表滚动容器（id 沿用 detail-note：帘特判与板内套件零改动） */
-.note-shell.note-blocks {
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 4px 2px;
+/* 块列表滚动容器（id 沿用 detail-note：帘特判与板内套件零改动）。
+   顶内距 6px + 文本块自身 2px = 首行距容器顶 8px——与改块模型前 `.detail-note`
+   的 8px 一致（PATCH002：躲开板内阅读顶部 6px 软边，其余间距一律不动） */
+.note-scroll.note-blocks {
+  padding: 6px 2px;
 }
 
 .note-block {
@@ -310,13 +321,6 @@
 
 .note-block-del:active {
   transform: scale(0.9);
-}
-
-/* 键盘焦点命中面（选中态键盘删：透明覆盖层，聚焦即选中） */
-.note-block-hit {
-  position: absolute;
-  inset: 0;
-  outline: none;
 }
 
 /* 删除动效：高度塌缩 + 淡出（max-height 由 JS 钉住实测高再收到 0） */
