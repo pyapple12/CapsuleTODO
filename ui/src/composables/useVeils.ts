@@ -46,7 +46,7 @@ export function syncVeils(): void {
     // anyOpen=true 会把自家三角罩死；关板泄漏由"玻璃 visibility 连带隐藏"根治
     if (r.el.id === "archive-list") continue;
     // 详情板实例随详情板开合隐现（板开时自家三角必须可见，不吃 anyOpen 的帘）——
-    // 文本 textarea（detail-note）与图片壳（detail-image-shell，PL024.8c）两模式同规
+    // 文本只读 textarea（PATCH002.27：已不再自己滚，滚动容器是内层 .note-scroll）与图片壳两模式同规
     const veil = r.el.id === "detail-note" ? !detailOpen : anyOpen;
     for (const hint of r.hints) hint.classList.toggle("veiled", veil);
   }

@@ -176,7 +176,9 @@
 
 .detail-note {
   width: 100%;
-  height: 100%;
+  /* PATCH002.27：不再 `height: 100%` 自己滚——高度交给 JS 自动增高，滚动交回内层
+     `.note-scroll`（老结构里 textarea 自己就是滚动容器；`.11` 内外分层后套件挂在内层，
+     故外层 scrollHeight == clientHeight → 浮钮判定不可滚而隐藏、滑杆一条都看不见） */
   box-sizing: border-box;
   border: none;
   outline: none;
@@ -187,6 +189,7 @@
   font-size: 12px;
   line-height: 1.6;
   resize: none;
+  overflow: hidden;
   scrollbar-width: none; /* 隐藏原生滑杆（Firefox），useGlassBar 浮钮替代 */
 }
 
@@ -201,7 +204,9 @@
   display: none;
 }
 
-.detail-overlay.bubble-mode .note-shell.bubble-shell {
+/* PATCH002.27：改用**模式钩子**——原 `.note-shell.bubble-shell` 因 `.11` 把该类移到内层而失配
+   （单层玻璃失效、板内多出卡底与描边）。覆盖文本 + 图片两种 bubble 模式，与旧覆盖面一致 */
+.detail-overlay.bubble-mode .note-shell {
   background: transparent; /* 单层玻璃：壳也摘掉，文字直接落板面 */
   box-shadow: none;
 }
@@ -264,6 +269,37 @@
 
 .note-block-text::placeholder {
   color: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+/* 跨块选区高亮层（PATCH002.16/.17）：与文本域同款排版盒（字号/内距/折行一致），
+   文本透明只显底色；拖选期间临时接管指针事件（命中测试取字符偏移） */
+.note-block-sel-overlay {
+  position: absolute;
+  inset: 0;
+  padding: 2px 12px;
+  color: transparent;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.note-block-sel-overlay.sel-live {
+  pointer-events: auto;
+}
+
+.note-block-sel-overlay .sel-mark {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 2px;
+}
+
+/* 图块整块入选（图块无字符区间）：与图块选中态同族描边、弱一档 */
+.note-block-image.note-block-sel .note-block-img {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 /* 图块：与气泡详情图同款尺寸配方（宽 100% / 高自适应 / 同圆角） */

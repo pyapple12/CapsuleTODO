@@ -256,12 +256,15 @@ async function commitEdit(item: TodoItem): Promise<void> {
 // 内容增删后罩死复核（滚动监听经 useGlassBar 钩子已通；此处补重渲染路径）。
 // Vue 冻结防线（PL013 红线）：拖拽 engaged 期间外部 items 到达不重渲染——重挂 DOM
 // 与虚拟 DOM 打架防线；落点收场 rerender 统一重拉
-watchEffect(() => {
-  void props.items.length; // 依赖收集（FIX009.3：必须先于早退——拖拽期重跑若
-  // 零依赖登记即返回，effect 从此失活，收场 rerender 复核承诺落空）
-  syncMaskDead();
-  if (deferDuringDrag()) return; // 冻结期跳过（拖拽收场 rerender 统一复核）
-});
+watchEffect(
+  () => {
+    void props.items.length; // 依赖收集（FIX009.3：必须先于早退——拖拽期重跑若
+    // 零依赖登记即返回，effect 从此失活，收场 rerender 复核承诺落空）
+    syncMaskDead();
+    if (deferDuringDrag()) return; // 冻结期跳过（拖拽收场 rerender 统一复核）
+  },
+  { flush: "post" }, // PATCH002.19：改 post——pre 跑在 DOM 更新前，首次装载恒扫空
+);
 
 // 拖拽钩子安装（本组件只装一次——气泡组件重复调用幂等覆盖，钩子语义一致）
 const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（见 useDragReorder）

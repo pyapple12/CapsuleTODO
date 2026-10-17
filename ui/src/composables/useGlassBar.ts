@@ -54,6 +54,9 @@ export function useGlassBar(
   bar.dataset.for = scroller.id || scroller.className;
 
   const sync = (): void => {
+    // PATCH002.19：挂载 / 换页 / 开板收口等"内容已落定但还没滚过"那一拍也要复核罩死
+    // （此前只在滚动/输入/子节点变更时跑 → 首屏与开板第一眼恒不生效）
+    syncMaskDeadHook();
     const sr = scroller.getBoundingClientRect();
     const hr = anchor.getBoundingClientRect();
     if (!sr.height) {
@@ -76,8 +79,7 @@ export function useGlassBar(
   };
 
   const onScroll = (): void => {
-    sync();
-    syncMaskDeadHook();
+    sync(); // 内含罩死复核（PATCH002.19：收敛单点，不再单独调钩子）
   };
   scroller.addEventListener("scroll", onScroll);
   scroller.addEventListener("input", sync);
