@@ -111,6 +111,9 @@
   border-radius: inherit;
   overflow-y: auto;
   overflow-x: hidden; /* 零横向滑杆：overflow-y:auto 会把 overflow-x 计算成 auto，须显式压住 */
+  /* PATCH002.44 打点实证：`autosize` 的"塌一下"中间态会让**滚动锚定**自己调 `scrollTop`
+     （净布局不变、滚动却整整掉一行）→ 关掉锚定，位移改由 `pinViewport()` 显式补偿 */
+  overflow-anchor: none;
 }
 
 /* 气泡图片模式（PL024）：img 接管板面，超高图由内层自行滚动（textarea 缺席，
@@ -317,10 +320,13 @@
    **每帧改写**源块 textarea 的原生选区（末端随指针 x 变化），不压制就会与自绘层同区间
    叠加成"双层涂色"。**必须带 ID 前缀**：同文件 `#detail-note ::selection` 特异性 (1,0,0)
    高于裸类写法 (0,3,0)，裸类版曾被它压死、压制从未生效 */
-/* 文本域提层：压住自绘涂色层（涂色在下、文字在上 = 原生选择同观感，文字不变暗） */
+/* 文本域提层：压住自绘涂色层（涂色在下、文字在上 = 原生选择同观感，文字不变暗）；
+   `field-sizing: content`（PATCH002.44）：浏览器原生按内容定高（Chromium 123+），
+   可用时 JS 侧 `autosize` 自动让位——从根上消掉 `height="auto"` 的"塌一下"中间态 */
 .note-block-text {
   position: relative;
   z-index: 1;
+  field-sizing: content;
 }
 
 /* 跨块期间**所有**文本域让出 caret 命中（PATCH002.45）：覆盖层压在文字下层（z-index 分层），

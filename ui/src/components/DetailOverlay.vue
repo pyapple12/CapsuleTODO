@@ -76,10 +76,50 @@ function setTextEl(key: string, el: unknown): void {
   else textEls.delete(key);
 }
 
-/** 自动增高（内容换行显示，高度随内容） */
+// —— 临时诊断（PATCH002.44 打点，测完即删）已按纪律全清 ——
+
+/** 浏览器原生按内容定高（Chromium 123+）：可用时**不做** JS 增高——内联 `height` 会压过它。
+ * PATCH002.44：从根上杀掉 `height="auto"` 的"塌一下"中间态（滚动跳动的触发源之一） */
+const NATIVE_FIELD_SIZING =
+  typeof CSS !== "undefined" && typeof CSS.supports === "function"
+    ? CSS.supports("field-sizing", "content")
+    : false;
+
+/** 自动增高（内容换行显示，高度随内容）；原生 `field-sizing` 可用时交由浏览器（no-op） */
 function autosize(el: HTMLTextAreaElement): void {
+  if (NATIVE_FIELD_SIZING) return;
   el.style.height = "auto";
   el.style.height = `${el.scrollHeight}px`;
+}
+
+/** 结构性变更期间**钉住视口**（PATCH002.44）：变更前记锚块屏幕位置 → 变更后把 `scrollTop`
+ * 补偿同样的差值，使锚块在屏幕上**不动**；变更前已到底 → 改为维持底部（原条目 ②）。
+ * `mutate` 可为异步（删块要跨塌缩动画）；`anchorEl` 缺省由调用方给"位置稳定的参照块" */
+function pinViewport(
+  anchorEl: HTMLElement | null,
+  mutate: () => void | Promise<void>,
+): Promise<void> {
+  const el = scrollEl.value;
+  const atBottom = el ? el.scrollTop >= el.scrollHeight - el.clientHeight - 1 : false;
+  const before = anchorEl ? anchorEl.getBoundingClientRect().top : null;
+  return Promise.resolve(mutate()).then(() =>
+    nextTick(() => {
+      if (!el) return;
+      if (atBottom) {
+        el.scrollTop = el.scrollHeight; // 到底态：维持底部（增行不把视口甩上去）
+        return;
+      }
+      if (before == null || !anchorEl?.isConnected) return;
+      const delta = anchorEl.getBoundingClientRect().top - before;
+      if (delta) el.scrollTop += delta;
+    }),
+  );
+}
+
+/** 当前聚焦块元素（`pinViewport` 缺省锚点：光标所在块，无聚焦则 null） */
+function focusedBlockEl(): HTMLElement | null {
+  const active = document.activeElement as HTMLElement | null;
+  return active?.closest<HTMLElement>(".note-block") ?? null;
 }
 
 /** 气泡全文板自动增高（PATCH002.27）：只读 textarea 不再自己滚，滚动交回内层
@@ -205,7 +245,7 @@ function focusBlock(key: string, caret: number): void {
   void nextTick(() => {
     const el = textEls.get(key);
     if (!el) return;
-    el.focus();
+    el.focus({ preventScroll: true }); // PATCH002.44：位移由 pinViewport 显式补偿，别让浏览器替我们滚
     el.setSelectionRange(caret, caret);
     autosize(el);
   });
@@ -224,17 +264,19 @@ function splitBlock(index: number, at: number): void {
   const block = blocks.value[index];
   if (!block) return;
   pushUndo(); // 结构性操作入栈（Ctrl+Z 可回退本次拆块）
-  const after = block.text.slice(at);
-  block.text = block.text.slice(0, at);
   const created: LocalBlock = {
     id: 0,
     kind: "Text",
-    text: after,
+    text: block.text.slice(at),
     image_path: null,
     _key: localKey(),
   };
-  blocks.value.splice(index + 1, 0, created);
-  scheduleSave();
+  // PATCH002.44：拆块改内容高 → 钉住视口（锚 = 光标块，其顶不变）
+  void pinViewport(focusedBlockEl(), () => {
+    block.text = block.text.slice(0, at);
+    blocks.value.splice(index + 1, 0, created);
+    scheduleSave();
+  });
   focusBlock(created._key, 0);
 }
 
@@ -245,35 +287,99 @@ function mergeWithPrev(index: number): void {
   if (!prev || !cur || prev.kind !== "Text") return;
   pushUndo();
   const joinAt = prev.text.length;
-  prev.text += cur.text;
-  blocks.value.splice(index, 1);
-  scheduleSave();
+  // PATCH002.44：合并改内容高 → 钉住视口（锚 = 光标块，其顶不变）
+  void pinViewport(focusedBlockEl(), () => {
+    prev.text += cur.text;
+    blocks.value.splice(index, 1);
+    scheduleSave();
+  });
   focusBlock(prev._key, joinAt);
 }
 
-/** 删除块（图块三入口共用；动效：塌缩淡出后再落库——文件引用由服务端归零释放） */
-async function deleteBlock(index: number): Promise<void> {
+/** 删块动效时长（PATCH002.44：塌缩淡出 180ms） */
+const DELETE_ANIM_MS = 180;
+
+/** 撤掉塌缩内联样式（动效被放弃时把行还原） */
+function clearCollapse(el: HTMLElement | null): void {
+  if (!el) return;
+  el.style.removeProperty("max-height");
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("overflow");
+}
+
+/** 删除块（图块三入口共用；动效：塌缩淡出后再落库——文件引用由服务端归零释放）。
+ * `caretTo`（PATCH002.37）：删后把光标交还给相邻**文本**块（"prev" 落其末尾 / "next" 落其
+ * 开头）；**甲案定案**——邻居是图块则不推焦点（维持现状），无 caretTo 的入口（图块 × /
+ * 选中态键盘删）也不推。
+ * **动效（PATCH002.44 乙案）**：改由 **Web Animations API** 驱动（实测高 → 0 + 淡出），
+ * `.finished` 才摘数据——不再依赖"Vue 打拍后才挂 `.note-block-leaving`"的时机（那会让过渡
+ * 永不成立、行瞬间消失）。**动效与"视口钉住"在删除场景互斥**：有动效 → 下面内容平滑上移
+ * （刻意动效，不钉）；无动效（`el.animate` 缺席的降级分支）→ 才钉住视口兜跳动。
+ * **可回退**：动效期间用户撤销（`undoSeq` 变）→ 放弃收场并还原行观感，不覆盖其回退 */
+async function deleteBlock(index: number, caretTo: "prev" | "next" | null = null): Promise<void> {
   const block = blocks.value[index];
   if (!block) return;
   pushUndo();
+  const seq = undoSeq; // 收场前复核代际（见函数头"可回退"）
   if (selectedKey.value === block._key) selectedKey.value = "";
-  leavingKey.value = block._key;
-  // 高度塌缩 + 淡出（先钉住实测高再收到 0，max-height 才可过渡）
-  const el = overlay.value?.querySelector<HTMLElement>(`[data-row-id="${index + 1}"]`);
-  if (el) {
-    el.style.overflow = "hidden";
-    el.style.maxHeight = `${el.offsetHeight}px`;
-    void el.offsetHeight; // 强制回流，确保 max-height 过渡生效
-    el.style.maxHeight = "0px";
-    el.style.opacity = "0";
+  const rowEl: HTMLElement | null =
+    overlay.value?.querySelector<HTMLElement>(`[data-row-id="${index + 1}"]`) ?? null;
+  // 锚 = 被删块的下一块（位置稳定；无下一块取上一块）——**仅供降级分支**钉视口
+  const anchorRow = blocks.value[index + 1] ? index + 2 : index;
+  const anchorEl =
+    overlay.value?.querySelector<HTMLElement>(`[data-row-id="${anchorRow}"]`) ?? null;
+  let anim: Animation | null = null;
+  /** 收场：摘数据 + 交还光标 + 落库；**代际不符（用户已撤销）则放弃并还原行观感** */
+  const settle = async (): Promise<void> => {
+    if (undoSeq !== seq) {
+      leavingKey.value = "";
+      anim?.cancel(); // 撤掉 forwards 填充
+      clearCollapse(rowEl);
+      return;
+    }
+    leavingKey.value = "";
+    const at = blocks.value.findIndex((b) => b._key === block._key);
+    if (at < 0) return;
+    blocks.value.splice(at, 1);
+    // PATCH002.37（甲案）：邻居是**文本**块才交还光标；是图块则维持现状（不强推焦点）
+    if (caretTo) {
+      const neighbor = caretTo === "prev" ? blocks.value[at - 1] : blocks.value[at];
+      if (neighbor?.kind === "Text") {
+        focusBlock(neighbor._key, caretTo === "prev" ? neighbor.text.length : 0);
+      }
+    }
+    scheduleSave();
+    await saveBlocks();
+  };
+  leavingKey.value = block._key; // 语义标记（淡出视觉由动画 / 内联样式负责）
+  if (rowEl && typeof rowEl.animate === "function") {
+    // 乙案：Web Animations 驱动（与 Vue 渲染解耦；finished 精确收场，慢帧也不移位）
+    rowEl.style.overflow = "hidden";
+    anim = rowEl.animate(
+      [
+        { maxHeight: `${rowEl.offsetHeight}px`, opacity: 1 },
+        { maxHeight: "0px", opacity: 0 },
+      ],
+      { duration: DELETE_ANIM_MS, easing: "ease", fill: "forwards" },
+    );
+    await anim.finished.catch((err) => {
+      console.error("删除动效被中断（继续收场）", err);
+    });
+    await settle();
+    return;
   }
-  await new Promise((resolve) => window.setTimeout(resolve, 180));
-  leavingKey.value = "";
-  const at = blocks.value.findIndex((b) => b._key === block._key);
-  if (at < 0) return;
-  blocks.value.splice(at, 1);
-  scheduleSave();
-  await saveBlocks();
+  // 降级：无 Web Animations → 瞬间消失，由钉住视口兜住跳动（PATCH002.44 前行为）
+  await pinViewport(anchorEl, async () => {
+    if (rowEl) {
+      rowEl.style.overflow = "hidden";
+      rowEl.style.maxHeight = `${rowEl.offsetHeight}px`;
+      void rowEl.offsetHeight; // 强制回流，确保 max-height 过渡生效
+      rowEl.style.maxHeight = "0px";
+      rowEl.style.opacity = "0";
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, DELETE_ANIM_MS));
+    await settle();
+  });
 }
 
 /** 与下一文本块合并（Delete@块尾，PATCH002.22）：本块接上下块全文 + 删下块，光标留原位置 */
@@ -283,9 +389,12 @@ function mergeWithNext(index: number): void {
   if (!cur || !next || next.kind !== "Text") return;
   pushUndo();
   const caret = cur.text.length;
-  cur.text += next.text;
-  blocks.value.splice(index + 1, 1);
-  scheduleSave();
+  // PATCH002.44：合并改内容高 → 钉住视口（锚 = 光标块，其顶不变）
+  void pinViewport(focusedBlockEl(), () => {
+    cur.text += next.text;
+    blocks.value.splice(index + 1, 1);
+    scheduleSave();
+  });
   focusBlock(cur._key, caret);
 }
 
@@ -307,16 +416,18 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
     splitBlock(index, start);
     return;
   }
-  // ① 空块：删掉"本块这一行"本身（首块 Backspace / 末块 Delete 无处可并 → 保持原状）
+  // ① 空块：删掉"本块这一行"本身（首块 Backspace / 末块 Delete 无处可并 → 保持原状）；
+  // PATCH002.37（甲案）：删后光标交还相邻**文本**块（Backspace → 上一文本块末尾、
+  // Delete → 下一文本块首字前）；邻居是图块则不推焦点（维持现状）
   if (collapsed && block.text === "") {
     if (e.key === "Backspace" && index > 0) {
       e.preventDefault();
-      void deleteBlock(index);
+      void deleteBlock(index, "prev");
       return;
     }
     if (e.key === "Delete" && index < blocks.value.length - 1) {
       e.preventDefault();
-      void deleteBlock(index);
+      void deleteBlock(index, "next");
       return;
     }
   }
@@ -747,6 +858,9 @@ function onBlocksFocusOut(e: FocusEvent): void {
 /** 结构性操作快照栈（上限 30；浅拷贝块对象——_key 一并保留，还原时不重挂 DOM） */
 const undoStack: Array<LocalBlock[]> = [];
 const UNDO_LIMIT = 30;
+/** 撤销代际（PATCH002.44）：删块动效是"**延迟收场**"，收场前复核本代际——用户已撤销则放弃
+ * 收场（否则 180ms 后的摘除会覆盖用户的回退 = "动效期间按 Ctrl+Z 无效"） */
+let undoSeq = 0;
 
 /** 结构性操作**前**入栈（拆块/合并/删块/插图/多行粘贴/选区删除） */
 function pushUndo(): void {
@@ -763,6 +877,7 @@ function dropUndo(): void {
 function undoStructural(): void {
   const snapshot = undoStack.pop();
   if (!snapshot) return;
+  undoSeq += 1; // PATCH002.44：撤销代际 +1（在飞的删块动效收场时据此放弃）
   clearSel();
   selectedKey.value = "";
   blocks.value = snapshot.map((b) => ({ ...b }));

@@ -71,6 +71,18 @@ function onInput(): void {
   glassBar?.sync();
 }
 
+/** 板级保存手势（PATCH002.43）：Ctrl+S / Ctrl+Enter = **保存 + 退出输入**（白板不关板，
+ * 与详情板 Ctrl+Enter 区分）。挂 textarea 而非 window——白板是 v-show 常驻挂载，window 级
+ * 会在清单/气泡页也截走 Ctrl+S 并去保存看不见的白板；挂 textarea 天然"只在输入中生效"，
+ * 正好等于"退出输入"语义。失败时 `flush()` 已写错误行（沿白板既有可见口径） */
+function onBoardKeydown(e: KeyboardEvent): void {
+  if (e.isComposing) return;
+  const key = e.key.toLowerCase();
+  if (!(e.ctrlKey || e.metaKey) || (key !== "s" && e.key !== "Enter")) return;
+  e.preventDefault(); // Ctrl+S 免触发"保存网页"
+  void flush().then(() => boardEl.value?.blur());
+}
+
 defineExpose({ flush });
 
 // 内容变化重算 ▲▼ 三角显隐（bug4 修复）：textarea 内容清空/增删不产生 DOM 子节点
@@ -113,6 +125,7 @@ onUnmounted(() => {
         spellcheck="false"
         :disabled="loadFailed"
         @input="onInput"
+        @keydown="onBoardKeydown"
       ></textarea>
     </div>
     <p v-if="error" class="error">
