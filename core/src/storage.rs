@@ -698,6 +698,30 @@ impl Storage {
         Ok(removed)
     }
 
+    /// 目标块必须存在且属于该条目（PATCH002.46）：块 id 有三条路径会指向"库里不存在的
+    /// 块"（空笔记的幻影块 id=0 / 跨条目陈旧 id / 前端未回填的新块），此前它们都在
+    /// **落盘之后**才失败 → 留下孤儿夹（PATCH002.41）。校验前移到任何文件写入之前
+    fn require_note_block(&self, todo_id: i64, block_id: i64) -> Result<(), StorageError> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                rusqlite::params![block_id, todo_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        exists.ok_or(StorageError::NotFound(block_id))?;
+        Ok(())
+    }
+
+    /// 落盘后失败 → 补偿清扫（PATCH002.46）：把刚落下的图收回去，避免"粘贴失败却留下
+    /// 孤儿夹"（清扫只碰 `note_*` 且只删零引用夹；best-effort 不阻断错误向上传播）
+    fn sweep_after_failed_write(&self, images_dir: &Path) {
+        if let Err(err) = self.sweep_orphan_note_images(images_dir) {
+            eprintln!("粘贴失败后详情图清扫失败（best-effort 不阻断）：{err}");
+        }
+    }
+
     /// 全量覆盖写块（PL027）：事务内**按 id 差分 upsert**（id > 0 = 更新、id = 0 = 新增），
     /// 并删除清单外的旧块（图块 id 恒 > 0——新图块只由粘贴命令产生）。形态不变量由调用方
     /// 经 `todo::validate_note_blocks` 把关。**被移除图块的文件引用一并精确释放**（块集
@@ -798,43 +822,28 @@ impl Storage {
         orig_name: Option<&str>,
         stamp: &str,
     ) -> Result<Vec<NoteBlock>, StorageError> {
-        let hash = fnv1a_hex(bytes);
-        let existing: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT image_file FROM note_blocks
-                 WHERE image_hash = ?1 AND image_file IS NOT NULL LIMIT 1",
-                [&hash],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let rel = match existing {
-            Some(rel) => rel,
-            None => {
-                let folder = next_seq_folder(images_dir, "note", stamp);
-                let seq = folder.rsplit('_').next().unwrap_or("1");
-                let inner = match orig_name {
-                    Some(name) => sanitize_file_name(name),
-                    None => format!("snap_{stamp}_{seq}.png"),
-                };
-                let dir = images_dir.join(&folder);
-                std::fs::create_dir_all(&dir)?;
-                std::fs::write(dir.join(&inner), bytes)?;
-                if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
-                    if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
-                        eprintln!("详情图预览写入失败（降级用原图）：{err}");
-                    }
-                }
-                format!("{folder}/{inner}")
+        // ⓪ 目标块必须先存在（PATCH002.46，同 `insert_note_parts`）——校验先于任何落盘
+        self.require_note_block(todo_id, block_id)?;
+        // ① 落盘或复用（与多段粘贴共用同一份 `write_note_image`：同 hash 复用同一文件、
+        // 命中不写盘；此处原内联实现逐字等价，抽出即免两份维护）
+        let (hash, rel) = match self.write_note_image(images_dir, bytes, orig_name, stamp) {
+            Ok(pair) => pair,
+            Err(err) => {
+                self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
+                return Err(err);
             }
         };
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(), StorageError> {
-            let order: i64 = self.conn.query_row(
-                "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
-                rusqlite::params![block_id, todo_id],
-                |row| row.get(0),
-            )?;
+            let order: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                    rusqlite::params![block_id, todo_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let order = order.ok_or(StorageError::NotFound(block_id))?;
             let follows: i64 = self.conn.query_row(
                 "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
                 rusqlite::params![todo_id, order],
@@ -917,6 +926,7 @@ impl Storage {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     eprintln!("插图事务回滚失败：{rollback}");
                 }
+                self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
                 return Err(err);
             }
         }
@@ -978,23 +988,37 @@ impl Storage {
         parts: &[NotePastePart],
         stamp: &str,
     ) -> Result<Vec<NoteBlock>, StorageError> {
+        // ⓪ 目标块必须先存在（PATCH002.46）：幻影块 id=0 / 跨条目陈旧 id 此前都在**落盘
+        // 之后**才失败 → 留下孤儿夹（PATCH002.41）；校验前移到任何文件写入之前
+        self.require_note_block(todo_id, block_id)?;
         // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）
         let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
-        for part in parts {
-            match part {
-                NotePastePart::Image { bytes, orig_name } => images.push(Some(
-                    self.write_note_image(images_dir, bytes, orig_name.as_deref(), stamp)?,
-                )),
-                NotePastePart::Text(_) => images.push(None),
+        let written = (|| -> Result<(), StorageError> {
+            for part in parts {
+                match part {
+                    NotePastePart::Image { bytes, orig_name } => images.push(Some(
+                        self.write_note_image(images_dir, bytes, orig_name.as_deref(), stamp)?,
+                    )),
+                    NotePastePart::Text(_) => images.push(None),
+                }
             }
+            Ok(())
+        })();
+        if let Err(err) = written {
+            self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫（不留半份）
+            return Err(err);
         }
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(), StorageError> {
-            let order: i64 = self.conn.query_row(
-                "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
-                rusqlite::params![block_id, todo_id],
-                |row| row.get(0),
-            )?;
+            let order: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                    rusqlite::params![block_id, todo_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let order = order.ok_or(StorageError::NotFound(block_id))?;
             let follows: i64 = self.conn.query_row(
                 "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
                 rusqlite::params![todo_id, order],
@@ -1103,6 +1127,7 @@ impl Storage {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     eprintln!("多段粘贴事务回滚失败：{rollback}");
                 }
+                self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
                 return Err(err);
             }
         }
@@ -2458,6 +2483,60 @@ mod tests {
             vec!["前半", "", "后半"],
             "光标处切分 before/图/after"
         );
+    }
+
+    /// 盘上 `note_*` 文件夹数（断言"校验在落盘之前"用）
+    fn note_folder_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|it| {
+                it.flatten()
+                    .filter(|e| {
+                        e.path().is_dir() && e.file_name().to_string_lossy().starts_with("note_")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn paste_parts_into_missing_block_fails_before_writing_files() {
+        // PATCH002.46：目标块不存在（空笔记的幻影块 id=0 / 跨条目陈旧 id）→ 可读 NotFound，
+        // 且**一个字节都不落盘**——此前"先落盘、后查块"会留下孤儿夹（PATCH002.41 的主因）
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let err = st
+            .insert_note_parts(
+                &dir,
+                item.id,
+                0,
+                "",
+                "",
+                &[NotePastePart::Image {
+                    bytes: png_bytes(),
+                    orig_name: None,
+                }],
+                "261018000000",
+            )
+            .expect_err("目标块不存在必须报错");
+        assert!(
+            matches!(err, StorageError::NotFound(0)),
+            "应报可读 NotFound（此前只有 QueryReturnedNoRows）"
+        );
+        assert_eq!(note_folder_count(&dir), 0, "校验在落盘之前 → 不该建文件夹");
+    }
+
+    #[test]
+    fn insert_image_into_missing_block_fails_before_writing_files() {
+        // PATCH002.46：单图插入同款——先校验后落盘
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let err = st
+            .add_note_image_block(&dir, item.id, 0, "", "", &png_bytes(), None, "261018000000")
+            .expect_err("目标块不存在必须报错");
+        assert!(matches!(err, StorageError::NotFound(0)));
+        assert_eq!(note_folder_count(&dir), 0, "不该建文件夹");
     }
 
     #[test]

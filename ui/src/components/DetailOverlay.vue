@@ -130,47 +130,56 @@ function signature(list: LocalBlock[]): string {
   return JSON.stringify(list.map((b) => ({ id: b.id, kind: b.kind, text: b.text })));
 }
 
-/** 排入防抖保存（无变更/未开板直接跳过） */
+/** 排入防抖保存（无变更/未开板直接跳过）。**捕获** {todoId, list} 再排定（PATCH002.47）：
+ * 切源会整体换数组 → 捕获引用即"那一条目的那一份"（同条目内 v-model 原地改仍取到最新文本） */
 function scheduleSave(): void {
   clearTimeout(saveTimer);
   const todo = props.todo;
   if (todo == null) return;
   if (signature(blocks.value) === savedSignature) return;
+  const todoId = todo.id;
+  const list = blocks.value;
   saveTimer = window.setTimeout(() => {
-    void saveBlocks();
+    void saveBlocksFor(todoId, list);
   }, 300);
 }
 
-/** 立即落库（防抖到点 / 关板 / 切源 / 粘贴前调用）；失败落 console（详情板不设提示行，UI 静默）。
- * 守卫：本地块尚未载入当前条目（savedTodoId 未锚定）时直接跳过——防"开板瞬间
- * 空列表被当成全量覆盖"把服务端块集清空（冒烟实证：开板即报"详情块为空"） */
-async function saveBlocks(): Promise<void> {
-  const todo = props.todo;
-  if (todo == null) return;
-  if (savedTodoId !== todo.id) return;
-  const sig = signature(blocks.value);
-  if (sig === savedSignature && savedTodoId === todo.id) return;
-  const payload = blocks.value.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
+/** 立即落库**指定条目**的块列表（防抖到点 / 关板 / 切源 / 粘贴前调用）；失败落 console
+ * （详情板不设提示行，UI 静默）。**按入参而非当前 props 落库**——切源后仍能把旧条目的
+ * 未决编辑写回旧 id（PATCH002.47）；`force` 绕开签名比对（给本地独有的 id=0 块拿 id，
+ * 治"幻影块永不落库"，PATCH002.46）。
+ * 守卫：该条目尚未锚定（`savedTodoId` 不符）时直接跳过——防"开板瞬间空列表被当成
+ * 全量覆盖"把服务端块集清空（冒烟实证：开板即报"详情块为空"） */
+async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false): Promise<void> {
+  if (!force && savedTodoId !== todoId) return;
+  const sig = signature(list);
+  if (!force && sig === savedSignature && savedTodoId === todoId) return;
+  const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
-    const saved = await invoke<NoteBlock[]>("note_blocks_save", {
-      todoId: todo.id,
-      blocks: payload,
-    });
-    if (props.todo?.id !== todo.id) return;
+    const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
+    // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
+    if (blocks.value !== list) return;
     // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
     saved.forEach((b, i) => {
-      const local = blocks.value[i];
+      const local = list[i];
       if (!local) return;
       local.id = b.id;
       local.kind = b.kind;
       local.image_path = b.image_path;
     });
-    savedTodoId = todo.id;
-    savedSignature = signature(blocks.value);
+    savedTodoId = todoId;
+    savedSignature = signature(list);
     emit("changed");
   } catch (err) {
     console.error("详情保存失败", err);
   }
+}
+
+/** 当前条目的立即落库（薄壳；`force` 见 `saveBlocksFor`） */
+async function saveBlocks(force = false): Promise<void> {
+  const todo = props.todo;
+  if (todo == null) return;
+  await saveBlocksFor(todo.id, blocks.value, force);
 }
 
 /** 载入该条目的块（开板/切条目/收场重拉） */
@@ -420,7 +429,7 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const html = e.clipboardData?.getData("text/html") ?? "";
   if (html.includes("<img")) {
     e.preventDefault();
-    await pasteHtmlAt(index, start, end, html);
+    await pasteHtmlAt(index, start, end, html, e.clipboardData?.getData("text/plain") ?? "");
     return;
   }
   if (clipboardHasImage(e)) {
@@ -435,7 +444,21 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   }
 }
 
-/** 插图：先 flush 未决保存（把 live 文本交上去）→ Rust 落盘/复用 + 切分插入 →
+/** 粘贴前置就绪（PATCH002.46）：目标块必须**已在库中**（id > 0）——"幻影块"（空笔记首块由
+ * `normalizeBlocks` 补出 `id=0`，且基准比对让它永不落库）与"跨条目未载完"都会让 Rust
+ * 定位不到行、静默失败。返回是否就绪；未就绪由调用方中止并落一条可读错误 */
+async function ensureBlocksReady(): Promise<boolean> {
+  const todo = props.todo;
+  if (todo == null) return false;
+  if (savedTodoId !== todo.id) {
+    await loadBlocks(todo.id); // 切源/开板未载完 → 先载
+    if (savedTodoId !== todo.id) return false;
+  }
+  if (blocks.value.some((b) => b.id <= 0)) await saveBlocks(true); // 本地独有的块必须先拿到 id
+  return true;
+}
+
+/** 插图：先过就绪闸（把 live 文本交上去 + 保证目标块已落库）→ Rust 落盘/复用 + 切分插入 →
  * **外科式打补丁**（PATCH002.14：按 id 映射回既有块、保 `_key`，DOM 不重挂、原生
  * undo 栈不丢——整体替换会重建全部 textarea 的 DOM） */
 async function pasteImageAt(
@@ -447,13 +470,22 @@ async function pasteImageAt(
   const todo = props.todo;
   const block = blocks.value[index];
   if (todo == null || !block) return;
-  const before = block.text.slice(0, start);
-  const after = block.text.slice(end);
-  await saveBlocks(); // 保证块 id 已回填（本地新块 id=0 无法定位）
+  const key = block._key; // await 期间数组可能被整体替换 → 之后一律按 _key 重解析
+  if (!(await ensureBlocksReady())) {
+    console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
+    return;
+  }
+  const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
+  if (!target || target.id <= 0) {
+    console.error("粘贴中止：目标块定位失败", { key });
+    return;
+  }
+  const before = target.text.slice(0, Math.min(start, target.text.length));
+  const after = target.text.slice(Math.min(end, target.text.length));
   try {
     const outcome = await invoke<NotePasteOutcome>("note_paste_image", {
       todoId: todo.id,
-      blockId: block.id,
+      blockId: target.id,
       before,
       after,
     });
@@ -467,32 +499,54 @@ async function pasteImageAt(
       emit("changed");
     } else {
       // 剪贴板无图（或非图片文件）→ 回落文本粘贴（含多行拆块），不吞粘贴
-      pasteTextLines(index, start, end, fallbackText);
+      const at = blocks.value.findIndex((b) => b._key === key);
+      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText);
     }
   } catch (err) {
     console.error("插入图片失败", err);
   }
 }
 
-/** 含图 HTML 粘贴（PATCH002.25）：先 flush（块 id 就位）→ Rust 多段插入（`data:` 图直解、
- * 其他 scheme 降级文本链接）→ **整体替换本地块**（沿 `pasteImageAt` 的外科式打补丁口径） */
-async function pasteHtmlAt(index: number, start: number, end: number, html: string): Promise<void> {
+/** 含图 HTML 粘贴（PATCH002.25）：先过就绪闸（块 id 就位）→ Rust 多段插入（`data:` 图直解、
+ * 其他 scheme 降级文本链接 / 不支持的图降级短占位）→ **整体替换本地块**（沿 `pasteImageAt`
+ * 的外科式打补丁口径）；片段全空 → 回落纯文本剪贴板（PATCH002.46，此前这条退路是断的） */
+async function pasteHtmlAt(
+  index: number,
+  start: number,
+  end: number,
+  html: string,
+  fallbackText: string,
+): Promise<void> {
   const todo = props.todo;
   const block = blocks.value[index];
   if (todo == null || !block) return;
-  const before = block.text.slice(0, start);
-  const after = block.text.slice(end);
-  await saveBlocks();
+  const key = block._key;
+  if (!(await ensureBlocksReady())) {
+    console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
+    return;
+  }
+  const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
+  if (!target || target.id <= 0) {
+    console.error("粘贴中止：目标块定位失败", { key });
+    return;
+  }
+  const before = target.text.slice(0, Math.min(start, target.text.length));
+  const after = target.text.slice(Math.min(end, target.text.length));
   try {
     const outcome = await invoke<NotePasteOutcome>("note_paste_html", {
       todoId: todo.id,
-      blockId: block.id,
+      blockId: target.id,
       before,
       after,
       html,
     });
     if (props.todo?.id !== todo.id) return;
-    if (outcome.status !== "image") return; // 片段全空 → 交原生文本粘贴
+    if (outcome.status !== "image") {
+      // 片段全空（剪贴板 HTML 里没有可入块的内容）→ 回落纯文本，不吞这次粘贴
+      const at = blocks.value.findIndex((b) => b._key === key);
+      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText);
+      return;
+    }
     pushUndo();
     blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
     savedSignature = signature(blocks.value);
@@ -603,9 +657,17 @@ function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
   return out;
 }
 
-/** **保存点**归一化 + 立即落库（PATCH002.8：Ctrl+Enter / 焦点离开块区 / 关板切源专用） */
-async function normalizeAndFlush(): Promise<void> {
+/** **保存点**归一化 + 立即落库（PATCH002.8：Ctrl+Enter / 焦点离开块区 / 关板切源专用）。
+ * 带 `todoId` 且**与当前 props 不符**（切源已发生）时走**快照路径**：只归一化这份快照再
+ * 落库、不回写当前板，且**强制落库**（此时 `savedTodoId` 可能已被切源改写，PATCH002.47） */
+async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<void> {
   clearTimeout(saveTimer);
+  const target = list ?? blocks.value;
+  if (todoId != null && todoId !== props.todo?.id) {
+    const snapshot = normalizeBlocks(target);
+    await saveBlocksFor(todoId, snapshot, true);
+    return;
+  }
   const next = normalizeBlocks(blocks.value);
   if (next.length !== blocks.value.length) {
     blocks.value = next;
@@ -1134,7 +1196,10 @@ watch(
   () => props.todo,
   (t) => {
     if (t) {
-      void flushPending(); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
+      // 切源快照：**清空前**捕获旧条目的 id 与块列表（PATCH002.47——切源 flush 必须写回旧 id，
+      // 否则"打字后立刻切条目"这段编辑永久丢失）
+      const prev = { todoId: savedTodoId, list: blocks.value };
+      void flushPending(prev); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
       bubbleImgSrc.value = ""; // 图片残留清防串板
       imageError.value = "";
       titleDraft.value = t.text;
@@ -1155,7 +1220,10 @@ watch(
   () => props.bubble,
   (b) => {
     if (b) {
-      void flushPending(); // todo→bubble 切源同款先 flush（FIX003.4）
+      // 切源快照（同 todo watch，PATCH002.47）：todo→气泡切换时 `props.todo` 已为 null，
+      // 必须按快照把未决编辑写回旧条目 id（否则这段编辑丢失）
+      const prev = { todoId: savedTodoId, list: blocks.value };
+      void flushPending(prev); // todo→bubble 切源同款先 flush（FIX003.4）
       if (b.kind === "Image") {
         // PL025 图片气泡：板面 = 落盘图片（按需取绝对路径 → asset 协议直读）
         bubbleText.value = "";
@@ -1240,9 +1308,10 @@ watch(titleDraft, (text) => {
   }, 300);
 });
 
-/** 立即保存未决草稿（关板/切源/卸载的 flush——保存不丢弃，FIX003.4）；快照自带
- * id，切换数据源后旧条目的草稿仍写回旧 id */
-async function flushPending(): Promise<void> {
+/** 立即保存未决草稿（关板/切源/卸载的 flush——保存不丢弃，FIX003.4）；`prev` = **切源前
+ * 捕获的** {todoId, list} 快照：watch 里 `props.todo` 已是新条目，必须按快照写回旧 id
+ * （否则守卫必假 → 旧条目的未决编辑丢失，PATCH002.47）。缺省按当前条目 */
+async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }): Promise<void> {
   clearTimeout(renameTimer);
   clearTimeout(saveTimer);
   const rename = renamePending;
@@ -1262,13 +1331,11 @@ async function flushPending(): Promise<void> {
         }),
     );
   }
-  // 详情块未决保存（PL027）：仅在 todo 模式、块已载入本条目、且有变更时落库（保存点先归一化）
-  if (
-    props.todo != null &&
-    savedTodoId === props.todo.id &&
-    signature(blocks.value) !== savedSignature
-  ) {
-    jobs.push(normalizeAndFlush());
+  // 详情块未决保存（PL027）：有快照按快照落库；无快照按当前条目（须已载入本条目）
+  const todoId = prev ? prev.todoId : (props.todo?.id ?? null);
+  const list = prev ? prev.list : blocks.value;
+  if (todoId != null && savedTodoId === todoId && signature(list) !== savedSignature) {
+    jobs.push(normalizeAndFlush(todoId, list));
   }
   await Promise.all(jobs);
 }

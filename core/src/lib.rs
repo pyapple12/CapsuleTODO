@@ -233,6 +233,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     storage
         .drop_image_column()
         .map_err(|err| format!("image 列退役失败：{err}"))?;
+    // PATCH002.46 启动清扫：清掉无块引用的 `note_*` 图片夹（历史孤儿 + 崩溃残留）。
+    // 失败 best-effort 只落日志——残留文件代价小于阻断启动（沿"详情图删除失败不阻断"先例）
+    if let Err(err) = storage.sweep_orphan_note_images(&images) {
+        eprintln!("启动详情图清扫失败（best-effort 不阻断）：{err}");
+    }
     // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
     // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
     let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();

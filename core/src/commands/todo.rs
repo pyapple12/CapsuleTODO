@@ -613,12 +613,18 @@ pub fn note_paste_html_core(
                 }
             }
             crate::html_paste::HtmlPart::Image(src) => match decode_data_url(&src) {
-                Some((bytes, orig_name)) if bytes.len() <= PASTE_HTML_MAX_ONE => {
-                    crate::clipboard_image::validate_image_bytes(&bytes)?;
+                Some((bytes, orig_name))
+                    if bytes.len() <= PASTE_HTML_MAX_ONE
+                        && crate::clipboard_image::validate_image_bytes(&bytes).is_ok() =>
+                {
                     parts.push(crate::storage::NotePastePart::Image { bytes, orig_name });
                 }
-                // 非 data: / 超限 / 解码失败 / 非法字节 → 降级文本链接（不吞、不阻断其余段）
-                _ => parts.push(crate::storage::NotePastePart::Text(src)),
+                // 非 data: / 超限 / 解码失败 / 非法字节（SVG、截断 PNG…）→ 降级文本
+                // （**判定而非传播**：PATCH002.46 前这里用 `?` 把单段失败升格为整条失败，
+                // 与本节注释相反——网页含 SVG 即整条粘贴全丢）
+                _ => parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
+                    &src,
+                ))),
             },
         }
     }
@@ -638,6 +644,17 @@ pub fn note_paste_html_core(
             .map(|b| to_block_view(b, images_dir))
             .collect(),
     })
+}
+
+/// 图片段无法入块时的降级文案（PATCH002.46）：`data:` 载荷是 base64 巨串，落成文本块会变成
+/// 一整块乱码 → 用短占位（沿 `note_copy_selection` 的超限占位口径）；其余（http(s)/相对
+/// 路径）原样留作文本链接（`.25` 的下载链路补齐后此处会自然改走图块）
+fn paste_fallback_text(src: &str) -> String {
+    if src.starts_with("data:") {
+        "🖼 图片".to_string()
+    } else {
+        src.to_string()
+    }
 }
 
 /// `data:` URL → 字节 + 内层名提示（仅 `;base64,` 形态；其余形态 None）
@@ -920,6 +937,42 @@ mod tests {
         let paths: Vec<String> = second.iter().filter_map(|b| b.image_path.clone()).collect();
         assert_eq!(paths.len(), 2, "两个图块");
         assert_eq!(paths[0], paths[1], "同内容复用同一文件");
+    }
+
+    #[test]
+    fn paste_html_degrades_unsupported_image_without_aborting() {
+        // PATCH002.46：单段失败不得升格为整条失败（`validate_image_bytes?` 的旧行为）
+        // ——网页含 SVG（image crate 不认）时：文本与正常图照进，SVG 降级为短占位
+        use base64::Engine as _;
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved =
+            note_blocks_save_core(item.id, &[input(0, NoteBlockKind::Text, "")], &dir, &ctx)
+                .expect("保存必须成功");
+        let png = base64::engine::general_purpose::STANDARD.encode(fixture_png());
+        let svg = base64::engine::general_purpose::STANDARD
+            .encode("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
+        let html = format!(
+            "<p>前文</p><img src=\"data:image/svg+xml;base64,{svg}\">\
+             <img src=\"data:image/png;base64,{png}\"><p>后文</p>"
+        );
+        let out = note_paste_html_core(item.id, saved[0].id, "", "", &html, &dir, &ctx)
+            .expect("含 SVG 也不得整条失败");
+        let NotePasteOutcome::Image { blocks } = out else {
+            panic!("必须命中图");
+        };
+        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert!(texts.contains(&"前文"), "SVG 之前的文本要进");
+        assert!(texts.contains(&"后文"), "SVG 之后的文本要进");
+        assert!(
+            texts.contains(&"🖼 图片"),
+            "SVG 降级为短占位（不是 base64 巨串）"
+        );
+        assert!(
+            blocks.iter().any(|b| b.image_path.is_some()),
+            "正常 PNG 仍要入块"
+        );
     }
 
     #[test]
