@@ -5,9 +5,11 @@
 import type { DragCtx } from "./useDragReorder";
 
 /**
- * 详情块换位判定（用户定案"按方向取缘"）：向上拖时，被拖块**上缘越过**目标行**上缘**即算越过；
- * 向下拖时，**下缘越过**目标行**下缘**才算。方向以起拖上缘 `selfTop` 判定。
- * 等高行时与机制缺省公式（中心对中心）数学等价——三缘同步，故等高列表不受影响。
+ * 详情块换位判定（PATCH002.58 用户定案"丙"：**被拖块的上 / 下缘越过目标行中线即换位**）：
+ * 向上拖看**上缘**、向下拖看**下缘**；方向以起拖上缘 `selfTop` 判定。
+ * **为什么放宽**（`.55` 的"缘对缘"实测手感问题）：目标行是**长文本块**时，"上缘越上缘"要拖
+ * 一整行那么远 → 手快/拖得短就"没换位、松手回原位"，像随机失效 ✗；改看**中线**后，越过程度
+ * 与"半个行高"挂钩，长短行手感一致 ✓。清单 / 气泡**不受影响**（各自 target 未配 `swapRule` ✓）。
  * @param ctx 拖拽上下文（含行快照 rows / 起拖槽位 fromIdx / 起拖上缘 selfTop / 行高 selfHeight）
  * @param eff 被拖块中心的当前等效位置（已补回自动滚动量）
  * @returns 目标槽位号（= 在其余行中的插入下标）
@@ -19,7 +21,7 @@ export function noteSwapRule(ctx: DragCtx, eff: number): number {
   let to = 0;
   ctx.rows.forEach((r, i) => {
     if (i === ctx.fromIdx) return;
-    if (downward ? r.top + r.height < effBottom : r.top < effTop) to += 1;
+    if (downward ? r.mid < effBottom : r.mid < effTop) to += 1;
   });
   return to;
 }

@@ -793,9 +793,8 @@ impl Storage {
                 return Err(err);
             }
         }
-        // PATCH002.56 正式不变量：**末块不得为图块** → 补一个空文本块（保"图后能输入"）。
-        // 单一事实源：与重排路径共用 `ensure_trailing_text_block`（前端半已否决，见该 helper 注释）
-        self.ensure_trailing_text_block(todo_id)?;
+        // PATCH002.56 口径改定（2026-10-19）：storage **不自行补块** —— 末块不变量由**前端在保存点**
+        // 唯一负责（两边都管会导致"补 → 下次保存被差分删"的来回抖动）
         // 释放不再被引用的图文件（旧路径 − **落库后仍存的**路径；引用数归零才删）。
         // 用落库后查询而非入参推断：入参只带 {id, kind, text}，图块文件信息在库内
         let surviving = self.note_image_paths(todo_id)?;
@@ -1160,33 +1159,9 @@ impl Storage {
         Ok(())
     }
 
-    /// 末块不得为图块（PATCH002.56 正式不变量）：末块是图时补一个空文本块（保"图后能输入"）。
-    /// **单一事实源**——保存（`set_note_blocks`）与重排（`reorder_note_blocks`）两路径共用；
-    /// 调用方负责事务。**前端半已否决**（push + 整表回写会固化旧顺序、`id = 0` 会毒化重排 id 集合）
-    fn ensure_trailing_text_block(&self, todo_id: i64) -> Result<(), StorageError> {
-        let last: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT kind FROM note_blocks WHERE todo_id = ?1
-                 ORDER BY sort_order DESC, id DESC LIMIT 1",
-                [todo_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if last.as_deref() == Some("image") {
-            self.conn.execute(
-                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                 VALUES (?1, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1),
-                         'text', '')",
-                [todo_id],
-            )?;
-        }
-        Ok(())
-    }
-
     /// 详情块重排（图块拖拽落点提交）：id 集合须与该 todo 现存块完全一致（长度/幽灵/重复），
-    /// 通过则按序 UPDATE sort_order（沿 reorder_todos 先例）；**重排后补"末块不得为图"**
-    /// （PATCH002.56：图被拖到末位时补一个空文本块，与保存路径同规、共用同一 helper）
+    /// 通过则按序 UPDATE sort_order（沿 reorder_todos 先例）。
+    /// **不自行补块**（PATCH002.56 口径改定 2026-10-19）：末块不变量由**前端在保存点**唯一负责
     pub fn reorder_note_blocks(&self, todo_id: i64, ids: &[i64]) -> Result<(), StorageError> {
         let mut existing: Vec<i64> = self
             .conn
@@ -1195,25 +1170,11 @@ impl Storage {
             .collect::<Result<Vec<_>, _>>()?;
         existing.sort_unstable();
         Self::validate_reorder_ids(ids, &existing, "详情块集")?;
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| -> Result<(), StorageError> {
-            for (i, id) in ids.iter().enumerate() {
-                self.conn.execute(
-                    "UPDATE note_blocks SET sort_order = ?2 WHERE id = ?1",
-                    rusqlite::params![id, i as i64],
-                )?;
-            }
-            self.ensure_trailing_text_block(todo_id)?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => self.conn.execute_batch("COMMIT")?,
-            Err(err) => {
-                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("重排事务回滚失败：{rollback}");
-                }
-                return Err(err);
-            }
+        for (i, id) in ids.iter().enumerate() {
+            self.conn.execute(
+                "UPDATE note_blocks SET sort_order = ?2 WHERE id = ?1",
+                rusqlite::params![id, i as i64],
+            )?;
         }
         Ok(())
     }
@@ -2538,6 +2499,65 @@ mod tests {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// 图片块入参夹具（`set_note_blocks` 对 Image 只改 sort_order，故只需 id/kind）
+    fn nb_image(id: i64) -> NoteBlock {
+        NoteBlock {
+            id,
+            kind: NoteBlockKind::Image,
+            text: String::new(),
+            image_file: None,
+        }
+    }
+
+    #[test]
+    fn storage_keeps_image_last_untouched() {
+        // PATCH002.56 口径改定（2026-10-19）：末块不变量**由前端在保存点唯一负责** ——
+        // storage 两条路径都**不自行补块**（否则"补 → 下次保存被差分删"会来回抖动）
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "A")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "A",
+                "",
+                &png_bytes(),
+                None,
+                "261019000000",
+            )
+            .expect("插图必须成功");
+        let img_id = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("必有图块")
+            .id;
+        // 保存"末块是图"的块集 → 原样保留（不补）
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(base[0].id, "A"), nb_image(img_id)])
+            .expect("保存必须成功");
+        assert_eq!(saved.len(), 2, "storage 不自行补块");
+        assert_eq!(
+            saved.last().expect("非空").kind,
+            NoteBlockKind::Image,
+            "末块仍是图块"
+        );
+        // 重排同款：把图排到最后 → 同样不补
+        st.reorder_note_blocks(item.id, &[base[0].id, img_id])
+            .expect("重排必须成功");
+        let after = st.note_blocks(item.id).expect("读块必须成功");
+        assert_eq!(after.len(), 2, "重排后同样不补");
+        assert_eq!(
+            after.last().expect("非空").kind,
+            NoteBlockKind::Image,
+            "末块仍是图块"
+        );
     }
 
     #[test]

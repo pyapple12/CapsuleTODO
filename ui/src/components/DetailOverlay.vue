@@ -194,26 +194,25 @@ async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false):
   if (!force && savedTodoId !== todoId) return;
   const sig = signature(list);
   if (!force && sig === savedSignature && savedTodoId === todoId) return;
+  // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块——用于定位"补出的块在哪一拍被丢"
+  const preLast = list[list.length - 1];
+  void invoke("debug_log", {
+    line: `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"}`,
+  }).catch((err) => console.error("诊断上报失败", err));
   const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
+    // 临时诊断（抖动定位，测完即删）：本次保存送出的块数 vs 服务端回来的块数
+    const savedLast = saved[saved.length - 1];
+    void invoke("debug_log", {
+      line: `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"}`,
+    }).catch((err) => console.error("诊断上报失败", err));
     // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
     if (blocks.value !== list) return;
     // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
     saved.forEach((b, i) => {
       const local = list[i];
-      if (!local) {
-        // PATCH002.56：服务端补出的块（末块是图 → 补空文本块）本地还没有 → **采纳**它，
-        // 否则本地末块仍是图 → 下次保存服务端又补一次（静默累积）
-        list.push({
-          id: b.id,
-          kind: b.kind,
-          text: b.text,
-          image_path: b.image_path,
-          _key: localKey(),
-        });
-        return;
-      }
+      if (!local) return;
       local.id = b.id;
       local.kind = b.kind;
       local.image_path = b.image_path;
@@ -240,6 +239,7 @@ async function loadBlocks(todoId: number): Promise<void> {
     if (props.todo?.id !== todoId) return;
     const serverList = toLocal(list);
     blocks.value = normalizeBlocks(serverList);
+    dragDiag("loadBlocks:done"); // 临时诊断（抖动定位，测完即删）：重拉赋值后的本地列表
     savedTodoId = todoId;
     // PATCH002.56 修正：**基准必须反映服务端真实状态**（归一化**之前**的列表）——
     // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
@@ -779,6 +779,19 @@ function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
   if (!out.some((b) => b.kind === "Text")) {
     out.push({ id: 0, kind: "Text", text: "", image_path: null, _key: localKey() });
   }
+  // PATCH002.56（口径改定，2026-10-19）：**末块不得为图块** → 补一个空文本块（保"图后能输入"）。
+  // 归一化本身是"保存点"语义（PATCH002.8），故补块也只在保存点发生；**补块由前端唯一负责**
+  // （storage 侧不再自行补：两边都管会导致"补 → 下次保存被差分删"的来回抖动）
+  if (out[out.length - 1]?.kind === "Image") {
+    out.push({ id: 0, kind: "Text", text: "", image_path: null, _key: localKey() });
+  }
+  // 临时诊断（抖动定位，测完即删）：归一化**改变块数**时记一笔（定位"补出的块被谁丢掉"）
+  if (out.length !== list.length) {
+    const last = list[list.length - 1];
+    void invoke("debug_log", {
+      line: `normalize ${list.length}->${out.length} inLast=${last ? `${last.kind}#${last.id}` : "none"}`,
+    }).catch((err) => console.error("诊断上报失败", err));
+  }
   return out;
 }
 
@@ -862,6 +875,8 @@ function onBlocksFocusOut(e: FocusEvent): void {
   const container = scrollEl.value;
   const next = e.relatedTarget as Node | null;
   if (container && next && container.contains(next)) return; // 仍在块区内
+  // 临时诊断（抖动定位，测完即删）：焦点离开块区 → 会走保存点归一化
+  dragDiag("focusout:normalizeAndFlush");
   void normalizeAndFlush();
 }
 
@@ -1168,24 +1183,32 @@ function onDocMouseUp(): void {
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
 
-/** 拖拽收场重拉（PATCH002.56 **前端半已否决并回退**：push + 整表回写会固化旧顺序，且
- * `id = 0` 的新块会毒化下一次重排的 id 集合 → 规则改由 Rust 在保存 / 重排两路径补） */
+/** 拖拽收场重拉（PATCH002.56：末块不变量由前端 `normalizeBlocks` 在保存点负责）。
+ * PATCH002.57（2026-10-19 打点定性）：**收场前若在底部 → 收场后回到新底部**——拖拽期被拖行
+ * 重挂出列表（内容变矮、`st` 停在"矮内容"的底），收场把图放回 + 归一化补末块 → 内容**合法**
+ * 长高（实测 +155px = 图高 + 补块高），视口却停在旧底之上 → 观感"跳回原来那一行"。
+ * **回退方式**：删掉下面 `wasAtBottom` 一行 + 末尾那个 if 块即可（其余一字不动）。 */
 async function reloadAfterDrag(todoId: number): Promise<void> {
+  const el = scrollEl.value;
+  const wasAtBottom = el ? el.scrollTop >= el.scrollHeight - el.clientHeight - 1 : false;
   await loadBlocks(todoId);
+  if (wasAtBottom && el) {
+    await nextTick();
+    el.scrollTop = el.scrollHeight;
+  }
   dragDiag("drag:settled");
 }
 
-/** 临时诊断（PATCH002.57 打点，测完即删）：滚动几何 + **DOM/数组对齐**——图块行号两值对照
- * （`domImg !== arrImg` 即证明"取锚那一刻 DOM 与数据已错位"，候选 1 的判决证据）；
- * 经 `debug_log` 送 Rust stdout（`.temp/dev-out.log`） */
+/** 临时诊断（抖动定位，测完即删）：滚动几何 + 列表末尾块（`last` 的 kind#id）——用于判断
+ * "库里多出的块"从哪来、前端是否仍以图块结尾；经 `debug_log` 送 Rust stdout */
 function dragDiag(tag: string): void {
   const el = scrollEl.value;
   const rows = el ? [...el.querySelectorAll<HTMLElement>(".note-block")] : [];
-  const domImg = rows.findIndex((r) => r.classList.contains("note-block-image"));
-  const arrImg = blocks.value.findIndex((b) => b.kind === "Image");
   const geo = el ? `${el.scrollTop.toFixed(1)}/${el.scrollHeight}/${el.clientHeight}` : "no-el";
+  const last = blocks.value[blocks.value.length - 1];
+  const lastKind = last ? `${last.kind}#${last.id}` : "none";
   void invoke("debug_log", {
-    line: `${tag} st/sh/ch=${geo} domImg=${domImg} arrImg=${arrImg} domRows=${rows.length} arrLen=${blocks.value.length}`,
+    line: `${tag} st/sh/ch=${geo} domRows=${rows.length} arrLen=${blocks.value.length} last=${lastKind}`,
   }).catch((err) => console.error("诊断上报失败", err));
 }
 
@@ -1201,12 +1224,25 @@ installNoteDragHooks({
     const todo = props.todo;
     if (todo == null) return;
     dragDiag(`drag:commit slots=${slots.join(",")}`);
+    // 临时诊断（退回定位，测完即删）：提交那一刻 DOM 里**每一行**的 class+rowId
+    // —— 用于找出"DOM 比数组多出来的那一行"是什么（ghost 残留 / 重复行 / 别的）
+    const domEl = scrollEl.value;
+    const rows = domEl ? [...domEl.querySelectorAll<HTMLElement>(".note-block")] : [];
+    void invoke("debug_log", {
+      line: `commit-dom n=${rows.length} ${rows
+        .map(
+          (r) =>
+            `${r.className.replace(/\bnote-block\b/, "").trim() || "-"}#${r.dataset.rowId ?? "?"}`,
+        )
+        .join(" ")}`,
+    }).catch((err) => console.error("诊断上报失败", err));
     const bySlot = new Map(blocks.value.map((b, i) => [i + 1, b]));
     const reordered = slots
       .map((slot) => bySlot.get(slot))
       .filter((b): b is LocalBlock => b != null);
     if (reordered.length !== blocks.value.length) return;
     blocks.value = reordered;
+    dragDiag("commit:applied"); // 临时诊断（抖动定位，测完即删）：本地重排赋值后
     savedSignature = signature(blocks.value);
     void invoke("note_reorder", { todoId: todo.id, ids: reordered.map((b) => b.id) }).catch((err) =>
       console.error("详情块重排失败", err),
