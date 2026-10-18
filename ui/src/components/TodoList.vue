@@ -359,12 +359,15 @@ onUnmounted(() => {
 <template>
   <section class="list">
     <p v-if="showEmpty" class="empty">暂无待办，添加一条吧</p>
+    <!-- board-read/glass-scroll 写进静态 class（沿 #bubble-list / #detail-note 先例）：
+         元素被重建（拖拽收口 key 重建 / 空态切换）时新元素**天生带套件类**，
+         不留"类缺席 → 原生滑轨现形"的空窗；套件挂载只是幂等补挂 -->
     <TransitionGroup
       ref="listEl"
       tag="ul"
       name="todo"
       id="todo-active"
-      class="group"
+      class="group board-read glass-scroll"
       :key="listKey"
       :duration="320"
       @before-leave="pinLeaveHeight"

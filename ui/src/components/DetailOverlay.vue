@@ -40,8 +40,6 @@ const bubbleTextEl = ref<HTMLTextAreaElement | null>(null);
 const bubbleImgSrc = ref("");
 /** 图片失效态文案（PL025：文件缺失 → 提示删除气泡；空串 = 正常） */
 const imageError = ref("");
-/** 保存失败可见反馈（FIX007.7，对齐 AddBar 错误行模式；成功/新输入即清） */
-const saveError = ref("");
 
 // —— PL027 块模型（一段一行一块 + 图块混排）——
 
@@ -129,7 +127,6 @@ function signature(list: LocalBlock[]): string {
 
 /** 排入防抖保存（无变更/未开板直接跳过） */
 function scheduleSave(): void {
-  saveError.value = "";
   clearTimeout(saveTimer);
   const todo = props.todo;
   if (todo == null) return;
@@ -139,7 +136,7 @@ function scheduleSave(): void {
   }, 300);
 }
 
-/** 立即落库（防抖到点 / 关板 / 切源 / 粘贴前调用）；失败红字可见。
+/** 立即落库（防抖到点 / 关板 / 切源 / 粘贴前调用）；失败落 console（详情板不设提示行，UI 静默）。
  * 守卫：本地块尚未载入当前条目（savedTodoId 未锚定）时直接跳过——防"开板瞬间
  * 空列表被当成全量覆盖"把服务端块集清空（冒烟实证：开板即报"详情块为空"） */
 async function saveBlocks(): Promise<void> {
@@ -167,7 +164,6 @@ async function saveBlocks(): Promise<void> {
     savedSignature = signature(blocks.value);
     emit("changed");
   } catch (err) {
-    if (props.todo?.id === todo.id) saveError.value = `详情保存失败：${String(err)}`;
     console.error("详情保存失败", err);
   }
 }
@@ -185,7 +181,6 @@ async function loadBlocks(todoId: number): Promise<void> {
     void nextTick(() => autosizeAll());
   } catch (err) {
     console.error("详情块拉取失败", err);
-    saveError.value = `详情载入失败：${String(err)}`;
   }
 }
 
@@ -416,7 +411,6 @@ async function pasteImageAt(
       pasteTextLines(index, start, end, fallbackText);
     }
   } catch (err) {
-    if (props.todo?.id === todo.id) saveError.value = `插入图片失败：${String(err)}`;
     console.error("插入图片失败", err);
   }
 }
@@ -464,7 +458,6 @@ async function openBlockImage(block: LocalBlock): Promise<void> {
     await invoke("note_open_image", { blockId: block.id });
   } catch (err) {
     console.error("打开原图失败", err);
-    saveError.value = `打开原图失败：${String(err)}`;
   }
 }
 
@@ -727,7 +720,7 @@ function selectionText(): string {
   return parts.join("\n");
 }
 
-/** 复制选区到系统剪贴板（跨块时接管 Ctrl+C；失败落日志 + 可见提示，不吞） */
+/** 复制选区到系统剪贴板（跨块时接管 Ctrl+C；失败落 console，不吞） */
 async function copySelection(): Promise<void> {
   const text = selectionText();
   if (!text) return;
@@ -735,7 +728,6 @@ async function copySelection(): Promise<void> {
     await navigator.clipboard.writeText(text);
   } catch (err) {
     console.error("复制选区失败", err);
-    saveError.value = `复制失败：${String(err)}`;
   }
 }
 
@@ -878,7 +870,6 @@ async function onImageDblClick(): Promise<void> {
     await invoke("bubble_open_image", { id: b.id });
   } catch (err) {
     console.error("打开原图失败", err);
-    saveError.value = `打开原图失败：${String(err)}`;
   }
 }
 
@@ -892,7 +883,6 @@ async function onDeleteImageBubble(): Promise<void> {
     close();
   } catch (err) {
     console.error("删除失效图片气泡失败", err);
-    saveError.value = `删除失败：${String(err)}`;
   }
 }
 
@@ -920,7 +910,13 @@ function syncKit(): void {
   if (!isOpen.value || !scrollEl.value) return;
   kit = {
     boardRead: useBoardRead(scrollEl.value, { gate: () => isOpen.value, layout: true }),
-    glassBar: useGlassBar(scrollEl.value, { anchor: overlay.value ?? undefined, right: 4 }),
+    // 气泡模式：滑杆在玻璃内部但本板有内外板 → 轨道按**内层容器的 inset** 定上下（用户定案）；
+    // 清单（todo）模式的视觉逻辑已正确（见 y.problems #10），故**不传 inset**、保持原样
+    glassBar: useGlassBar(scrollEl.value, {
+      anchor: overlay.value ?? undefined,
+      right: 4,
+      inset: isBubbleMode.value,
+    }),
   };
 }
 
@@ -1055,7 +1051,6 @@ let renameTimer: number | undefined;
 let lastSavedText: { id: number; text: string } | null = null;
 watch(titleDraft, (text) => {
   const todo = props.todo;
-  saveError.value = ""; // 新输入即清（FIX007.7）
   const savedBase =
     lastSavedText != null && lastSavedText.id === todo?.id
       ? lastSavedText.text
@@ -1079,9 +1074,6 @@ watch(titleDraft, (text) => {
         emit("changed");
       })
       .catch((err) => {
-        if (props.todo?.id === pending.id) {
-          saveError.value = `改名保存失败：${String(err)}`;
-        }
         console.error("改名失败", err);
       });
   }, 300);
@@ -1105,9 +1097,6 @@ async function flushPending(): Promise<void> {
           emit("changed");
         })
         .catch((err) => {
-          if (props.todo?.id === rename.id) {
-            saveError.value = `改名保存失败：${String(err)}`;
-          }
           console.error("改名失败", err);
         }),
     );
@@ -1167,8 +1156,6 @@ onBeforeUnmount(() => {
 <template>
   <div ref="overlay" class="detail-overlay" :class="{ open: isOpen, 'bubble-mode': isBubbleMode }">
     <div class="board-glass detail-glass">
-      <!-- FIX007.7 保存失败可见反馈（对齐 AddBar 错误行模式） -->
-      <p v-if="saveError" class="detail-error">{{ saveError }}</p>
       <div v-if="!isBubbleMode" class="detail-head">
         <span class="detail-label">标题</span>
         <input

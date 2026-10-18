@@ -32,7 +32,9 @@
   width: 100%;
   height: 100%;
   padding: 12px;
-  overflow-y: auto;
+  /* 浮板一律不设 overflow（用户定案 2026-10-18：内外板都不滚）——此处原为 overflow-y: auto，
+     会让浮板自己可滚：冒原生滑轨（浮板没有 glass-scroll 类）、裁掉浮钮与落影。
+     滚动只发生在内层容器上（归档 .board-list / 详情 .note-scroll） */
   border-radius: var(--radius-board);
   background: var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
   box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
@@ -78,6 +80,21 @@
   background: var(--panel-bg);
   box-shadow: var(--panel-stroke), var(--panel-shadow);
   font-size: 12px; /* 板内收窄（用户定案） */
+}
+
+/* 裁剪层：把 .board-list 刻意拉出的负外边距溢出（左右各 8px、下 8px）裁掉，
+   让玻璃卡自己不必裁剪——浮钮因此永不被切、原生滑轨也不会出现。
+   边界必须 ≥ 列表自身限位（W+16：行卡落影的 8px 缓冲带就在这层里）：
+   `overflow: clip` + `overflow-clip-margin: 16px` 把边界外扩到 W+16
+   （等价于玻璃卡原 padding:12px 的宽松度）且零布局改动；
+   若用 `overflow: hidden`，边界只有 W → 会把落影连缓冲带一起切掉 */
+.board-clip {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: clip;
+  overflow-clip-margin: 16px;
 }
 
 /* board-list：占满余高并内部滚动——列表成为真滚动容器（滑杆与整板阅读的挂载前提） */

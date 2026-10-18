@@ -310,39 +310,43 @@ watch(
         已完成 <span class="archive-count">{{ items.length }}</span>
       </p>
       <p v-if="showEmpty" class="empty">暂无已完成，去清单勾一条吧</p>
-      <TransitionGroup
-        ref="listEl"
-        tag="ul"
-        name="todo"
-        id="archive-list"
-        class="board-list board-read"
-        :key="listKey"
-        :duration="320"
-        @before-leave="pinLeaveHeight"
-        @after-leave="onAfterLeave"
-      >
-        <li v-for="item in items" :key="item.id" class="todo-item">
-          <!-- 整行点击驱动勾选退回（design 语义：checkbox pointer-events 关闭，
+      <!-- 裁剪层（只负责把列表的负外边距溢出裁掉；浮钮是玻璃卡的子元素，
+           玻璃卡自己一旦裁剪就会把"滑到底部"的 thumb 切掉 → 故裁剪下沉到这一层） -->
+      <div class="board-clip">
+        <TransitionGroup
+          ref="listEl"
+          tag="ul"
+          name="todo"
+          id="archive-list"
+          class="board-list board-read"
+          :key="listKey"
+          :duration="320"
+          @before-leave="pinLeaveHeight"
+          @after-leave="onAfterLeave"
+        >
+          <li v-for="item in items" :key="item.id" class="todo-item">
+            <!-- 整行点击驱动勾选退回（design 语义：checkbox pointer-events 关闭，
                行 click 触发 toggle；删除钮 stop 自有语义）。data-row-id = 罩死判定
                取行入口（rowElById，2026-10-18 归档纳入罩死） -->
-          <div
-            class="todo-row"
-            :data-row-id="item.id"
-            :class="{ 'is-done': !restoringIds.has(item.id) }"
-            @click="restore(item)"
-          >
-            <NeonCheckbox :checked="!restoringIds.has(item.id)" />
-            <span class="t-text">{{ item.text }}</span>
-            <DelButton
-              :ref="(el) => setDelRef(item.id, el as InstanceType<typeof DelButton>)"
-              :confirming="confirmingId === item.id"
-              @press="onPress(item)"
-              @confirm="onConfirm(item)"
-              @leave="onCancel(item)"
-            />
-          </div>
-        </li>
-      </TransitionGroup>
+            <div
+              class="todo-row"
+              :data-row-id="item.id"
+              :class="{ 'is-done': !restoringIds.has(item.id) }"
+              @click="restore(item)"
+            >
+              <NeonCheckbox :checked="!restoringIds.has(item.id)" />
+              <span class="t-text">{{ item.text }}</span>
+              <DelButton
+                :ref="(el) => setDelRef(item.id, el as InstanceType<typeof DelButton>)"
+                :confirming="confirmingId === item.id"
+                @press="onPress(item)"
+                @confirm="onConfirm(item)"
+                @leave="onCancel(item)"
+              />
+            </div>
+          </li>
+        </TransitionGroup>
+      </div>
     </div>
   </div>
 </template>

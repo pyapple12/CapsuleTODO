@@ -23,6 +23,9 @@
 /* 玻璃本体层：卡片同款配方整套 + 3px 磨砂；从触发图标中心缩放飞出（带轻微回弹）。
    收板曲线在基础态（目的地态取曲线）：平缓缩回——复用回弹曲线会令 scale 越过 0
    变负值、以图标为轴镜像闪动（2026-09-18 目验发现） */
+/* 浮板玻璃本体。**浮板一律不设 overflow**（用户定案 2026-10-18：内外板都不滚）——
+   滚动只发生在内层滚动容器上（清单/气泡 `.group`、归档 `.board-list`、详情 `.note-scroll`）；
+   浮板一旦可滚就会冒原生滑轨（它们没有 `glass-scroll` 类），还会把浮钮与落影裁掉 */
 .board-glass {
   box-sizing: border-box;
   display: flex;
@@ -30,7 +33,6 @@
   width: 100%;
   height: 100%;
   padding: 12px;
-  overflow-y: auto;
   border-radius: var(--radius-board);
   background: var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
   box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
@@ -94,7 +96,8 @@
   overflow: hidden; /* 内层圆角随壳裁切 */
   border-radius: var(--radius-panel);
   background: var(--panel-bg);
-  box-shadow: var(--panel-stroke), var(--panel-shadow);
+  /* 描边与落影已删（用户定案）：壳只留底色与圆角——原 `--panel-shadow` 是 16~40px 模糊，
+     在玻璃卡 12px 内距处会被裁掉大半，观感本就不完整，直接去掉更干净 */
 }
 
 /* 内层滚动容器（透明、无描边/落影——mask 只作用于它，不动壳装饰） */
@@ -208,7 +211,6 @@
    （单层玻璃失效、板内多出卡底与描边）。覆盖文本 + 图片两种 bubble 模式，与旧覆盖面一致 */
 .detail-overlay.bubble-mode .note-shell {
   background: transparent; /* 单层玻璃：壳也摘掉，文字直接落板面 */
-  box-shadow: none;
 }
 
 .detail-note.bubble-note {
@@ -224,12 +226,8 @@
   }
 }
 
-/* 保存失败可见反馈（FIX007.7，对齐 AddBar/bubbles .error 模式） */
-.detail-error {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--danger);
-}
+/* 详情板不设提示行：保存/加载/插图等失败一律 UI 静默（详情板没有空间给提示行），
+   只落 console 与后台日志 —— 原 .detail-error 规则已删（FIX007.7 → 现口径） */
 
 /* —— PL027 详情块序列（一段一行一块 + 图块混排）—— */
 
@@ -237,6 +235,12 @@
    顶内距 6px + 文本块自身 2px = 首行距容器顶 8px——与改块模型前 `.detail-note`
    的 8px 一致（PATCH002：躲开板内阅读顶部 6px 软边，其余间距一律不动） */
 .note-scroll.note-blocks {
+  padding: 6px 2px;
+}
+
+/* 气泡全文（只读 textarea）模式：与块列表同口径的垂直内距——滑杆轨道按它 inset 定上下
+   （用户定案：气泡详情有内外板，滑杆须复合**内层 inset**）；水平 2px 与块列表对齐 */
+.note-scroll.bubble-shell {
   padding: 6px 2px;
 }
 

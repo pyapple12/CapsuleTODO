@@ -63,7 +63,9 @@ export function useGlassBar(
       bar.hidden = true; // 所在页隐藏：无几何，先隐藏
       return;
     }
-    // 轨道纵向：列表（inset）按上下内距内缩 = 行可视范围；textarea 走满全高
+    // 轨道纵向：列表（inset）按上下内距内缩 = 行可视范围；textarea 走满全高。
+    // 定位基准：绝对定位的包含块就是 anchor 的 **border box**（2026-10-18 实测坐标），
+    // 故 `sr.top − hr.top` 可直接用、**不需要**再扣 anchor 的 padding
     const cs = getComputedStyle(scroller);
     const padT = opts.inset ? parseFloat(cs.paddingTop) || 0 : 0;
     const padB = opts.inset ? parseFloat(cs.paddingBottom) || 0 : 0;
@@ -73,9 +75,26 @@ export function useGlassBar(
     const scrollable = scroller.scrollHeight > scroller.clientHeight + 1;
     bar.hidden = !scrollable;
     if (!scrollable) return;
-    const trackH = sr.height - padT - padB - 16; // 轨道 = 行可视高 − 浮钮高
-    const ratio = scroller.scrollTop / (scroller.scrollHeight - scroller.clientHeight || 1);
-    thumb.style.top = `${Math.round(ratio * trackH)}px`;
+    const trackH = sr.height - padT - padB - 16; // 轨道 = 行可视高 − 浮钮高（常规）
+    const range = scroller.scrollHeight - scroller.clientHeight;
+    // 浮钮高度：常规 16px；**内容几乎不溢出**时按可视占比放大——否则 scrollTop 取整会让
+    // 浮钮一次跳 trackH/range 像素（"一拖一大跳"）。门控 trackH/8：内容远长于视口的常规
+    // 列表永远走 16px，观感与手感零变化；只有"刚好溢出几 px"的极端情况才比例化
+    const thumbH =
+      range < trackH / 8
+        ? Math.min(
+            trackH,
+            Math.max(16, Math.round((trackH * scroller.clientHeight) / scroller.scrollHeight)),
+          )
+        : 16;
+    thumb.style.height = `${thumbH}px`;
+    const travel = Math.max(0, trackH + 16 - thumbH); // 行程 = 轨道高 − 浮钮高
+    // ratio 夹取 [0,1]：scrollHeight/clientHeight 被浏览器取整为整数、scrollTop 是小数，
+    // 小数几何的容器（归档板实测）到底时 scrollTop 会略大于整数 range → ratio 冲过 1 →
+    // 浮钮被推出轨道底（实测越界 ~5px，且随小数浮动 2~5px）。清单/气泡 scrollTop ≤ range，
+    // 夹取对它们零影响（ratio 本就 ≤ 1）
+    const ratio = Math.min(1, Math.max(0, scroller.scrollTop / (range || 1)));
+    thumb.style.top = `${Math.round(ratio * travel)}px`;
   };
 
   const onScroll = (): void => {
@@ -88,7 +107,8 @@ export function useGlassBar(
 
   // 浮钮拖拽：按住上下平移即滚动（比例换算 1:1 design）
   thumb.addEventListener("pointerdown", (e: PointerEvent) => {
-    const trackH = bar.getBoundingClientRect().height - 16;
+    const thumbH = thumb.getBoundingClientRect().height; // 比例化时浮钮更高 → 行程随之收窄
+    const trackH = bar.getBoundingClientRect().height - thumbH;
     if (trackH <= 0) return;
     const startY = e.clientY;
     const startScroll = scroller.scrollTop;
