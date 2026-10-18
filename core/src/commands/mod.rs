@@ -135,6 +135,12 @@ impl From<crate::hotkey::HotkeyError> for CommandError {
     }
 }
 
+/// **临时诊断**（PATCH002.57 打点，测完即删）：前端诊断行送 Rust stdout（dev 日志可读）
+#[tauri::command]
+pub fn debug_log(line: String) {
+    println!("[DIAG] {line}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::CommandError;

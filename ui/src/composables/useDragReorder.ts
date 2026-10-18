@@ -9,6 +9,7 @@
 import { onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { rowMaskDead } from "./useMaskDead";
+import { noteSwapRule } from "./noteDragPolicy";
 import { registerDragProbe } from "./useBoardRead";
 
 /** 长按等待期允许的抖动幅度：超出即取消本次手势 */
@@ -23,7 +24,7 @@ const AUTO_SCROLL_ZONE = 32;
 const AUTO_SCROLL_SPEED = 10;
 
 /** 拖拽上下文（重挂模型的在飞状态体） */
-interface DragCtx {
+export interface DragCtx {
   t: DragTarget;
   li: HTMLElement;
   row: HTMLElement;
@@ -44,6 +45,8 @@ interface DragCtx {
   toIdx: number;
   scrollDelta: number;
   center: number;
+  /** 真实指针 y（PATCH002.54：未钳制；`autoScrollProbe === "pointer"` 时自动滚动用它） */
+  pointerY: number;
   moved: boolean;
   padTop: number;
   padBottom: number;
@@ -70,6 +73,12 @@ export interface DragTarget {
   rerender: () => void;
   /** 目标自有强制重建（可选；缺省回落全局 forceRemount——详情块不重建清单列表） */
   forceRemount?: () => void;
+  /** 自动滚动基准（PATCH002.54，可选）：缺省 `"center"` = 现行为（被钳制的行中心）；
+   * `"pointer"` = 未钳制的真实指针 y（详情块用——容器内距与卡片内距不同，行中心够不到下边缘带） */
+  autoScrollProbe?: "center" | "pointer";
+  /** 换位判定（PATCH002.55，可选）：缺省 = 现"中心对中心"公式；详情块注入"按方向取缘"
+   * （见 `noteDragPolicy.ts`）。等高行时两者数学等价 → 清单 / 气泡不受影响 */
+  swapRule?: (ctx: DragCtx, eff: number) => number;
 }
 
 /** 组件层注入钩子（清单掐 detailOpenTimer / 气泡掐 bubbleCopyTimer；suppress 写回；
@@ -165,6 +174,9 @@ export const DRAG_TARGETS: DragTarget[] = [
     rowSel: ".note-block",
     itemSel: ".note-block",
     ghostClass: "note-block note-ghost",
+    // PATCH002.54 / .55（注入点，机制缺省不动）：详情块的几何策略落详情自己的模块
+    autoScrollProbe: "pointer",
+    swapRule: noteSwapRule,
     onDown(_row, e) {
       if (!(e.target as HTMLElement).closest(".note-block-image")) return false;
       noteHooks.onDown?.(); // 起拖前 flush 未决保存（保证块 id 已回填）
@@ -297,6 +309,7 @@ export function useDragReorder(): void {
         toIdx: 0,
         scrollDelta: 0,
         center: 0,
+        pointerY: 0,
         moved: false,
         padTop: 0,
         padBottom: 0,
@@ -362,10 +375,15 @@ export function useDragReorder(): void {
   /** 拖拽让位编排：按被拖行中心算目标槽——占位符滑向目标槽、途经行 ±一槽平移 */
   function applyDragShifts(ctx: DragCtx, center: number): void {
     const eff = center + ctx.scrollDelta; // 快照定格在起拖视口：滚过的增量须加回
+    // PATCH002.55（注入点）：缺省 = 现"中心对中心"公式；详情块注入"按方向取缘"
     let to = 0;
-    ctx.rows.forEach((r, i) => {
-      if (i !== ctx.fromIdx && r.mid < eff) to += 1;
-    });
+    if (ctx.t.swapRule) {
+      to = ctx.t.swapRule(ctx, eff);
+    } else {
+      ctx.rows.forEach((r, i) => {
+        if (i !== ctx.fromIdx && r.mid < eff) to += 1;
+      });
+    }
     ctx.toIdx = to;
     const unit = ctx.selfHeight + ROW_GAP;
     const target = ctx.rows[to]; // 目标槽相邻参照行（to === fromIdx 时即占位符自身，位移为零）
@@ -397,15 +415,16 @@ export function useDragReorder(): void {
     const sr = ctx.listEl.getBoundingClientRect();
     const topEdge = sr.top + ctx.padTop;
     const bottomEdge = sr.bottom - ctx.padBottom;
+    // PATCH002.54（注入点）：缺省 = 被钳制的行中心（现行为）；详情块用未钳制的指针 y
+    const probe = ctx.t.autoScrollProbe === "pointer" ? ctx.pointerY : ctx.center;
     let speed = 0;
-    if (ctx.center < topEdge + AUTO_SCROLL_ZONE) {
+    if (probe < topEdge + AUTO_SCROLL_ZONE) {
       speed =
-        -AUTO_SCROLL_SPEED *
-        Math.min(1, (topEdge + AUTO_SCROLL_ZONE - ctx.center) / AUTO_SCROLL_ZONE);
-    } else if (ctx.center > bottomEdge - AUTO_SCROLL_ZONE) {
+        -AUTO_SCROLL_SPEED * Math.min(1, (topEdge + AUTO_SCROLL_ZONE - probe) / AUTO_SCROLL_ZONE);
+    } else if (probe > bottomEdge - AUTO_SCROLL_ZONE) {
       speed =
         AUTO_SCROLL_SPEED *
-        Math.min(1, (ctx.center - (bottomEdge - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE);
+        Math.min(1, (probe - (bottomEdge - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE);
     }
     if (speed) {
       const before = ctx.listEl.scrollTop;
@@ -435,6 +454,7 @@ export function useDragReorder(): void {
     }
     // 被拖行中心钳制在卡片内（上下留 12px）：行已重挂卡片层，浮起不受列表容器裁剪
     const dy = e.clientY - ctx.startY;
+    ctx.pointerY = e.clientY; // PATCH002.54：未钳制指针 y（详情块自动滚动基准）
     if (!ctx.moved && Math.abs(dy) > 3) ctx.moved = true; // 指针位移超 3px：解锁边缘自动滚动
     const minCenter = ctx.cardRect.top + 12 + ctx.selfHeight / 2;
     const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;

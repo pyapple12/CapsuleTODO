@@ -301,6 +301,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::tray_preview::tray_preview_resize,
             commands::tray_menu::tray_menu_action,
             commands::tray_menu::main_hide_to_tray,
+            commands::debug_log, // 临时诊断（PATCH002.57 打点，测完即删）
         ])
         .setup(|app| {
             // PL025：把图片目录注册进 asset 协议 scope（详情直读落盘图片；运行时注册

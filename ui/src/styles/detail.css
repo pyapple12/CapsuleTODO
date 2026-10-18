@@ -260,6 +260,12 @@
 .note-block {
   position: relative;
   display: block;
+  /* PATCH002.53：拖拽机制按实测矩形重建盒子时会写入内联 `width = rect.width`（border box 宽），
+     而 `width` 默认按**内容盒**解释 → 有内距的图块会宽出 24px（放大倍数偏大 + 盒心右移 →
+     "左不动右放大"）。正常布局下 `.note-block` 无显式 width（块级 width:auto 撑满）→ 本行是
+     数学 no-op；唯一受影响的正是拖拽期 = "改的就是唯一出问题的那一处"。顺带：删除动效的
+     `max-height` 收尾也从"残留 8px 竖向内距"变为彻底 0 */
+  box-sizing: border-box;
 }
 
 /* 文本块：自动增高 textarea（高度由 JS 按 scrollHeight 定） */
@@ -413,6 +419,24 @@
 /* 拖拽：ghost 留槽（剥视觉）+ 让位过渡 */
 .note-block.note-ghost {
   visibility: hidden;
+}
+
+/* 被拖块浮起（PATCH002.48）：机制把被拖行重挂到 `#board`（useDragReorder:329）→ 此时它是
+   `.detail-overlay`（z-index 3）的**兄弟**，无本规则就画在详情板玻璃之下（放大被压暗/被板缘裁）。
+   值取 5 = 清单 / 气泡同族配方值（todos.css:149 / bubbles.css:208），须 > 详情板 3 与
+   三角 / 浮钮的 4。**选择器不写 `li.`**：详情块容器是 `div.note-block`（`li` 只被机制用于 ghost） */
+.note-block.dragging {
+  z-index: 5;
+  cursor: grabbing;
+}
+
+/* 提升感：只有图块可拖（机制 onDown 仅认 `.note-block-image`），故深影落图身上——
+   `.note-block-img` 本有 `transition: box-shadow .18s`，提升感是渐入的 */
+.note-block.dragging .note-block-img {
+  box-shadow:
+    var(--panel-stroke),
+    var(--panel-shadow),
+    0 14px 28px rgba(0, 0, 0, 0.35);
 }
 
 .note-block.shifting {

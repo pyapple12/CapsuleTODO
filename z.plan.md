@@ -1165,27 +1165,27 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 
 ---
 
-## 附录 PATCH003：浮板观感三修（整行溶解表达 / 图片气泡开板方式 / 气泡详情内板高度解耦）（2026-10-18 立项）
+## 附录 PATCH003（**2026-10-19 用户定案：取消独立编号，三条并入 PATCH002 为 `.50`–`.52`；本附录保留原方案原文**）：浮板观感三修（整行溶解表达 / 图片气泡开板方式 / 气泡详情内板高度解耦）（2026-10-18 立项）
 
 > 背景：PATCH002 三轮收口（V0.2.3.3）后用户 live 复看，提出三处观感/结构问题——① 三个列表的"整行溶解"表达；② 图片气泡开板瞬间的"空板面（黑纱褪去）"；③ 气泡详情"内板"的高度与边距与清单详情耦合。三条**互相独立**、**全部前端**、零 Rust 改动。
 > 用户指令（2026-10-18）：**先落定文档、记住要改什么**，晚上再细化定案。
 > 关联：`y.problems.md` #11 / #12 / #13；任务条目 `x.progress.md` PATCH003 组。
 
-**PATCH003.1 整行溶解的表达**
+**PATCH002.50 整行溶解的表达**
 
 - 机制（已核）：底部溶解由**一个**变量 `--fade-btm` 驱动（`ui/src/styles/board-read.css` 的 mask：`#000 var(--fade-btm), transparent`）；`ui/src/composables/useBoardRead.ts:126-154` 的 `settle()` 在**滚动停止**（`scrollend` / childList observer / 开板 450ms 收口）时，若底部有半截行跨过判定线（`sr.bottom − padB(8px)`）→ 把带起点推到 **`r.top − sr.top − 2`** → 该行**从顶一路溶到底**；滚到底 → `--fade-btm: 100%`（无带）；其余时刻 → 内联值被清 → 回落 CSS 默认 `calc(100% - 14px)`（14px 软边）
 - 生效范围：**清单**（`rowSel` 默认 `.todo-item`）/ **气泡**（`.bubble-row`）/ **归档**（默认 `.todo-item`）；**详情板与白板**容器内无匹配行 → `removeProperty` → 恒 14px 软边（PATCH002.10 定案）
 - 候选：**A 去掉**（删半截行分支，只留「默认 14px + 到底 100%」；三列表与详情板统一；**`PATCH002.20` 随之作废或改写为"恒 14px / 到底 0"两态**）/ **B 只溶被切掉的部分**（带起点 = 行顶 + 行高 × 可见比例）/ **C 阈值门控**（可见比例 < 30% 才推到行顶）/ **D 只跟"到底"走**
 - 倾向：**A**（一致性 + 简化 `.20`）；**待用户定案**
 
-**PATCH003.2 图片气泡的开板方式**
+**PATCH002.51 图片气泡的开板方式**
 
 - 机制（已核）：浮板板面底色 = `--glass-bg-strong: rgba(0,0,0,0.25)`（`ui/src/styles/glass.css:21`，注释原文"浮板黑纱档"）；`ui/src/components/DetailOverlay.vue:998-1012` 在 `watch(props.bubble)` 里**先 `open()`**、**并行** `invoke("bubble_get_image_path")`（Rust 侧预览优先，`core/src/commands/bubble.rs:253-256`）→ 图就位前 image 气泡渲染空 `<textarea v-else>`（`1187-1206`）→ **只有黑纱的空板面** → 图到位后 `.detail-image { width: 100% }`（板面内距 12px）几乎铺满 → 主观"黑纱褪去"
 - 加剧因素：揭示动画 0.4s 带回弹（`detail.css:47-53`）；被盖内容 `filter: blur(4px)` 0.35s（`glass.css:97-105`）；`backdrop-filter` 在透明 WebView2 窗口**不渲染**（CDP 实证）→ 板面观感 = 黑纱 + 内容模糊合成
 - 候选：**A 预取图再开板**（`await invoke` + `Image().decode()` 后再 `open()`）/ **B 淡入**（`@load` → `opacity 0→1` 150~250ms）/ **C 从上到下揭纱**（`mask-image` 或 `clip-path: inset(0 0 100% 0) → inset(0)`，与 0.4s 揭示同步）/ **D = A + C**
 - 倾向：**D**（先消除空窗，再给揭纱表达）；**待用户定案**
 
-**PATCH003.3 气泡详情内板的高度与边距解耦**
+**PATCH002.52 气泡详情内板的高度与边距解耦**
 
 - 耦合点（已核）：气泡详情与清单详情**共用同一个 `.note-scroll`**（`ui/src/components/DetailOverlay.vue:1177`）；基类 `.note-scroll { width:100%; height:100%; overflow-y:auto }`（`ui/src/styles/detail.css:104-111`）两模式共用；两条 padding 规则虽分开写但**值相同**（`.note-scroll.note-blocks { padding: 6px 2px }` :237 / `.note-scroll.bubble-shell { padding: 6px 2px }` :243）→ 结构性耦合
 - 要查清：① **高度口径三者不同**（清单块列表 = `height:100%` + 内部滚动；气泡全文 = 内容高为主、上限 100%、超出才滚；气泡图片 = 贴图高 / 居中、不出现上下大片空黑纱）却被同一条 `height:100%` 绑住；② **padding 归属**（落内板还是落内容？现在两处都有 → "首行距顶 8px"是 `6 + 2` 算出来的而非声明）；③ **图片模式**（`.note-scroll.image-shell { display:flex; align-items:safe center }` + `.detail-image { width:100%; height:auto }`）下内板高度由谁定

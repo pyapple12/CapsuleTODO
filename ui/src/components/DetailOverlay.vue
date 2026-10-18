@@ -202,7 +202,18 @@ async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false):
     // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
     saved.forEach((b, i) => {
       const local = list[i];
-      if (!local) return;
+      if (!local) {
+        // PATCH002.56：服务端补出的块（末块是图 → 补空文本块）本地还没有 → **采纳**它，
+        // 否则本地末块仍是图 → 下次保存服务端又补一次（静默累积）
+        list.push({
+          id: b.id,
+          kind: b.kind,
+          text: b.text,
+          image_path: b.image_path,
+          _key: localKey(),
+        });
+        return;
+      }
       local.id = b.id;
       local.kind = b.kind;
       local.image_path = b.image_path;
@@ -227,10 +238,13 @@ async function loadBlocks(todoId: number): Promise<void> {
   try {
     const list = await invoke<NoteBlock[]>("note_blocks_list", { todoId });
     if (props.todo?.id !== todoId) return;
-    blocks.value = toLocal(list);
-    blocks.value = normalizeBlocks(blocks.value);
+    const serverList = toLocal(list);
+    blocks.value = normalizeBlocks(serverList);
     savedTodoId = todoId;
-    savedSignature = signature(blocks.value);
+    // PATCH002.56 修正：**基准必须反映服务端真实状态**（归一化**之前**的列表）——
+    // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
+    // 永久不一致 → `reorder_note_blocks` 的 id 集合校验恒失败（重排被拒、块弹回原位）
+    savedSignature = signature(serverList);
     brokenKeys.value = [];
     void nextTick(() => autosizeAll());
   } catch (err) {
@@ -1154,15 +1168,39 @@ function onDocMouseUp(): void {
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
 
+/** 拖拽收场重拉（PATCH002.56 **前端半已否决并回退**：push + 整表回写会固化旧顺序，且
+ * `id = 0` 的新块会毒化下一次重排的 id 集合 → 规则改由 Rust 在保存 / 重排两路径补） */
+async function reloadAfterDrag(todoId: number): Promise<void> {
+  await loadBlocks(todoId);
+  dragDiag("drag:settled");
+}
+
+/** 临时诊断（PATCH002.57 打点，测完即删）：滚动几何 + **DOM/数组对齐**——图块行号两值对照
+ * （`domImg !== arrImg` 即证明"取锚那一刻 DOM 与数据已错位"，候选 1 的判决证据）；
+ * 经 `debug_log` 送 Rust stdout（`.temp/dev-out.log`） */
+function dragDiag(tag: string): void {
+  const el = scrollEl.value;
+  const rows = el ? [...el.querySelectorAll<HTMLElement>(".note-block")] : [];
+  const domImg = rows.findIndex((r) => r.classList.contains("note-block-image"));
+  const arrImg = blocks.value.findIndex((b) => b.kind === "Image");
+  const geo = el ? `${el.scrollTop.toFixed(1)}/${el.scrollHeight}/${el.clientHeight}` : "no-el";
+  void invoke("debug_log", {
+    line: `${tag} st/sh/ch=${geo} domImg=${domImg} arrImg=${arrImg} domRows=${rows.length} arrLen=${blocks.value.length}`,
+  }).catch((err) => console.error("诊断上报失败", err));
+}
+
 installNoteDragHooks({
   onDown: () => {
     clearSel(); // 互斥（PATCH002.17）：图块长按拖拽优先，起拖即清选区
     clearTimeout(saveTimer);
-    void saveBlocks();
+    // PATCH002.56 修正：起拖**强制**落库（`force` 绕开签名比对）——保证重排前库与本地
+    // 的块 id 集合一致，否则 Rust 的 `validate_reorder_ids` 会拒掉整条重排（块弹回原位）
+    void saveBlocks(true);
   },
   commit: (slots) => {
     const todo = props.todo;
     if (todo == null) return;
+    dragDiag(`drag:commit slots=${slots.join(",")}`);
     const bySlot = new Map(blocks.value.map((b, i) => [i + 1, b]));
     const reordered = slots
       .map((slot) => bySlot.get(slot))
@@ -1176,7 +1214,9 @@ installNoteDragHooks({
   },
   rerender: () => {
     const todo = props.todo;
-    if (todo) void loadBlocks(todo.id);
+    // PATCH002.57 打点（测完即删）：进入重拉前的 DOM/数组对齐快照（候选 1 的判决点）
+    dragDiag("drag:rerender-entry");
+    if (todo) void reloadAfterDrag(todo.id);
   },
   forceRemount: () => {
     // 块列表就地重建（拖拽重挂后 vnode↔DOM 断链修复）：换 key 强制刷新 DOM
@@ -1462,20 +1502,32 @@ function onViewportResize(): void {
   autosizeBubble();
 }
 
-// 板外收板（design 定案语义）+ 板内点非文本块清选中/清选区（PATCH002）
+// 板内 mousedown：清图块选中 / 清选区（板内交互须即时）
+// PATCH002.49（甲案）：**板外收板从 mousedown 挪到 click** —— 拖动把手（主标题）在板外，
+// mousedown 口径会在拖拽启动前就把板收掉；click 与归档板 / 设置板一致（拖动不产生 click）
 function onGlobalDown(e: MouseEvent): void {
   if (!isOpen.value) return;
   const ov = overlay.value;
   const target = e.target as HTMLElement | null;
-  if (ov && ov.contains(e.target as Node)) {
-    if (selectedKey.value && !target?.closest(".note-block-image")) selectedKey.value = "";
-    // 文本块 mousedown 由 onTextMouseDown 自处理（拖选锚点）；其余位置一律清选区
-    if (!target?.closest(".note-block-text")) clearSel();
-    return;
-  }
+  if (!ov || !ov.contains(e.target as Node)) return; // 板外交给 onDocClick
+  if (selectedKey.value && !target?.closest(".note-block-image")) selectedKey.value = "";
+  // 文本块 mousedown 由 onTextMouseDown 自处理（拖选锚点）；其余位置一律清选区
+  if (!target?.closest(".note-block-text")) clearSel();
+}
+
+/** 板外点击收板（PATCH002.49 甲案）：`click` 而非 `mousedown`——拖动把手不产生 click，
+ * 故拖窗口时板不被收掉。**行 / 气泡行上的点击例外**：那是"切换详情源"（行单击开板），
+ * 由开板流程接管（否则 document 冒泡阶段晚到的 close 会把刚开的板关掉） */
+function onDocClick(e: MouseEvent): void {
+  if (!isOpen.value) return;
+  const ov = overlay.value;
+  const target = e.target as HTMLElement | null;
+  if (ov && ov.contains(e.target as Node)) return;
+  if (target?.closest(".todo-row") || target?.closest(".bubble-row")) return;
   close();
 }
 window.addEventListener("mousedown", onGlobalDown, true);
+document.addEventListener("click", onDocClick);
 window.addEventListener("keydown", onWindowKeydown, true);
 window.addEventListener("mousemove", onDocMouseMove, true);
 window.addEventListener("mouseup", onDocMouseUp, true);
@@ -1489,6 +1541,7 @@ onBeforeUnmount(() => {
   caretMirror?.remove(); // PATCH002.9：镜像元素一并清理
   caretMirror = null;
   window.removeEventListener("mousedown", onGlobalDown, true);
+  document.removeEventListener("click", onDocClick);
   window.removeEventListener("keydown", onWindowKeydown, true);
   window.removeEventListener("mousemove", onDocMouseMove, true);
   window.removeEventListener("mouseup", onDocMouseUp, true);
