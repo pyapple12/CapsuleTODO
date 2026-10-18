@@ -49,6 +49,11 @@ interface LocalBlock extends NoteBlock {
 }
 
 const blocks = ref<LocalBlock[]>([]);
+/** 整篇是否为空（全部文本块 trim 后皆空）——占位文案**仅此时**显示（PATCH002.23）：
+ * 多块且不全空时首块留空不再冒"添加描述、清单、想法…" */
+const noteEmpty = computed(() =>
+  blocks.value.every((b) => b.kind !== "Text" || b.text.trim() === ""),
+);
 let keySeq = 0;
 
 /** 生成客户端稳定 key */
@@ -262,25 +267,66 @@ async function deleteBlock(index: number): Promise<void> {
   await saveBlocks();
 }
 
-/** 文本块键盘：Enter 拆块 / Backspace@块首（合并或删上图）；Delete 不拦截
- * （只作用本块内，永不涉及下方块）；Ctrl+Enter 由**板级** window 监听处理（PATCH002）；
+/** 与下一文本块合并（Delete@块尾，PATCH002.22）：本块接上下块全文 + 删下块，光标留原位置 */
+function mergeWithNext(index: number): void {
+  const cur = blocks.value[index];
+  const next = blocks.value[index + 1];
+  if (!cur || !next || next.kind !== "Text") return;
+  pushUndo();
+  const caret = cur.text.length;
+  cur.text += next.text;
+  blocks.value.splice(index + 1, 1);
+  scheduleSave();
+  focusBlock(cur._key, caret);
+}
+
+/** 文本块键盘（PATCH002.22 语义定案：两键删的是"**分隔**"而非"删块"）：空块 →
+ * Backspace/Delete 删本块自身（**首/末块保持**，不吃相邻图）；非空块**块首 Backspace** →
+ * 上块文本合并 / 上块图删图；非空块**块尾 Delete**（本批新增）→ 下块文本合并上来 /
+ * 下块图删掉；块中两键不拦截（原生删字符）；Ctrl+Enter 由**板级** window 监听处理；
  * 全程 IME 守卫 */
 function onBlockKeydown(index: number, e: KeyboardEvent): void {
   if (e.isComposing) return;
   const el = e.target as HTMLTextAreaElement;
   const block = blocks.value[index];
   if (!block) return;
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const collapsed = start === end; // 无选区：两键的"分隔"语义只在光标态成立
   if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
-    splitBlock(index, el.selectionStart ?? 0);
+    splitBlock(index, start);
     return;
   }
-  if (e.key === "Backspace" && (el.selectionStart ?? 0) === 0 && (el.selectionEnd ?? 0) === 0) {
+  // ① 空块：删掉"本块这一行"本身（首块 Backspace / 末块 Delete 无处可并 → 保持原状）
+  if (collapsed && block.text === "") {
+    if (e.key === "Backspace" && index > 0) {
+      e.preventDefault();
+      void deleteBlock(index);
+      return;
+    }
+    if (e.key === "Delete" && index < blocks.value.length - 1) {
+      e.preventDefault();
+      void deleteBlock(index);
+      return;
+    }
+  }
+  // ② 非空块块首 Backspace：上块文本 → 合并；上块图 → 删图（图与文本不能同行 = 删分隔）
+  if (e.key === "Backspace" && collapsed && start === 0) {
     const prev = blocks.value[index - 1];
     if (!prev) return;
     e.preventDefault();
     if (prev.kind === "Image") void deleteBlock(index - 1);
     else mergeWithPrev(index);
+    return;
+  }
+  // ③ 非空块块尾 Delete（本批新增）：下块文本 → 合并上来；下块图 → 删图；末块 → 保持
+  if (e.key === "Delete" && collapsed && start === el.value.length) {
+    const next = blocks.value[index + 1];
+    if (!next) return;
+    e.preventDefault();
+    if (next.kind === "Image") void deleteBlock(index + 1);
+    else mergeWithNext(index);
     return;
   }
   // PATCH002.9 方向键跨块（方案乙）：↑/← 在"第一视觉行/块首"→ 上一块；↓/→ 在"末视觉行/块尾"→ 下一块
@@ -332,7 +378,12 @@ function onWindowKeydown(e: KeyboardEvent): void {
     undoStructural();
     return;
   }
-  if (mod && !e.altKey && (e.key === "c" || e.key === "C") && selRange.value) {
+  if (
+    mod &&
+    !e.altKey &&
+    (e.key === "c" || e.key === "C") &&
+    (selRange.value || selectedKey.value) // PATCH002.24：图块单击选中态也接管 Ctrl+C
+  ) {
     e.preventDefault();
     void copySelection();
     return;
@@ -364,6 +415,14 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   if (!block) return;
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
+  // PATCH002.25：剪贴板带 text/html 且含 <img> → 走多段粘贴（唯一能带**多图 + 段落结构**
+  // 的载体；应用内复制经 PATCH002.24 内联 data: 图，此处免联网直取）
+  const html = e.clipboardData?.getData("text/html") ?? "";
+  if (html.includes("<img")) {
+    e.preventDefault();
+    await pasteHtmlAt(index, start, end, html);
+    return;
+  }
   if (clipboardHasImage(e)) {
     e.preventDefault();
     await pasteImageAt(index, start, end, e.clipboardData?.getData("text/plain") ?? "");
@@ -412,6 +471,36 @@ async function pasteImageAt(
     }
   } catch (err) {
     console.error("插入图片失败", err);
+  }
+}
+
+/** 含图 HTML 粘贴（PATCH002.25）：先 flush（块 id 就位）→ Rust 多段插入（`data:` 图直解、
+ * 其他 scheme 降级文本链接）→ **整体替换本地块**（沿 `pasteImageAt` 的外科式打补丁口径） */
+async function pasteHtmlAt(index: number, start: number, end: number, html: string): Promise<void> {
+  const todo = props.todo;
+  const block = blocks.value[index];
+  if (todo == null || !block) return;
+  const before = block.text.slice(0, start);
+  const after = block.text.slice(end);
+  await saveBlocks();
+  try {
+    const outcome = await invoke<NotePasteOutcome>("note_paste_html", {
+      todoId: todo.id,
+      blockId: block.id,
+      before,
+      after,
+      html,
+    });
+    if (props.todo?.id !== todo.id) return;
+    if (outcome.status !== "image") return; // 片段全空 → 交原生文本粘贴
+    pushUndo();
+    blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
+    savedSignature = signature(blocks.value);
+    brokenKeys.value = [];
+    void nextTick(() => autosizeAll());
+    emit("changed");
+  } catch (err) {
+    console.error("粘贴图文失败", err);
   }
 }
 
@@ -704,28 +793,45 @@ function selectAllBlocks(): void {
   selFocus.value = { index: last, offset: blocks.value[last].text.length };
 }
 
-/** 选区文本（三段拼接：起点块尾段 + 中间整块 + 终点块首段；图块按占位文案） */
-function selectionText(): string {
-  const r = selRange.value;
-  if (!r) return "";
-  const parts: string[] = [];
-  for (let i = r.from.index; i <= r.to.index; i += 1) {
-    const block = blocks.value[i];
-    const seg = blockSelRange(i);
-    if (!block || !seg) continue;
-    parts.push(
-      block.kind === "Text" ? block.text.slice(seg.start, seg.end) : block.text || "🖼 图片",
-    );
-  }
-  return parts.join("\n");
+/** 复制入参（镜像 Rust `NoteCopyBlock`，PATCH002.24）：文本块原文 + 图块 id */
+interface NoteCopyBlockInput {
+  kind: "Text" | "Image";
+  text: string;
+  block_id: number;
 }
 
-/** 复制选区到系统剪贴板（跨块时接管 Ctrl+C；失败落 console，不吞） */
+/** 收集待复制块（PATCH002.24）：跨块选区优先（三段区间 = 起点块尾段 / 中间整块 /
+ * 终点块首段），否则图块单击选中态单块；两者皆无 → 空数组（调用方直接返回） */
+function copyPayload(): NoteCopyBlockInput[] {
+  const r = selRange.value;
+  if (r) {
+    const out: NoteCopyBlockInput[] = [];
+    for (let i = r.from.index; i <= r.to.index; i += 1) {
+      const block = blocks.value[i];
+      const seg = blockSelRange(i);
+      if (!block || !seg) continue;
+      out.push({
+        kind: block.kind,
+        text: block.kind === "Text" ? block.text.slice(seg.start, seg.end) : "",
+        block_id: block.id,
+      });
+    }
+    return out;
+  }
+  const picked = blocks.value.find((b) => b._key === selectedKey.value);
+  return picked && picked.kind === "Image"
+    ? [{ kind: "Image", text: "", block_id: picked.id }]
+    : [];
+}
+
+/** 复制选区 / 图块到系统剪贴板（PATCH002.24）：走 Rust **一次写入**——纯文本 +
+ * CF_HTML（应用内图内联 base64 data URL，超上限降级占位）+ 首图 PNG/CF_DIB 三格式；
+ * 失败落 console，不吞 */
 async function copySelection(): Promise<void> {
-  const text = selectionText();
-  if (!text) return;
+  const payload = copyPayload();
+  if (payload.length === 0) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await invoke("note_copy_selection", { blocks: payload });
   } catch (err) {
     console.error("复制选区失败", err);
   }
@@ -1248,7 +1354,7 @@ onBeforeUnmount(() => {
                 :ref="(el) => setTextEl(block._key, el)"
                 v-model="block.text"
                 class="note-block-text"
-                :placeholder="i === 0 ? '添加描述、清单、想法…' : ''"
+                :placeholder="i === 0 && noteEmpty ? '添加描述、清单、想法…' : ''"
                 spellcheck="false"
                 rows="1"
                 @mousedown="onTextMouseDown(i)"
@@ -1256,9 +1362,11 @@ onBeforeUnmount(() => {
                 @keydown="onBlockKeydown(i, $event)"
                 @paste="onBlockPaste(i, $event)"
               ></textarea>
-              <!-- 跨块选区高亮层（PATCH002.16/.17）：文本透明只显底色；拖选期间接管指针事件 -->
+              <!-- 跨块选区高亮层（PATCH002.16/.17）：文本透明只显底色；拖选期间接管指针事件。
+                   PATCH002.21：渲染条件由 `selDragging || selRange` 收紧为 `crossSelecting || selRange`
+                   —— 普通 mousedown 不再给所有文本块挂全文透明覆盖层（一挂一卸 = 全块重绘闪烁） -->
               <div
-                v-if="block.kind === 'Text' && (selDragging || selRange)"
+                v-if="block.kind === 'Text' && (crossSelecting || selRange)"
                 class="note-block-sel-overlay"
                 :class="{ 'sel-live': crossSelecting }"
                 :data-sel-index="i"

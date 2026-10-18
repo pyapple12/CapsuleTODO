@@ -430,6 +430,238 @@ pub fn note_open_image_core(
     crate::util::open_path_with_default(&abs).map_err(CommandError::Todo)
 }
 
+// —— 复制选区 / 图块（PATCH002.24：纯文本 + CF_HTML + 首图三格式，一次写入剪贴板）——
+
+/// 复制入参：文本块原文 + 图块 id（文件信息在库内，路径不过 IPC）
+#[derive(Debug, serde::Deserialize)]
+pub struct NoteCopyBlock {
+    /// 块类型
+    pub kind: NoteBlockKind,
+    /// 文本内容（图块恒空串）
+    pub text: String,
+    /// 块 id（图块取文件用；0 = 尚未落库 → 无图可带）
+    pub block_id: i64,
+}
+
+/// CF_HTML 内联图体积上限（单张 / 合计）：超限的图降级为文本占位，**不阻断复制**
+const COPY_INLINE_MAX_ONE: u64 = 3 * 1024 * 1024;
+const COPY_INLINE_MAX_ALL: u64 = 8 * 1024 * 1024;
+
+/// 落盘图片 → CF_HTML 内联 data URL 的 MIME（与落盘格式白名单一致；未知回落 PNG）
+fn image_mime(name: &str) -> &'static str {
+    match std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        _ => "image/png",
+    }
+}
+
+/// HTML 文本转义（`&`/`<`/`>`/`"`）；换行由调用方转 `<br>`
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// 任意受支持图片字节 → PNG（CF_DIB 需 PNG 源；已是 PNG 原样直用）
+fn to_png(bytes: &[u8]) -> Result<Vec<u8>, CommandError> {
+    crate::clipboard_image::validate_image_bytes(bytes)?;
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return Ok(bytes.to_vec());
+    }
+    let img = image::load_from_memory(bytes)
+        .map_err(|err| CommandError::Clipboard(format!("图片解码失败：{err}")))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|err| CommandError::Clipboard(format!("图片转 PNG 失败：{err}")))?;
+    Ok(out.into_inner())
+}
+
+/// 复制选区 / 图块到系统剪贴板（命令薄壳：解析图片目录 + 调核心）
+#[tauri::command]
+pub fn note_copy_selection(
+    blocks: Vec<NoteCopyBlock>,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    let images_dir = crate::paths::images_dir()
+        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+    note_copy_selection_core(&blocks, &images_dir, &ctx)
+}
+
+/// 复制核心（**入参自带块集、不读剪贴板 → 可直测**）：拼纯文本 + CF_HTML（应用内图
+/// **内联 base64 data URL**，超上限降级占位）+ 首图 PNG（CF_DIB 系）一次写入。
+/// 图块取文件按 `block_id` 查库（未落库 / 文件缺失 → 该图降级占位，不中断整体复制）
+pub fn note_copy_selection_core(
+    blocks: &[NoteCopyBlock],
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    use base64::Engine as _;
+    let storage = ctx.lock_storage()?;
+    let mut texts: Vec<String> = Vec::new();
+    let mut htmls: Vec<String> = Vec::new();
+    let mut first_png: Option<Vec<u8>> = None;
+    let mut inline_total: u64 = 0;
+    for block in blocks {
+        if matches!(block.kind, NoteBlockKind::Text) {
+            texts.push(block.text.clone());
+            htmls.push(escape_html(&block.text).replace('\n', "<br>"));
+            continue;
+        }
+        texts.push("🖼 图片".to_string());
+        let rel = if block.block_id > 0 {
+            storage
+                .get_note_block(block.block_id)
+                .ok()
+                .and_then(|b| b.image_file)
+        } else {
+            None
+        };
+        let Some(rel) = rel else {
+            htmls.push("🖼 图片".to_string());
+            continue;
+        };
+        let abs = images_dir.join(&rel);
+        let Ok(bytes) = std::fs::read(&abs) else {
+            htmls.push("🖼 图片".to_string()); // 文件缺失 → 占位，不中断整体复制
+            continue;
+        };
+        if first_png.is_none() {
+            first_png = Some(to_png(&bytes)?);
+        }
+        let len = bytes.len() as u64;
+        if len > COPY_INLINE_MAX_ONE || inline_total + len > COPY_INLINE_MAX_ALL {
+            htmls.push("🖼 图片".to_string()); // 超限降级（免剪贴板爆量）
+            continue;
+        }
+        inline_total += len;
+        let name = abs
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image.png");
+        htmls.push(format!(
+            "<img src=\"data:{};base64,{}\" alt=\"图片\">",
+            image_mime(name),
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ));
+    }
+    let text = texts.join("\n");
+    let html = crate::clipboard_image::build_cf_html(&htmls.join("<br>"));
+    crate::clipboard_image::write_clipboard_rich(&html, first_png.as_deref(), &text)
+        .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))?;
+    Ok(())
+}
+
+// —— 粘贴含图 HTML（PATCH002.25：CF_HTML 多图 → 文本块 / 图块按原序插入）——
+
+/// `data:` 图体积上限（超限降级为文本链接，不阻断其余段）
+const PASTE_HTML_MAX_ONE: usize = 10 * 1024 * 1024;
+
+/// 粘贴含图 HTML（命令薄壳：解析图片目录 + 调核心 + 有插图才广播）
+#[allow(clippy::too_many_arguments)] // 粘贴输入集完整传递（与 note_paste_image 同款）
+#[tauri::command]
+pub fn note_paste_html(
+    window: tauri::Window,
+    todo_id: i64,
+    block_id: i64,
+    before: String,
+    after: String,
+    html: String,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<NotePasteOutcome, CommandError> {
+    let images_dir = crate::paths::images_dir()
+        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+    let outcome =
+        note_paste_html_core(todo_id, block_id, &before, &after, &html, &images_dir, &ctx)?;
+    if matches!(outcome, NotePasteOutcome::Image { .. }) {
+        emit_todo_changed(&window, &app);
+    }
+    Ok(outcome)
+}
+
+/// 粘贴核心（**不读剪贴板、不联网 → 可直测**）：HTML → 片段序列 → 多段插入。
+/// `data:` 图直解入库；其他 scheme（http(s) 等）本轮**降级为文本链接**（下载链路见
+/// x.progress.md PATCH002.25 备注）；段落内残留换行按行再切（块不变量：文本段无换行）。
+/// 恒回 `Image { blocks }`（前端一律整体替换本地块）；片段全空 → `NoImage` 交前端回落文本粘贴
+pub fn note_paste_html_core(
+    todo_id: i64,
+    block_id: i64,
+    before: &str,
+    after: &str,
+    html: &str,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<NotePasteOutcome, CommandError> {
+    let mut parts: Vec<crate::storage::NotePastePart> = Vec::new();
+    for part in crate::html_paste::parse(html) {
+        match part {
+            crate::html_paste::HtmlPart::Text(text) => {
+                for line in text.split('\n') {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        parts.push(crate::storage::NotePastePart::Text(line.to_string()));
+                    }
+                }
+            }
+            crate::html_paste::HtmlPart::Image(src) => match decode_data_url(&src) {
+                Some((bytes, orig_name)) if bytes.len() <= PASTE_HTML_MAX_ONE => {
+                    crate::clipboard_image::validate_image_bytes(&bytes)?;
+                    parts.push(crate::storage::NotePastePart::Image { bytes, orig_name });
+                }
+                // 非 data: / 超限 / 解码失败 / 非法字节 → 降级文本链接（不吞、不阻断其余段）
+                _ => parts.push(crate::storage::NotePastePart::Text(src)),
+            },
+        }
+    }
+    if parts.is_empty() {
+        return Ok(NotePasteOutcome::NoImage);
+    }
+    let stamp = crate::util::local_stamp();
+    let storage = ctx.lock_storage()?;
+    if storage.note_blocks(todo_id)?.len() + parts.len() + 2 > MAX_NOTE_BLOCKS {
+        return Err(CommandError::Todo(TodoError::TooManyBlocks.to_string()));
+    }
+    let blocks =
+        storage.insert_note_parts(images_dir, todo_id, block_id, before, after, &parts, &stamp)?;
+    Ok(NotePasteOutcome::Image {
+        blocks: blocks
+            .into_iter()
+            .map(|b| to_block_view(b, images_dir))
+            .collect(),
+    })
+}
+
+/// `data:` URL → 字节 + 内层名提示（仅 `;base64,` 形态；其余形态 None）
+fn decode_data_url(src: &str) -> Option<(Vec<u8>, Option<String>)> {
+    use base64::Engine as _;
+    let rest = src.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if !meta.contains(";base64") {
+        return None;
+    }
+    let mime = meta.split(';').next().unwrap_or("image/png");
+    let ext = match mime {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        _ => "png",
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .ok()?;
+    Some((bytes, Some(format!("pasted.{ext}"))))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

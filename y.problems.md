@@ -121,3 +121,39 @@
     - **中期（设计语言）**：明确"滑杆属于哪一层"的规则——**滚在容器内玻璃上、滑杆贴着该层内容的上下边**；据此复核各板"内层容器 padding"的口径（当前详情板 6px、归档 / 清单 8px 不统一）
     - **长期**：若引入更贴切的设计语言（如滑杆与板内标题行 / 分隔联动、或按内容块而非容器对齐），须先定义"**轨道参照物**"这一概念再落实现
     - **状态登记**：**清单 / 气泡列表、清单详情板、白板当前视觉逻辑正确**（按"滚动内玻璃 / 内容盒"实现），维持现状不再动；**归档板已闭环**（PATCH002.34——真根因非"定位基准"而是浮钮越界）；**气泡详情板已闭环**（PATCH002.27——按内层容器 inset 定上下）
+
+11. **"整行溶解"的表达口径：三个列表与详情板不一致**（2026-10-18 用户 live 记录，待定案；关联 PATCH003.1）：
+
+    当前问题：底部溶解由**一个**变量 `--fade-btm` 驱动（`ui/src/styles/board-read.css` 的 mask：`#000 var(--fade-btm), transparent`）。`ui/src/composables/useBoardRead.ts:126-154` 的 `settle()` 在**滚动停止**时，若底部有半截行跨过判定线（`sr.bottom − padB(8px)`）→ 把带起点推到 **`行顶 − 2px`** → 该行**从顶一路溶到底**。生效范围 = **清单 / 气泡 / 归档**三个列表（`rowSel` = 默认 `.todo-item` / `.bubble-row` / 默认 `.todo-item`）；**详情板与白板**容器内无匹配行 → 恒回落 14px 软边（PATCH002.10 定案）。于是同一产品里存在两种表达：列表侧"整行消失"（与 1s 过渡叠加成"整块溶掉"），详情板侧只有 14px 软边。用户 2026-10-18 提出"**要修正所有整行溶解的表达**"。
+
+    未来方案：
+
+    - **候选 A（倾向）去掉整行溶解**：删 `settle()` 的半截行分支，只留「默认 14px + 到底抬带 100%」→ 三列表与详情板统一；**`PATCH002.20`（罩死改读实际溶解带）随之作废**，或改写为"带高恒 14px / 到底 0"两态
+    - **候选 B 只溶被切掉的部分**：带起点 = 行顶 + 行高 × 可见比例（半截行按比例渐隐，不整行消失）
+    - **候选 C 阈值门控**：仅当该行可见比例 < 30% 时才推到行顶
+    - **候选 D 只跟"到底"走**：滚停不再动带（与 A 近似）
+    - 定案后落 **PATCH003.1**（方案与代码事实见 z.plan 附录 PATCH003）
+
+12. **图片气泡开板瞬间的"空板面"（用户描述为"黑纱褪去"）**（2026-10-18 用户 live 记录，待定案；关联 PATCH003.2）：
+
+    当前问题：浮板板面底色 = `--glass-bg-strong: rgba(0, 0, 0, 0.25)`（`ui/src/styles/glass.css:21`，注释原文即"浮板黑纱档"，2026-09-28 用户定案"黑纱替代白纱"）。图片气泡的详情在 `watch(props.bubble)` 里**先开板**、**并行**发起 `invoke("bubble_get_image_path")`（`ui/src/components/DetailOverlay.vue:998-1012`；Rust 侧预览优先，`core/src/commands/bubble.rs:253-256`）→ 图就位前渲染的是**空的 `<textarea v-else>`**（`1187-1206`）→ 出现"**一整块只有黑纱的空板面**"；图到位后 `.detail-image { width: 100% }`（板面内距仅 12px）几乎铺满整板 → 主观上即"**黑纱褪去**"。**文本气泡没有这个过程**（文字直接落黑纱上）→ 用户强调"特别是图片"。加剧观感的三因素：揭示动画 0.4s 带回弹、被盖内容 `filter: blur(4px)`（0.35s）、`backdrop-filter` 在透明 WebView2 窗口**不渲染**（CDP 实证）→ 板面观感 = 黑纱 + 内容模糊合成。**注**：经核查"预览优先"自 **V0.2.2.3** 即存在（tag `v0.2.2` 的 `bubble.rs` 已有该分支），用户现存两张气泡图（1.03 MB / 96 KB）**均未生成 `preview.png`**（预览只对"宽 > 2000px 或 > 2MB"生成）→ 现象随"图片大小 + 缓存温度 + 图板比例"浮动。
+
+    未来方案：
+
+    - **候选 A 预取图再开板**：`await invoke(...)` + `new Image().decode()` 完成后再 `open()`（空板面根治；开板推迟 = 取图耗时，预览已很快）
+    - **候选 B 淡入**：`<img @load>` 后 `opacity 0→1`（150~250ms）
+    - **候选 C 从上到下揭纱**：`mask-image` 或 `clip-path: inset(0 0 100% 0) → inset(0)`，与 0.4s 揭示动画同步
+    - **候选 D（倾向）A + C**：先预取消灭空窗，开板时给揭纱表达
+    - 落点：`DetailOverlay.vue` + `detail.css`，**零 Rust 改动**；定案后落 **PATCH003.2**
+
+13. **气泡详情"内板"的高度与边距与清单详情耦合**（2026-10-18 用户 live 记录，待排查；关联 PATCH003.3）：
+
+    当前问题：气泡详情与清单详情**共用同一个 `.note-scroll` 元素**（`ui/src/components/DetailOverlay.vue:1177`）——基类 `.note-scroll { width: 100%; height: 100%; overflow-y: auto }`（`ui/src/styles/detail.css:104-111`）被两种模式共用；两条 padding 规则虽分开写但**值相同**（`.note-scroll.note-blocks { padding: 6px 2px }` :237 / `.note-scroll.bubble-shell { padding: 6px 2px }` :243）→ 用户所报"**改一个，另一个跟着错**"是**结构性**的。用户要求：气泡详情内板的高度要**调整正确**，且**不与详情板内板有关联**、**边距要分开**（"这个要查"）。
+
+    未来方案：
+
+    - **要查清三件事**：① **高度口径**（清单块列表 = `height:100%` + 内部滚动；气泡全文 = 内容高为主、上限 100%、超出才滚；气泡图片 = 贴图高 / 居中、不出现上下大片空黑纱）——三者不同却被同一条 `height:100%` 绑住；② **padding 归属**（该落内板还是落内容？现在两处都有 → "首行距顶 8px"是 `6 + 2` **算出来的**而非声明的）；③ **图片模式**（`.note-scroll.image-shell { display:flex; align-items:safe center }` + `.detail-image { width:100%; height:auto }`）下内板高度由谁定
+    - **候选 A（倾向）拆基类**：`.note-scroll` 只留通用项（`width` / `box-sizing` / `border-radius: inherit` / `overflow-x: hidden`），把 `height` 与 `overflow-y` **下放到各模式**（`.note-blocks { height:100%; overflow-y:auto }` / `.bubble-shell { max-height:100%; overflow-y:auto }` / `.image-shell { height:100%; align-items:center }`），padding 只落一处
+    - **候选 B 气泡模式独占容器**（`.bubble-frame`）：不再复用 `.note-scroll` 的几何（彻底解耦，多一层 DOM）
+    - **候选 C 只把 padding 值分开**：治标（基类耦合仍在）
+    - 定案后落 **PATCH003.3**（方案见 z.plan 附录 PATCH003）

@@ -1149,8 +1149,64 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 > - **`.note-shell` 描边与落影删除（PATCH002.32，用户定案）**：`--panel-shadow` 是 16~40px 模糊，在玻璃卡 12px 内距处本就被裁大半，去掉更干净
 > - **清单侧加固 + 临时诊断（PATCH002.33，2026-10-18 收口）**：`#todo-active` 静态类兜底（**保留**：元素重建时天生带套件类）；`forceRemount` 显式重挂**回退**（收口复查与既有 `rebuildObserver` 职责重复）；**临时诊断三处已删**（`debug_log` 命令 + `lib.rs` 注册 + `useGlassBar.diagLog`）
 > - **归档浮钮越界根因（PATCH002.34，2026-10-18 live 收官）**：轨道本身一直是对的（= 列表内容盒），越界的是**浮钮位置**——`scrollHeight`/`clientHeight` 取整为整数而 `scrollTop` 是小数，小数几何的归档板到底时 `scrollTop`（≈49.8）**大于**整数 `range`（49）→ `ratio > 1` → 浮钮被推出轨道底约 5px（随小数浮动 2~5px）。修法：`ratio` **夹取 `[0,1]`**（轨道公式不动；清单/气泡实测 `ratio ≤ 1` 故零影响）；共享代码使**五处滑杆**统一受保护。**排查中被证伪两条**：落影（2~3px 是上端观感，非本因）、"扣 anchor padding"（实测包含块就是 anchor 的 border box → 扣了反而整体上移 12px，已回退）
+> - **PATCH002.21–.26 执行与两处实施判定的登记（2026-10-18）**：`.21` / `.22` / `.23` / `.26` 按条目落位（覆盖层挂载时机收紧 / 键位三段语义 + 新增 `mergeWithNext` / `noteEmpty` 占位条件 / `--sel-bg` 令牌三处共用）；`.24` 落 `note_copy_selection` + `clipboard_image::write_clipboard_rich` + 纯函数 `build_cf_html`（**UTF-8 字节偏移**，TDD）。**`.25` 的两处实施判定（与原计划的差异，登记备查）**：① **不引 `tauri-plugin-http`** —— 该插件的价值是"前端 fetch 走 Rust 代理"，但本任务需要字节**落在 Rust 侧**（`insert_note_parts` 直接落盘入库），前端取回再经 IPC 回传体量过大；故改为"下一步加 **Rust 侧 HTTP 客户端**（复用既有 reqwest 树 + TLS feature）补齐下载"，本轮 `data:` 直解先通、http(s) 暂降级文本链接；② **异步回填简化为"一次往返 + 整体替换"** —— 占位块会与 300ms 防抖保存产生竞态（占位被落库后又被权威列表替换），且下载本有超时护栏，故不做两阶段协议。
+> - **PATCH002.21–.26 目测反馈与派生条目（2026-10-18 live）**：`.22`（A 5/7 除光标落点外全部通过）/ `.23` 全通过 / `.21` 回归通过；**新发现两条**（`.35` 起点块双层涂色、`.36` 跨块首帧整片变暗不精确）+ **一条补需求**（`.37` 空块删除后的光标落点：Backspace 落上一文本块末尾 / Delete 落下一文本块首字前，两侧为图时维持现行为）——三条均已入 `x.progress.md` PATCH002 组。
+> - **PATCH002.21–.26 第二轮目测反馈（2026-10-18 晚 live）**：`.22` 8 通过、`.24` 21/24/25 通过、`.25` 27/29/30 通过、`.26` 31（同色达成，但起点块**双层叠加**与 `.35` 同源）/33 通过、**回归 34–38 全通过**；**新发现五条 + 一条需求 + 一条连带**：`.38` 向上拖选起点块区间错位 / `.39` Shift+点击跨块扩选（需求）/ `.40` 跨条目粘贴无效（切源未载完 → 块 id=0）/ `.41` 同图两份文件夹（**已查库定性 = 孤儿残留**，去重本身生效：`animal-crossing….jpeg` 两块共用即证）/ `.42` 网页含 SVG 图致整条粘贴失败（`validate_image_bytes?` 误传播）/ `.43` 白板 Ctrl+S·Ctrl+Enter 保存手势（需求）/ `.44` 到底态回车增行内容整体上滚——全部入 `x.progress.md` PATCH002 组（`.43` 非详情块域，随批附带）。
 > - **版本**：fix → **三段不变（`core/Cargo.toml` 保持 0.2.3），对外四段随 R 递增（本批三提交：V0.2.3.1 → .2 → .3）**——PATCH 修补批只推修订号（沿版本双轨规则）
 >
 > 红线：**除"恢复 8px 顶距"外，间距/字号/观感零变化**（顶部软边与滚动观感必须保留）；**气泡域零影响**；前端即时归一化 + Rust 保存校验的职责边界不变；归一化**只作用于空块**（有内容的块一字不动），非"静默改数据"；无新增容错面。
 >
 > 状态：🚧 **三轮修补已落 + 用户 live 目测通过**（2026-10-18——**已落 `.1–.19` / `.27–.34`**（cargo **195 测试** / clippy / doc 0 警告 / `vue-tsc` + build / prettier 全绿）；**临时诊断与探针全清**（残留检查 = 0）；**live 用户确认**：归档浮钮与最后一条下边齐（不再探出）、清单/气泡与改动前完全一致、详情板/白板正常；**余 `.20–.26` 七条待做**（罩死读实际溶解带 / 高亮覆盖层挂载时机 / 空块与块尾 Backspace·Delete 语义 / 占位条件 / 图块多格式复制 / CF_HTML 多图粘贴 / 选区同色）；执行记录见 x.progress.md PATCH002 组）
+
+---
+
+## 附录 PATCH003：浮板观感三修（整行溶解表达 / 图片气泡开板方式 / 气泡详情内板高度解耦）（2026-10-18 立项）
+
+> 背景：PATCH002 三轮收口（V0.2.3.3）后用户 live 复看，提出三处观感/结构问题——① 三个列表的"整行溶解"表达；② 图片气泡开板瞬间的"空板面（黑纱褪去）"；③ 气泡详情"内板"的高度与边距与清单详情耦合。三条**互相独立**、**全部前端**、零 Rust 改动。
+> 用户指令（2026-10-18）：**先落定文档、记住要改什么**，晚上再细化定案。
+> 关联：`y.problems.md` #11 / #12 / #13；任务条目 `x.progress.md` PATCH003 组。
+
+**PATCH003.1 整行溶解的表达**
+
+- 机制（已核）：底部溶解由**一个**变量 `--fade-btm` 驱动（`ui/src/styles/board-read.css` 的 mask：`#000 var(--fade-btm), transparent`）；`ui/src/composables/useBoardRead.ts:126-154` 的 `settle()` 在**滚动停止**（`scrollend` / childList observer / 开板 450ms 收口）时，若底部有半截行跨过判定线（`sr.bottom − padB(8px)`）→ 把带起点推到 **`r.top − sr.top − 2`** → 该行**从顶一路溶到底**；滚到底 → `--fade-btm: 100%`（无带）；其余时刻 → 内联值被清 → 回落 CSS 默认 `calc(100% - 14px)`（14px 软边）
+- 生效范围：**清单**（`rowSel` 默认 `.todo-item`）/ **气泡**（`.bubble-row`）/ **归档**（默认 `.todo-item`）；**详情板与白板**容器内无匹配行 → `removeProperty` → 恒 14px 软边（PATCH002.10 定案）
+- 候选：**A 去掉**（删半截行分支，只留「默认 14px + 到底 100%」；三列表与详情板统一；**`PATCH002.20` 随之作废或改写为"恒 14px / 到底 0"两态**）/ **B 只溶被切掉的部分**（带起点 = 行顶 + 行高 × 可见比例）/ **C 阈值门控**（可见比例 < 30% 才推到行顶）/ **D 只跟"到底"走**
+- 倾向：**A**（一致性 + 简化 `.20`）；**待用户定案**
+
+**PATCH003.2 图片气泡的开板方式**
+
+- 机制（已核）：浮板板面底色 = `--glass-bg-strong: rgba(0,0,0,0.25)`（`ui/src/styles/glass.css:21`，注释原文"浮板黑纱档"）；`ui/src/components/DetailOverlay.vue:998-1012` 在 `watch(props.bubble)` 里**先 `open()`**、**并行** `invoke("bubble_get_image_path")`（Rust 侧预览优先，`core/src/commands/bubble.rs:253-256`）→ 图就位前 image 气泡渲染空 `<textarea v-else>`（`1187-1206`）→ **只有黑纱的空板面** → 图到位后 `.detail-image { width: 100% }`（板面内距 12px）几乎铺满 → 主观"黑纱褪去"
+- 加剧因素：揭示动画 0.4s 带回弹（`detail.css:47-53`）；被盖内容 `filter: blur(4px)` 0.35s（`glass.css:97-105`）；`backdrop-filter` 在透明 WebView2 窗口**不渲染**（CDP 实证）→ 板面观感 = 黑纱 + 内容模糊合成
+- 候选：**A 预取图再开板**（`await invoke` + `Image().decode()` 后再 `open()`）/ **B 淡入**（`@load` → `opacity 0→1` 150~250ms）/ **C 从上到下揭纱**（`mask-image` 或 `clip-path: inset(0 0 100% 0) → inset(0)`，与 0.4s 揭示同步）/ **D = A + C**
+- 倾向：**D**（先消除空窗，再给揭纱表达）；**待用户定案**
+
+**PATCH003.3 气泡详情内板的高度与边距解耦**
+
+- 耦合点（已核）：气泡详情与清单详情**共用同一个 `.note-scroll`**（`ui/src/components/DetailOverlay.vue:1177`）；基类 `.note-scroll { width:100%; height:100%; overflow-y:auto }`（`ui/src/styles/detail.css:104-111`）两模式共用；两条 padding 规则虽分开写但**值相同**（`.note-scroll.note-blocks { padding: 6px 2px }` :237 / `.note-scroll.bubble-shell { padding: 6px 2px }` :243）→ 结构性耦合
+- 要查清：① **高度口径三者不同**（清单块列表 = `height:100%` + 内部滚动；气泡全文 = 内容高为主、上限 100%、超出才滚；气泡图片 = 贴图高 / 居中、不出现上下大片空黑纱）却被同一条 `height:100%` 绑住；② **padding 归属**（落内板还是落内容？现在两处都有 → "首行距顶 8px"是 `6 + 2` 算出来的而非声明）；③ **图片模式**（`.note-scroll.image-shell { display:flex; align-items:safe center }` + `.detail-image { width:100%; height:auto }`）下内板高度由谁定
+- 候选：**A 拆基类**（`.note-scroll` 只留通用项；`height`/`overflow-y` 下放各模式；padding 只落一处）/ **B 气泡模式独占一层容器**（`.bubble-frame`，彻底解耦、多一层 DOM）/ **C 只把 padding 值分开**（治标）
+- 倾向：**A**；**待用户定案**
+
+> 红线：**只动气泡/列表观感与内板几何**——清单详情块模型行为、罩死判定、滑杆几何（PATCH002.34 已封死的 `ratio` 夹取）不得回归；气泡域数据语义（PL028 之前）不变。
+>
+> 状态：🚧 **方案已记录、待定案**（2026-10-18 立项；候选与代码事实如上；**2026-10-18 晚细化到函数级并逐条定案**；执行记录见 x.progress.md PATCH003 组）
+
+---
+
+## 附录 PL028：气泡详情 + 白板 → 块模型（图文混排与粘贴推广）（2026-10-18 立项）
+
+> 背景：PL027 给**清单详情**落了块模型（一段一行一块 + 图块混排 + 系统 Ctrl+V 贴图 + 拖拽调序 + 域内引用计数）。用户 2026-10-18 定案：**气泡详情**与**白板**也要支持"文字 + 图片"的混排与粘贴，即把块模型推广过去。
+> 现状（表结构）：`bubbles` = `text + kind + image_file + image_hash + image_source`（**单块语义**）；`whiteboard` = 单列 `content`（单文本）；`note_blocks` = 块模型（`todo_id + sort_order + kind + text + image_hash + image_file`，仅 todo）。
+> 方案要点（**三条决策点待拍**）：
+>
+> - **存储**：把 `note_blocks` 泛化为 **`blocks(owner_kind TEXT, owner_id INTEGER, sort_order, kind, text, image_hash, image_file)`**；迁移 `note_blocks` + `whiteboard.content` + `bubbles` 单块语义，迁移后 **DROP 旧列/旧表**（沿 PL027 `todos.note` 退役先例）；**域内引用计数 / 孤儿清扫 / 落盘前缀**（`note_` / `bubble_` / `board_`）按 `owner_kind` 分派
+> - **命令**：`note_blocks_*` 泛化为 `blocks_*(ownerKind, ownerId, …)`，校验单点 `validate_blocks`（沿用「至少一个文本块 / 无换行 / 总长 / 块数」四条口径）
+> - **前端**：把 `ui/src/components/DetailOverlay.vue` 内的块编辑器（拆块 / 合并 / 删除 / 粘贴 / 撤销 / 跨块框选 / 拖拽 / 自动增高，约 800 行）**抽成共享组件** `ui/src/components/BlockEditor.vue`，三宿主复用（清单详情 / 气泡详情 / 白板）
+> - **气泡列表行**：块化后行内预览口径需先定（建议"首块文本；纯图则首图缩略"）
+> - **白板**：`content` 迁块 + 复用编辑器（长度上限改块口径）
+>
+> 决策点：① **一张多态表 vs 三张平行表**（前者不重复域逻辑、后者改动面小）；② **气泡行内预览口径**（首块 / 首图缩略 / 拼接摘要）；③ **白板长度上限的块口径**（沿用 10000 字符总长？）。
+>
+> 风险：**结构性重构**（存储 + 命令 + 前端三层）——单独立 PL 走 TDD + 迁移幂等 + 既有气泡/白板回归全绿；迁移须在真实库副本上验证。
+>
+> 状态：🚧 **已立项、待细化**（2026-10-18；三条决策点待用户拍；2026-10-18 晚细化到函数级；执行记录见 x.progress.md PL028 组）

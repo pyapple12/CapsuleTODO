@@ -11,6 +11,7 @@ pub mod fullscreen;
 #[cfg(target_os = "windows")]
 pub mod glass_backdrop;
 pub mod hotkey;
+pub mod html_paste;
 pub mod paths;
 pub mod settings;
 pub mod snap;
@@ -269,6 +270,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::note_paste_image,
             commands::todo::note_reorder,
             commands::todo::note_open_image,
+            commands::todo::note_copy_selection,
+            commands::todo::note_paste_html,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
             commands::bubble::bubble_get_image_path,

@@ -381,11 +381,26 @@ mod win {
     const CF_DIBV5: u32 = 17;
     /// 标准剪贴板格式：文件引用（拖放）列表（PL024.8b）
     const CF_HDROP: u32 = 15;
+    /// 标准剪贴板格式：Unicode 文本（NUL 终止）
+    const CF_UNICODETEXT: u32 = 13;
 
     /// "PNG" 注册格式 ID（同一会话注册幂等同值；0 = 失败）
     fn png_format() -> u32 {
         let name: Vec<u16> = "PNG\0".encode_utf16().collect();
         unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    /// "HTML Format" 注册格式 ID（CF_HTML；0 = 失败）
+    fn html_format() -> u32 {
+        let name: Vec<u16> = "HTML Format\0".encode_utf16().collect();
+        unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    /// Unicode 文本 → CF_UNICODETEXT 字节（UTF-16LE + 结尾 NUL）
+    fn utf16_bytes(text: &str) -> Vec<u8> {
+        let mut out: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        out.extend_from_slice(&[0, 0]);
+        out
     }
 
     /// 拷贝剪贴板某格式数据为自有字节（须已 OpenClipboard）；None = 格式缺席/取数失败
@@ -576,9 +591,73 @@ mod win {
         unsafe { CloseClipboard() };
         result
     }
+
+    /// 写剪贴板富格式（PATCH002.24）：CF_HTML（"HTML Format" 注册格式，UTF-8 字节）
+    /// 另加可选图片三格式（PNG 注册格式 / CF_DIB / CF_DIBV5）与 CF_UNICODETEXT。
+    /// 顺序沿浏览器/Office 惯例（HTML → 图片 → 文本）；任一步失败严格报错
+    pub fn write_clipboard_rich(
+        html: &str,
+        png: Option<&[u8]>,
+        text: &str,
+    ) -> Result<(), ClipboardImageError> {
+        if unsafe { OpenClipboard(0) } == 0 {
+            return Err(ClipboardImageError::Open);
+        }
+        let result = (|| {
+            if unsafe { EmptyClipboard() } == 0 {
+                return Err(ClipboardImageError::Empty);
+            }
+            let html_fmt = html_format();
+            if html_fmt == 0 {
+                return Err(ClipboardImageError::RegisterFormat);
+            }
+            set_bytes(html_fmt, html.as_bytes())
+                .map_err(|_| ClipboardImageError::Set("HTML Format"))?;
+            if let Some(png) = png {
+                let png_fmt = png_format();
+                if png_fmt == 0 {
+                    return Err(ClipboardImageError::RegisterFormat);
+                }
+                set_bytes(png_fmt, png).map_err(|_| ClipboardImageError::Set("PNG"))?;
+                let dib = build_dib_from_png(png)?;
+                set_bytes(CF_DIB, &dib).map_err(|_| ClipboardImageError::Set("CF_DIB"))?;
+                let v5 = build_dibv5_from_png(png)?;
+                set_bytes(CF_DIBV5, &v5).map_err(|_| ClipboardImageError::Set("CF_DIBV5"))?;
+            }
+            let uni = utf16_bytes(text);
+            set_bytes(CF_UNICODETEXT, &uni)
+                .map_err(|_| ClipboardImageError::Set("CF_UNICODETEXT"))?;
+            Ok(())
+        })();
+        unsafe { CloseClipboard() };
+        result
+    }
 }
 
-/// 读剪贴板图片（Windows 实装；其余平台恒 None 回落文本链路）
+/// 组装 CF_HTML 载荷（纯函数，PATCH002.24）：`Version:0.9` + 四段**字节**偏移头 +
+/// `<html><body>` 包装 + `<!--StartFragment-->` 片段标记。偏移按 UTF-8 **字节**计
+/// （Windows "HTML Format" 约定；按 UTF-16 计会让含中文的片段错位）
+pub fn build_cf_html(fragment: &str) -> String {
+    const PREFIX: &str = "<html><body><!--StartFragment-->";
+    const SUFFIX: &str = "<!--EndFragment--></body></html>";
+    // 头部模板：4 个定宽 10 位占位 → 头部长度恒定，可先算再填
+    fn head(sh: usize, eh: usize, sf: usize, ef: usize) -> String {
+        format!(
+            "Version:0.9\r\nStartHTML:{sh:010}\r\nEndHTML:{eh:010}\r\n\
+             StartFragment:{sf:010}\r\nEndFragment:{ef:010}\r\n"
+        )
+    }
+    let start_html = head(0, 0, 0, 0).len();
+    let start_fragment = start_html + PREFIX.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + SUFFIX.len();
+    let mut out = head(start_html, end_html, start_fragment, end_fragment);
+    out.push_str(PREFIX);
+    out.push_str(fragment);
+    out.push_str(SUFFIX);
+    out
+}
+
 #[cfg(target_os = "windows")]
 pub fn read_clipboard_image() -> Option<CapturedImage> {
     win::read_clipboard_image()
@@ -614,6 +693,26 @@ pub fn write_clipboard_files(_paths: &[&std::path::Path]) -> Result<(), Clipboar
     Err(ClipboardImageError::UnsupportedPlatform)
 }
 
+/// 写剪贴板富格式（Windows：CF_HTML + 图片三格式 + Unicode 文本，PATCH002.24）
+#[cfg(target_os = "windows")]
+pub fn write_clipboard_rich(
+    html: &str,
+    png: Option<&[u8]>,
+    text: &str,
+) -> Result<(), ClipboardImageError> {
+    win::write_clipboard_rich(html, png, text)
+}
+
+/// 写剪贴板富格式（非 Windows 明确报暂不支持——延后基线，严格报错非降级）
+#[cfg(not(target_os = "windows"))]
+pub fn write_clipboard_rich(
+    _html: &str,
+    _png: Option<&[u8]>,
+    _text: &str,
+) -> Result<(), ClipboardImageError> {
+    Err(ClipboardImageError::UnsupportedPlatform)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +730,38 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .expect("夹具编码必须成功");
         out
+    }
+
+    /// CF_HTML 组装（PATCH002.24）：四段偏移必须是 **UTF-8 字节**位（含中文与 base64
+    /// 的片段照样精确切中），且区间自洽（HTML ⊃ Fragment）
+    #[test]
+    fn cf_html_offsets_are_utf8_byte_positions() {
+        let fragment = "第一段<img src=\"data:image/png;base64,AA==\">尾巴";
+        let html = build_cf_html(fragment);
+        let at = |key: &str| -> usize {
+            html.lines()
+                .find_map(|l| l.strip_prefix(key))
+                .unwrap_or_else(|| panic!("缺 {key}"))
+                .parse()
+                .expect("偏移须为数字")
+        };
+        let sh = at("StartHTML:");
+        let eh = at("EndHTML:");
+        let sf = at("StartFragment:");
+        let ef = at("EndFragment:");
+        assert_eq!(&html[sh..sh + 6], "<html>", "StartHTML 指向 <html> 起点");
+        assert_eq!(
+            &html[sf..sf + fragment.len()],
+            fragment,
+            "片段按字节精确落位"
+        );
+        assert_eq!(&html[ef..eh], "<!--EndFragment--></body></html>");
+        assert!(sh < sf && sf < ef && ef < eh, "四段偏移须自洽");
+        assert_eq!(
+            html[sf..ef].len(),
+            fragment.len(),
+            "片段区间长度 = 片段字节数"
+        );
     }
 
     #[test]

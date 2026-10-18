@@ -138,6 +138,20 @@ fn folder_of(rel: &str) -> String {
         .unwrap_or_else(|| rel.to_string())
 }
 
+/// 多段粘贴的一段（PATCH002.25）：文本段或图段（图段自带字节与来源名，落盘由存储层负责）
+#[derive(Debug)]
+pub enum NotePastePart {
+    /// 文本段（**不得含换行**——块不变量；调用方按段落切好）
+    Text(String),
+    /// 图段（字节 + 可选原名；去重 / 命名 / 预览沿单图插入同款）
+    Image {
+        /// 图片字节（调用方须先 `validate_image_bytes`）
+        bytes: Vec<u8>,
+        /// 来源文件名（净化后作内层名；None = 截图式 `snap_…`）
+        orig_name: Option<String>,
+    },
+}
+
 /// SQLite 清单存储（rusqlite Connection 非 Sync，跨线程共享须经 Mutex）
 pub struct Storage {
     conn: Connection,
@@ -902,6 +916,192 @@ impl Storage {
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     eprintln!("插图事务回滚失败：{rollback}");
+                }
+                return Err(err);
+            }
+        }
+        self.note_blocks(todo_id)
+    }
+
+    /// 落盘一张详情图（去重 + 命名 + 预览），返回 `(hash, rel)`；**不含块表操作**——
+    /// 单图插入与多段粘贴共用（PATCH002.25 抽取，语义与原先内联实现逐字一致）
+    fn write_note_image(
+        &self,
+        images_dir: &Path,
+        bytes: &[u8],
+        orig_name: Option<&str>,
+        stamp: &str,
+    ) -> Result<(String, String), StorageError> {
+        let hash = fnv1a_hex(bytes);
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT image_file FROM note_blocks
+                 WHERE image_hash = ?1 AND image_file IS NOT NULL LIMIT 1",
+                [&hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(rel) = existing {
+            return Ok((hash, rel));
+        }
+        let folder = next_seq_folder(images_dir, "note", stamp);
+        let seq = folder.rsplit('_').next().unwrap_or("1");
+        let inner = match orig_name {
+            Some(name) => sanitize_file_name(name),
+            None => format!("snap_{stamp}_{seq}.png"),
+        };
+        let dir = images_dir.join(&folder);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(&inner), bytes)?;
+        if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
+            if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
+                eprintln!("详情图预览写入失败（降级用原图）：{err}");
+            }
+        }
+        Ok((hash, format!("{folder}/{inner}")))
+    }
+
+    /// 多段粘贴（PATCH002.25）：把 `block_id` 的文本按 `before` / `after` 切开，中间按序
+    /// 插入「文本段 / 图块」序列（保持 sort_order 连续）→ 返回新块列表。
+    /// 建块规则沿单图插入同款：上段为空 → 原块**顶替**为序列首段；下段为空 → 不留尾块，
+    /// 但序列末段是图且其后无块时补一个空文本块；保底 = 结果无文本块则补一个。
+    /// 调用方须先校验各图字节与最终块集；`parts` 文本段不得含换行
+    #[allow(clippy::too_many_arguments)] // 与 add_note_image_block 同款：粘贴输入集完整传递
+    pub fn insert_note_parts(
+        &self,
+        images_dir: &Path,
+        todo_id: i64,
+        block_id: i64,
+        before: &str,
+        after: &str,
+        parts: &[NotePastePart],
+        stamp: &str,
+    ) -> Result<Vec<NoteBlock>, StorageError> {
+        // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）
+        let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                NotePastePart::Image { bytes, orig_name } => images.push(Some(
+                    self.write_note_image(images_dir, bytes, orig_name.as_deref(), stamp)?,
+                )),
+                NotePastePart::Text(_) => images.push(None),
+            }
+        }
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            let order: i64 = self.conn.query_row(
+                "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                rusqlite::params![block_id, todo_id],
+                |row| row.get(0),
+            )?;
+            let follows: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
+                rusqlite::params![todo_id, order],
+                |row| row.get(0),
+            )?;
+            let keep_before = !before.trim().is_empty();
+            let keep_after = !after.trim().is_empty();
+            let last_is_image = matches!(parts.last(), Some(NotePastePart::Image { .. }));
+            let tail_blank = !keep_after && follows == 0 && last_is_image;
+            let shift = i64::from(keep_before)
+                + i64::from(keep_after)
+                + i64::from(tail_blank)
+                + parts.len() as i64;
+            self.conn.execute(
+                "UPDATE note_blocks SET sort_order = sort_order + ?3
+                 WHERE todo_id = ?1 AND sort_order > ?2",
+                rusqlite::params![todo_id, order, shift],
+            )?;
+            let mut next = order + 1;
+            if keep_before {
+                self.conn.execute(
+                    "UPDATE note_blocks SET text = ?2, kind = 'text',
+                         image_hash = NULL, image_file = NULL
+                     WHERE id = ?1",
+                    rusqlite::params![block_id, before],
+                )?;
+            }
+            for (i, part) in parts.iter().enumerate() {
+                // 上段为空时原块顶替为序列首段（不留前导空块）——文本 / 图两态同款
+                let reuse_original = !keep_before && i == 0;
+                match part {
+                    NotePastePart::Text(text) => {
+                        if reuse_original {
+                            self.conn.execute(
+                                "UPDATE note_blocks SET kind = 'text', text = ?2,
+                                     image_hash = NULL, image_file = NULL
+                                 WHERE id = ?1",
+                                rusqlite::params![block_id, text],
+                            )?;
+                            continue;
+                        }
+                        self.conn.execute(
+                            "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                             VALUES (?1, ?2, 'text', ?3)",
+                            rusqlite::params![todo_id, next, text],
+                        )?;
+                        next += 1;
+                    }
+                    NotePastePart::Image { .. } => {
+                        let (hash, rel) = images[i].clone().unwrap_or_default();
+                        if reuse_original {
+                            self.conn.execute(
+                                "UPDATE note_blocks SET kind = 'image', text = '',
+                                     image_hash = ?2, image_file = ?3
+                                 WHERE id = ?1",
+                                rusqlite::params![block_id, hash, rel],
+                            )?;
+                            continue;
+                        }
+                        self.conn.execute(
+                            "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                             VALUES (?1, ?2, 'image', ?3, ?4)",
+                            rusqlite::params![todo_id, next, hash, rel],
+                        )?;
+                        next += 1;
+                    }
+                }
+            }
+            if keep_after {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', ?3)",
+                    rusqlite::params![todo_id, next, after],
+                )?;
+                next += 1;
+            }
+            if tail_blank {
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', '')",
+                    rusqlite::params![todo_id, next],
+                )?;
+            }
+            let texts: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND kind = 'text'",
+                [todo_id],
+                |row| row.get(0),
+            )?;
+            if texts == 0 {
+                let last: i64 = self.conn.query_row(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1",
+                    [todo_id],
+                    |row| row.get(0),
+                )?;
+                self.conn.execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                     VALUES (?1, ?2, 'text', '')",
+                    rusqlite::params![todo_id, last],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    eprintln!("多段粘贴事务回滚失败：{rollback}");
                 }
                 return Err(err);
             }

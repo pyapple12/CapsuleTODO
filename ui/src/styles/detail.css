@@ -10,6 +10,9 @@
   right: 14px;
   bottom: 14px;
   z-index: 3;
+  /* 选区同色令牌（PATCH002.26）：原生 `::selection` 与自绘 `.sel-mark` 共用同一值——
+     此前原生是浏览器蓝、自绘是 accent 淡染，跨块拖选两段不同色（快拖还会"中断/跳色"） */
+  --sel-bg: color-mix(in srgb, var(--accent) 32%, transparent);
   color: var(--ink);
   visibility: hidden;
   transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
@@ -200,6 +203,11 @@
   display: none; /* 隐藏原生滑杆（Chromium） */
 }
 
+/* 原生选区与自绘高亮同色（PATCH002.26）：令牌在 .detail-overlay 上定义 */
+#detail-note ::selection {
+  background: var(--sel-bg);
+}
+
 /* —— 气泡全文只读态（V0.020 ⑩ 定案）：单层玻璃——标签头摘除、文字直接落板面
    （去内嵌卡底与描边落影），只留文字与滑杆；readonly 去输入质感 —— */
 
@@ -297,13 +305,13 @@
 }
 
 .note-block-sel-overlay .sel-mark {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: var(--sel-bg); /* PATCH002.26：与原生 ::selection 同令牌 */
   border-radius: 2px;
 }
 
 /* 图块整块入选（图块无字符区间）：与图块选中态同族描边、弱一档 */
 .note-block-image.note-block-sel .note-block-img {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+  box-shadow: 0 0 0 2px var(--sel-bg); /* PATCH002.26：同令牌（同色系零新增） */
 }
 
 /* 图块：与气泡详情图同款尺寸配方（宽 100% / 高自适应 / 同圆角） */
