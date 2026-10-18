@@ -737,10 +737,14 @@ interface SelPoint {
 /** 拖选锚点 / 焦点（原始方向）；任一为 null = 无选区 */
 const selAnchor = ref<SelPoint | null>(null);
 const selFocus = ref<SelPoint | null>(null);
-/** 鼠标拖选中（覆盖层临时接收指针事件供命中测试） */
-const selDragging = ref(false);
 /** 已进入跨块（覆盖层接管指针事件；单块内一律交原生） */
 const crossSelecting = ref(false);
+/** 跨块拖选的**源块 key**（PATCH002.45：跨块期间给源块挂 `sel-crossing` 压制其原生选区） */
+const selCrossKey = ref("");
+/** 指针所在块下标（PATCH002.45 优化：覆盖层只挂"源块 / 选区内 / 指针块"）。
+ * **必须先由元素命中定它、再等一帧做精确 caret 命中**——否则该块的覆盖层本帧还没渲染，
+ * 命中必失败 → 退化成"整块选择"（首版顺序写反导致过该缺陷，见 y.problems #16） */
+const selHoverIndex = ref(-1);
 
 /** 规范化选区（排序后）；**跨块才成立**——单块内选择仍走原生 */
 const selRange = computed<{ from: SelPoint; to: SelPoint } | null>(() => {
@@ -780,8 +784,9 @@ function selParts(i: number): { head: string; mark: string; tail: string } {
 function clearSel(): void {
   selAnchor.value = null;
   selFocus.value = null;
-  selDragging.value = false;
   crossSelecting.value = false;
+  selCrossKey.value = ""; // 选区清空才撤源块标记（松手不撤：原生选区仍在，须持续压制）
+  selHoverIndex.value = -1;
 }
 
 /** 全选所有块（Ctrl+A 板级拦截；仅一块时等价原生，直接放行） */
@@ -873,14 +878,15 @@ function offsetFromPoint(x: number, y: number): SelPoint | null {
   return { index, offset: base + (pos?.offset ?? 0) };
 }
 
-/** 拖选焦点落点：优先命中测试；失败按"越过块中线"取首/尾（降级不失效） */
+/** 拖选焦点落点：**一次命中**——先 caret 命中（覆盖层文本节点 → 块 + 块内偏移）；
+ * 失败（图块无覆盖层 / 指针落块内距 / 空块）才退回元素命中 + "越过块中线"取首/尾 */
 function focusPointAt(x: number, y: number): SelPoint | null {
+  const hit = offsetFromPoint(x, y);
+  if (hit) return hit;
   const el = document.elementFromPoint(x, y)?.closest<HTMLElement>(".note-block");
   if (!el) return null;
   const index = Number(el.dataset.rowId) - 1;
   if (!Number.isInteger(index) || index < 0) return null;
-  const hit = offsetFromPoint(x, y);
-  if (hit && hit.index === index) return hit;
   const block = blocks.value[index];
   const len = block?.kind === "Text" ? block.text.length : 0;
   const rect = el.getBoundingClientRect();
@@ -890,34 +896,83 @@ function focusPointAt(x: number, y: number): SelPoint | null {
 /** 拖选源块下标（文本块 mousedown 记；-1 = 无） */
 let selDragIndex = -1;
 
-/** 文本块 mousedown：记拖源块 + 清互斥态（选区/图块选中） */
-function onTextMouseDown(index: number): void {
+/** 拖选按下点坐标（方案 B：锚点优先按"按下点"精确命中，见 `anchorOffset`） */
+let selDownX = -1;
+let selDownY = -1;
+
+/** 文本块 mousedown：记拖源块与**按下点坐标** + 清互斥态（选区/图块选中） */
+function onTextMouseDown(index: number, e: MouseEvent): void {
+  selDownX = e.clientX;
+  selDownY = e.clientY;
   selDragIndex = index;
   clearSel();
-  selDragging.value = true;
+  selCrossKey.value = blocks.value[index]?._key ?? ""; // 源块标记（跨块期间压制其原生选区）
   if (selectedKey.value) selectedKey.value = "";
 }
 
-/** 文档级 mousemove：指针越出拖源块即进跨块模式（锚点 = 拖源 textarea 的选区起点） */
+/** 锚点偏移（方案 B ③ 两级求法）：先按**按下点坐标**精确命中（覆盖层已挂载时可用）；
+ * 失败回落**按方向取端**——原生选区两端恒按文档序排列、不随拖拽方向翻转：指针在源块
+ * **上方**（向上拖）时按下点落在 `selectionEnd`，在下方（向下拖）时落在 `selectionStart` */
+function anchorOffset(el: HTMLTextAreaElement, pointerY: number): number {
+  const hit = offsetFromPoint(selDownX, selDownY);
+  if (hit && hit.index === selDragIndex) return hit.offset;
+  const rect = el.getBoundingClientRect();
+  const upward = pointerY < rect.top;
+  return (upward ? el.selectionEnd : el.selectionStart) ?? 0;
+}
+
+/** 文档级 mousemove：指针越出拖源块即进跨块模式——**方案 B「越块即交接」**：
+ * 单块内仍走原生选区；越块那一刻起，选区归自绘层所有：
+ * ① 先置 `crossSelecting`（覆盖层立刻挂载）→ ② `nextTick` 用同坐标补采样 `selFocus`
+ * （消"首帧按块中线降级"的整片变暗）→ ③ 锚点两级求法（`anchorOffset`）→ ④ 收起原生选区 */
 function onDocMouseMove(e: MouseEvent): void {
   if (selDragIndex < 0) return;
   const src = blocks.value[selDragIndex];
   if (!src || src.kind !== "Text") return;
+  // ① 先用**元素命中**定"指针块"（不依赖覆盖层）→ 该块的覆盖层本帧起才会被渲染
+  const hovered = document
+    .elementFromPoint(e.clientX, e.clientY)
+    ?.closest<HTMLElement>(".note-block");
+  const hoverIndex = hovered ? Number(hovered.dataset.rowId) - 1 : -1;
+  const hoverChanged =
+    Number.isInteger(hoverIndex) && hoverIndex >= 0 && hoverIndex !== selHoverIndex.value;
+  if (hoverChanged) selHoverIndex.value = hoverIndex;
   const point = focusPointAt(e.clientX, e.clientY);
   if (!point || point.index === selDragIndex) return;
   if (!selAnchor.value) {
-    const el = textEls.get(src._key);
-    selAnchor.value = { index: selDragIndex, offset: el?.selectionStart ?? 0 };
+    const x = e.clientX;
+    const y = e.clientY;
+    crossSelecting.value = true; // ① 覆盖层先挂载（③ 的精确命中依赖它）
+    void nextTick(() => {
+      if (selDragIndex < 0) return; // 已松手：不再补采样
+      const el = textEls.get(src._key);
+      if (!el) return;
+      const offset = anchorOffset(el, y); // ③
+      selAnchor.value = { index: selDragIndex, offset };
+      const at = focusPointAt(x, y); // ② 此刻覆盖层已就位 → 精确
+      if (at) selFocus.value = at;
+    });
+    return;
   }
-  crossSelecting.value = true;
+  // ② 刚进入新块（覆盖层本帧才渲染）→ 等下一拍再精确采样，**不落粗值**（免一帧整块闪）
+  if (hoverChanged) {
+    const x = e.clientX;
+    const y = e.clientY;
+    void nextTick(() => {
+      if (selDragIndex < 0) return;
+      const at = focusPointAt(x, y);
+      if (at) selFocus.value = at;
+    });
+    return;
+  }
   selFocus.value = point;
 }
 
 /** 文档级 mouseup：结束拖源（选区保留，供 Ctrl+C / Delete） */
 function onDocMouseUp(): void {
   selDragIndex = -1;
-  selDragging.value = false;
   crossSelecting.value = false;
+  selHoverIndex.value = -1; // 松手后焦点块已在选区内，指针块不再需要覆盖层
 }
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
@@ -1260,7 +1315,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="overlay" class="detail-overlay" :class="{ open: isOpen, 'bubble-mode': isBubbleMode }">
+  <div
+    ref="overlay"
+    class="detail-overlay"
+    :class="{ open: isOpen, 'bubble-mode': isBubbleMode, 'cross-selecting': crossSelecting }"
+  >
     <div class="board-glass detail-glass">
       <div v-if="!isBubbleMode" class="detail-head">
         <span class="detail-label">标题</span>
@@ -1322,6 +1381,7 @@ onBeforeUnmount(() => {
                 'note-block-selected': selectedKey === block._key,
                 'note-block-leaving': leavingKey === block._key,
                 'note-block-sel': block.kind === 'Image' && blockSelRange(i) !== null,
+                'sel-crossing': selCrossKey === block._key && (crossSelecting || selRange !== null),
               }"
               :data-row-id="i + 1"
               :tabindex="block.kind === 'Image' ? 0 : undefined"
@@ -1357,7 +1417,7 @@ onBeforeUnmount(() => {
                 :placeholder="i === 0 && noteEmpty ? '添加描述、清单、想法…' : ''"
                 spellcheck="false"
                 rows="1"
-                @mousedown="onTextMouseDown(i)"
+                @mousedown="onTextMouseDown(i, $event)"
                 @input="onBlockInput"
                 @keydown="onBlockKeydown(i, $event)"
                 @paste="onBlockPaste(i, $event)"
@@ -1366,7 +1426,11 @@ onBeforeUnmount(() => {
                    PATCH002.21：渲染条件由 `selDragging || selRange` 收紧为 `crossSelecting || selRange`
                    —— 普通 mousedown 不再给所有文本块挂全文透明覆盖层（一挂一卸 = 全块重绘闪烁） -->
               <div
-                v-if="block.kind === 'Text' && (crossSelecting || selRange)"
+                v-if="
+                  block.kind === 'Text' &&
+                  (crossSelecting || selRange) &&
+                  (selCrossKey === block._key || i === selHoverIndex || blockSelRange(i) !== null)
+                "
                 class="note-block-sel-overlay"
                 :class="{ 'sel-live': crossSelecting }"
                 :data-sel-index="i"

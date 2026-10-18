@@ -203,9 +203,11 @@
   display: none; /* 隐藏原生滑杆（Chromium） */
 }
 
-/* 原生选区与自绘高亮同色（PATCH002.26）：令牌在 .detail-overlay 上定义 */
+/* 原生选区与自绘高亮同色（PATCH002.26）；**文字颜色保持不变**（PATCH002.45：只写
+   background 时浏览器仍会给选区文字换色，须显式写回墨色） */
 #detail-note ::selection {
   background: var(--sel-bg);
+  color: var(--ink);
 }
 
 /* —— 气泡全文只读态（V0.020 ⑩ 定案）：单层玻璃——标签头摘除、文字直接落板面
@@ -288,6 +290,7 @@
 .note-block-sel-overlay {
   position: absolute;
   inset: 0;
+  z-index: 0; /* 涂色画在**文字下面**（与原生选择同款）：文字清晰不被纱盖住 */
   padding: 2px 12px;
   color: transparent;
   font: inherit;
@@ -305,8 +308,31 @@
 }
 
 .note-block-sel-overlay .sel-mark {
-  background: var(--sel-bg); /* PATCH002.26：与原生 ::selection 同令牌 */
-  border-radius: 2px;
+  background: var(
+    --sel-bg
+  ); /* PATCH002.26：与原生 ::selection 同令牌；形状与原生选择一致（无圆角） */
+}
+
+/* 跨块拖选期间：**源块**的原生选区让位（PATCH002.45）——打点实证：拖拽中浏览器会
+   **每帧改写**源块 textarea 的原生选区（末端随指针 x 变化），不压制就会与自绘层同区间
+   叠加成"双层涂色"。**必须带 ID 前缀**：同文件 `#detail-note ::selection` 特异性 (1,0,0)
+   高于裸类写法 (0,3,0)，裸类版曾被它压死、压制从未生效 */
+/* 文本域提层：压住自绘涂色层（涂色在下、文字在上 = 原生选择同观感，文字不变暗） */
+.note-block-text {
+  position: relative;
+  z-index: 1;
+}
+
+/* 跨块期间**所有**文本域让出 caret 命中（PATCH002.45）：覆盖层压在文字下层（z-index 分层），
+   文本域若仍可命中，caret 会撞在文本域上（非文本节点）→ 取不到块内偏移 → 退化成"整块选择"。
+   `.sel-crossing` 只管源块（锚点用）；焦点块（鼠标所在块）也要让路，故用挂在板根上的类覆盖全部 */
+.detail-overlay.cross-selecting .note-block-text,
+.note-block.sel-crossing .note-block-text {
+  pointer-events: none;
+}
+
+#detail-note .note-block.sel-crossing .note-block-text::selection {
+  background: transparent;
 }
 
 /* 图块整块入选（图块无字符区间）：与图块选中态同族描边、弱一档 */
