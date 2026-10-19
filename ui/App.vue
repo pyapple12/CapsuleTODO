@@ -21,6 +21,7 @@ import { useDragReorder } from "./src/composables/useDragReorder";
 import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
 import { syncGlassBars } from "./src/composables/useGlassBar";
 import { syncHints } from "./src/composables/useBoardRead";
+import { boardOpen } from "./src/composables/useVeils";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 const topbarEl = ref<HTMLElement | null>(null);
@@ -41,6 +42,13 @@ useDragReorder();
 // 此后随 Rust 的 window-focus 事件翻转（窗口恒纯 alpha 透明，2026-09-28 定案）
 const windowFocused = ref(false);
 let unlistenFocus: UnlistenFn | undefined;
+// 拖拽中标记（PATCH002.61）：原生窗口拖拽循环会给出**成对** `Focused(false/true)` 抖动——
+// 拖拽期间把它视作"仍聚焦"，避免系统背板 / 纱态被误摘再挂（"磨砂闪烁"）
+const windowDragging = ref(false);
+/** 安全阀（ms）：`drag-end` 因故未到（事件丢失 / 异常路径）时最多屏蔽焦点这么久 */
+const DRAG_SAFETY_MS = 10_000;
+let dragSafetyTimer: number | undefined;
+let unlistenDragEnd: UnlistenFn | undefined;
 // 关窗 T 腿句柄（FIX004.19 T+R3 双腿）：白板组件引用供关窗前强制落库
 let unlistenClose: UnlistenFn | undefined;
 // 热键失焦刷新句柄（PL016.1）：徽章随 bubble-changed 事件实时 +1
@@ -240,6 +248,84 @@ watch(activeTab, (tab) => {
   archiveRef.value?.setArchiveVisible(tab === "todos");
 });
 
+// —— PATCH002.60 系统背板（按需毛玻璃）：板开 && 聚焦 ⇒ 挂；收板 / 失焦 ⇒ 摘 ——
+/** 开板**挂**背板的延时（ms）：开板动画 0.4s ⇒ 取"结束前 200ms"，板已基本展开、起手不突变 */
+const BACKDROP_ON_DELAY_MS = 200;
+/** 收板**摘**背板的延时（ms）：收板动画 0.35s ⇒ 取"开始后 200ms"（板已明显缩小再摘） */
+const BACKDROP_OFF_DELAY_MS = 200;
+let backdropOnTimer: number | undefined;
+let backdropOffTimer: number | undefined;
+/** 当前已下发的背板态（去重：避免重复 invoke） */
+let backdropOn = false;
+
+/** 挂背板（唯一出口）：清两定时器 + 下发。失败只落 console——材质是纯装饰层 */
+function turnBackdropOn(): void {
+  window.clearTimeout(backdropOnTimer);
+  window.clearTimeout(backdropOffTimer);
+  backdropOnTimer = undefined;
+  backdropOffTimer = undefined;
+  backdropOn = true;
+  void invoke("set_board_backdrop", { open: true }).catch((err) =>
+    console.error("set_board_backdrop 调用失败", err),
+  );
+}
+
+/** 摘背板（唯一出口）：清两定时器 + 下发 */
+function turnBackdropOff(): void {
+  window.clearTimeout(backdropOnTimer);
+  window.clearTimeout(backdropOffTimer);
+  backdropOnTimer = undefined;
+  backdropOffTimer = undefined;
+  backdropOn = false;
+  void invoke("set_board_backdrop", { open: false }).catch((err) =>
+    console.error("set_board_backdrop 调用失败", err),
+  );
+}
+
+/** 板开合 / 焦点 / 拖拽变化 ⇒ 同步系统背板：开板延时挂、收板延时摘、**失焦立即摘**
+ *（DWM 材质焦点绑定，不摘会退回不透明灰板）；**拖拽期间视作仍聚焦**（PATCH002.61） */
+function syncBoardBackdrop(): void {
+  const want = boardOpen.value && (windowFocused.value || windowDragging.value);
+  if (want) {
+    window.clearTimeout(backdropOffTimer);
+    backdropOffTimer = undefined;
+    if (!backdropOn && backdropOnTimer === undefined) {
+      backdropOnTimer = window.setTimeout(turnBackdropOn, BACKDROP_ON_DELAY_MS);
+    }
+    return;
+  }
+  // 不再需要：撤掉"待挂"（开板动画中途又收板 ⇒ 干脆不挂）
+  window.clearTimeout(backdropOnTimer);
+  backdropOnTimer = undefined;
+  if (!backdropOn || backdropOffTimer !== undefined) {
+    return;
+  }
+  if (!windowFocused.value) {
+    turnBackdropOff(); // 失焦：立即摘（防 DWM 灰板）
+    return;
+  }
+  backdropOffTimer = window.setTimeout(turnBackdropOff, BACKDROP_OFF_DELAY_MS);
+}
+
+watch([boardOpen, windowFocused, windowDragging], syncBoardBackdrop);
+
+/** 标记"开始拖拽"（PATCH002.61）：置位 + 起安全阀（防 `drag-end` 丢失致永久屏蔽） */
+function markWindowDragStart(): void {
+  windowDragging.value = true;
+  window.clearTimeout(dragSafetyTimer);
+  dragSafetyTimer = window.setTimeout(() => {
+    dragSafetyTimer = undefined;
+    windowDragging.value = false;
+  }, DRAG_SAFETY_MS);
+}
+
+/** 解除"拖拽中"（Rust `drag-end` 事件；watch 随之按真实焦点重算一次） */
+function clearWindowDragging(): void {
+  window.clearTimeout(dragSafetyTimer);
+  dragSafetyTimer = undefined;
+  windowDragging.value = false;
+}
+
 onMounted(async () => {
   // FIX006.10：四个 listen 逐个补 catch——注册失败只损失单个监听（该事件不刷新），
   // 不再中断启动链（原 await 串行链任一 reject 即跳过 refresh×5/关窗 T 腿注册等
@@ -248,6 +334,13 @@ onMounted(async () => {
     windowFocused.value = event.payload;
   }).catch((err) => {
     console.error("window-focus 监听注册失败", err);
+    return undefined;
+  });
+  // 拖拽结束（PATCH002.61）：Rust 在**真拖动**收场发 `drag-end` ⇒ 解除焦点抖动屏蔽
+  unlistenDragEnd = await listen("drag-end", () => {
+    clearWindowDragging();
+  }).catch((err) => {
+    console.error("drag-end 监听注册失败", err);
     return undefined;
   });
   // 热键失焦刷新（PL016.1）：Rust 热键入库发 bubble-changed → 徽章实时 +1
@@ -308,8 +401,11 @@ onMounted(async () => {
     titleFX.value = initTitleParticles(titleEl.value);
     titleFXDestroy = titleFX.value?.destroy ?? null;
   }
-  // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗
-  if (topbarEl.value) dragDestroy = useThresholdDrag(topbarEl.value);
+  // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗；
+  // onDragStart（PATCH002.61）在 `startDragging()` 前触发 ⇒ 置"拖拽中"标记屏蔽焦点抖动
+  if (topbarEl.value) {
+    dragDestroy = useThresholdDrag(topbarEl.value, { onDragStart: markWindowDragStart });
+  }
 });
 
 onUnmounted(() => {
@@ -318,6 +414,10 @@ onUnmounted(() => {
   unlistenBubbleChanged?.();
   unlistenTodoChanged?.();
   unlistenPrefsChanged?.();
+  unlistenDragEnd?.();
+  window.clearTimeout(dragSafetyTimer);
+  window.clearTimeout(backdropOnTimer);
+  window.clearTimeout(backdropOffTimer);
   titleFXDestroy?.(); // FIX013.5：粒子/拖拽套件显式清理
   dragDestroy?.();
 });

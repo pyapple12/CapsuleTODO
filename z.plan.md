@@ -1163,6 +1163,35 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 >
 > 状态：🚧 **三轮修补已落 + 用户 live 目测通过**（2026-10-18——**已落 `.1–.19` / `.27–.34`**（cargo **195 测试** / clippy / doc 0 警告 / `vue-tsc` + build / prettier 全绿）；**临时诊断与探针全清**（残留检查 = 0）；**live 用户确认**：归档浮钮与最后一条下边齐（不再探出）、清单/气泡与改动前完全一致、详情板/白板正常；**余 `.20–.26` 七条待做**（罩死读实际溶解带 / 高亮覆盖层挂载时机 / 空块与块尾 Backspace·Delete 语义 / 占位条件 / 图块多格式复制 / CF_HTML 多图粘贴 / 选区同色）；执行记录见 x.progress.md PATCH002 组）
 
+### 外部借鉴批（来源 = 系列项目 CapsulePulse 全量比对；2026-10-19 用户立项）
+
+> 背景：用户 2026-10-19 指定对 `E:\CodeMission\CapsulePulse` 做只读比对（两项目同栈同构：Tauri 2 + 纯 Rust 业务 + Vue 展示 + 玻璃材质），逐条定夺哪些 CP 修复可借鉴。**结论：并入 PATCH002 为 `.59`–`.65` 七条**（`.66` 提示行口径另议）。执行条目见 `x.progress.md` PATCH002 组，逐条做法与验证标准同 PL 规。
+
+> **颗粒度口径（2026-10-19 用户定案）**：本批**做法以 `x.progress.md` 条目为准**（逐条到**文件 / 函数 / 常量级** + **影响面与红线** + **验证（live + 回归 + 门禁）** + **回退方式**）；本附录只记**来源出处、差异面与不借鉴项**，不重复做法（避免两处维护、两处漂移 ✗）。`.39` 已按同颗粒度补齐（用户 2026-10-19 定案）。
+
+> **两项目差异面（借鉴时的必要修正，勿照抄）**：
+>
+> - **"板"的语义不同**：CP 主窗是计时页、板全是浮层（统计板 / 设置板）；**CT 的清单是主窗常驻内容**，浮层是详情 / 归档 / 设置三块 ⇒ `.60` 的"板开聚合"只算**浮层**（白板与清单是页签与主内容，**不算板**）
+> - **深色声明**：CT 有 `DWMWA_USE_IMMERSIVE_DARK_MODE`（`apply_frame_style`，PL001 定案"背板按深色基调渲染"），**CP 没有** ⇒ `.60` 改造时**必须保留**该声明，否则复现 2026-09-29"背板变白"根因
+> - **板动画数值恰好相同**：CT 实测开板 `0.4s cubic-bezier(0.34,1.4,0.64,1)` / 收板 `0.35s ease`，与 CP **逐值一致** ⇒ `.60` 的 200ms/200ms 延时**可直接照抄**
+> - **窗口句柄抽象**：CT 的公开壳收泛型 `&impl WinHandle`（PL026，调用点零 cfg）优于 CP 的裸 `&WebviewWindow` ⇒ `.59`/`.60` 一律沿 CT 侧抽象
+> - **热键/单实例取向不同**：CP 单实例是手写 FFI（`.64` 借鉴其**闸门前移**思路）；CP 热键走 `tauri-plugin-global-shortcut` 而 CT 是手写 `RegisterHotKey` —— **后者不借鉴**
+
+> **逐条 CP 出处与要点**：
+>
+> - **`.59` 图标清晰化 ← CP PATCH013**（`core/src/window_icon.rs` + `core/icons/mk-icons.ps1`）：根因 = Tauri 只取 `icon.ico` **目录首帧**成单张位图、tao 只塞 `ICON_SMALL` 且清空 `ICON_BIG` ⇒ 高 DPI 只能放大首帧。修法 = `LoadImageW` 按 `SM_CXICON` 从 `RT_GROUP_ICON` 挑帧 + **双槽同设**；配套 ico 首帧改大帧（CP 64 / CT 现 32）+ 生成脚本入库（含"直读目录首帧"断言）
+> - **`.60` 按需毛玻璃 ← CP PL029**（`glass_backdrop.rs::set_backdrop` + `commands/window.rs::set_board_backdrop` + `App.vue::syncBoardBackdrop`）：**CP 口径 = 恒纯 alpha 透明基线 + 板开 && 聚焦才挂系统亚克力**；用户 2026-10-19 定案采纳（"清单和泡泡在完全透明下完全没问题"）。**未来"不透明形态开关"登记 `y.problems.md` #21**
+> - **`.61` 拖拽屏蔽焦点抖动 ← CP PATCH011**（`use-threshold-drag.ts` 的 `onDragStart` + `App.vue` 的 `windowDragging` / `DRAG_SAFETY_MS` + Rust `emit("drag-end")`）：**与 `.60` 同批必做** —— 否则改完背板立刻暴露"拖标题磨砂闪烁"（原生拖拽循环给成对 `Focused(false/true)` 抖动）
+> - **`.62` 诊断日志统一 ← CP `core/src/diag.rs`**（`log` / `warn_diag` / `console` + `cfg(test)` 不落盘）：动机 = release GUI 子系统**无控制台** ⇒ CT 现 97 处 `eprintln!` 全部落空、白名单"落日志"承诺未兑现。**不搬 `warn_diag_once`**（用户定案；CT 热路径已有自备 `AtomicBool` 闩）
+> - **`.63` 浮窗整定两步 ← CP PATCH007.15**：教训原文"主窗窗口整定是**两步**（圆角 + 描边隐藏），我给悬浮窗只抄了后一步" ⇒ CT 两个托盘浮窗**同样只抄了圆角**；另补预览窗 `.focusable(false)`
+> - **`.64` 单实例闸门前移 ← CP FIX006.10**（`core/src/single_instance.rs`）：插件两缺陷（判定晚于开库留痕 / `FindWindowW` 无 else 分支致并存共享 db）⇒ 手写命名 mutex + 命名事件、**`run()` 第一行**判重；一并核查 CT `storage.rs` 无 `busy_timeout` 的放大面
+> - **`.65` 前端测试栈 ← CP `ui/tests`**（vitest + @vue/test-utils + jsdom + `setup.ts`）：CT 前端零测试而纯逻辑件（换位规则 / 归一化 / 拖拽几何）全靠 live 目测 ⇒ 补栈并先测纯逻辑件。**用户已批准新增开发依赖**
+> - **`.66` 前端提示行口径（**待讨论，暂不登记**）**：CT 实测 4 处错误提示行（`AddBar:45` / `BubblesView:422` / `SettingsOverlay:431` hotkey / `WhiteboardView:131` 含重试钮）；CP 口径 = **错误 10s / 非红字 5s 自隐**（PATCH010.5），而用户提议"全丢 console"。**待定争议**：其中 3 处是"防假成功 / 可自愈 / 用户主动操作即时反馈"设计（`BubblesView` 注释自陈"不提示则用户以为删成功"；白板带重试钮；热键**恰是 CP 明文要求保留红字**的那一处）⇒ 全静默会引入无声失效，与主线"不降级假成功"冲突
+
+> **不借鉴项（已逐条定夺）**：CP `warn_diag_once`（用户定案不需要）／CP 托盘悬浮概览、自绘菜单窗、贴边吸附、置顶、原子写、主窗圆角与描边隐藏（CT 已有同款）／CP 通知署名 `aumid.rs`（**只登记 `y.problems.md` #22 备用**，不空搬 —— CT 一期无系统通知，搬进来是死代码）／CP 的 `measure-window.ts`（预览窗按内容测高，CT 用固定常量，低优先）／CP 热键插件（取向不同）
+>
+> **随批移植的文档条目**：`AGENTS.md` 素材与环境陷阱节补两条 —— ① **"停旧实例后勿立即重启 ≥4 秒"**（CP PATCH012 两次实测：2 秒重启致 setup 阻塞、日志停在"待对账"，UI 照常但启动对账未跑）；② **"DEV 基座无窗口拖拽层"**（CP PATCH002.2 + **CT 实况核查**：`ui/src/dev/mock-invoke.ts` 只有命令 mock，`plugin:window|start_dragging` 走 plugin 分支返回安全假响应 ⇒ 不会真拖 ⇒ 凡与窗口拖拽相关的问题 DEV **必然复现不出**，必须 live 验证）
+
 ---
 
 ## 附录 PATCH003（**2026-10-19 用户定案：取消独立编号，三条并入 PATCH002 为 `.50`–`.52`；本附录保留原方案原文**）：浮板观感三修（整行溶解表达 / 图片气泡开板方式 / 气泡详情内板高度解耦）（2026-10-18 立项）

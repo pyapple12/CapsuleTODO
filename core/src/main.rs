@@ -8,7 +8,7 @@
 
 fn main() {
     if let Err(err) = capsule_todo::run() {
-        eprintln!("应用启动失败：{err}");
+        capsule_todo::diag::warn_diag(&format!("应用启动失败：{err}"));
         std::process::exit(1);
     }
 }

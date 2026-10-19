@@ -170,6 +170,18 @@ function signature(list: LocalBlock[]): string {
   return JSON.stringify(list.map((b) => ({ id: b.id, kind: b.kind, text: b.text })));
 }
 
+/** 签名短指纹（PATCH002.72，**临时诊断专用**）：FNV-1a 32 位 → 8 位十六进制。
+ * 只用于日志里比对"是不是同一代状态"，**不参与任何业务判定**；与 `pre-save`/`save`
+ * 两条诊断配对读（两行指纹相同 = 服务端没改块集；不同 = 发生了归一化/裁剪）。 */
+function sigFingerprint(sig: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < sig.length; i += 1) {
+    h ^= sig.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 /** 排入防抖保存（无变更/未开板直接跳过）。**捕获** {todoId, list} 再排定（PATCH002.47）：
  * 切源会整体换数组 → 捕获引用即"那一条目的那一份"（同条目内 v-model 原地改仍取到最新文本） */
 function scheduleSave(): void {
@@ -194,19 +206,15 @@ async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false):
   if (!force && savedTodoId !== todoId) return;
   const sig = signature(list);
   if (!force && sig === savedSignature && savedTodoId === todoId) return;
-  // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块——用于定位"补出的块在哪一拍被丢"
+  // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块 + **签名指纹**
+  // （PATCH002.72：指纹用于比对"这次要保存的是不是刚才那一代"）
   const preLast = list[list.length - 1];
   void invoke("debug_log", {
-    line: `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"}`,
+    line: `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"} sig=${sig.length}/${sigFingerprint(sig)}`,
   }).catch((err) => console.error("诊断上报失败", err));
   const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
-    // 临时诊断（抖动定位，测完即删）：本次保存送出的块数 vs 服务端回来的块数
-    const savedLast = saved[saved.length - 1];
-    void invoke("debug_log", {
-      line: `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"}`,
-    }).catch((err) => console.error("诊断上报失败", err));
     // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
     if (blocks.value !== list) return;
     // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
@@ -219,6 +227,12 @@ async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false):
     });
     savedTodoId = todoId;
     savedSignature = signature(list);
+    // 临时诊断（抖动定位，测完即删）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
+    // （PATCH002.72：与 `pre-save` 行配对读——两行指纹相同 = 服务端没改块集 ✓）
+    const savedLast = saved[saved.length - 1];
+    void invoke("debug_log", {
+      line: `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"} sig=${savedSignature.length}/${sigFingerprint(savedSignature)}`,
+    }).catch((err) => console.error("诊断上报失败", err));
     emit("changed");
   } catch (err) {
     console.error("详情保存失败", err);
@@ -245,6 +259,11 @@ async function loadBlocks(todoId: number): Promise<void> {
     // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
     // 永久不一致 → `reorder_note_blocks` 的 id 集合校验恒失败（重排被拒、块弹回原位）
     savedSignature = signature(serverList);
+    // PATCH002.72：**撤销快照不得跨"重新载入"生效** —— 载入后 id / _key 全换，旧快照与库
+    // 已无对应关系；若仍可恢复，Ctrl+Z 会把模型换回旧状态，再被保存点写回库（实证：
+    // 载入 3 块 #611 → focusout 时模型变 1 块 #609 → 落库 1 块）
+    undoStack.length = 0;
+    undoSeq += 1; // 在飞的删块动效收场按代际放弃（沿 .44 口径）
     brokenKeys.value = [];
     void nextTick(() => autosizeAll());
   } catch (err) {
@@ -545,6 +564,32 @@ function clipboardHasImage(e: ClipboardEvent): boolean {
 /** 文本块粘贴：带图 → 拦截走 Rust 插图；多行文本 → 拦截按行拆块；单行文本 → 原生 */
 async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const el = e.target as HTMLTextAreaElement;
+  // PATCH002.70（A）：**自绘选区存在时，粘贴 = 整体替换选区**。
+  // 根因：Ctrl+A 是板级自绘选区（`preventDefault` 掉原生全选），而粘贴只看**焦点文本域的
+  // 原生选区** ⇒ 两套状态互不相认：粘贴落在原生光标处，单行文本甚至放行给浏览器原生粘贴、
+  // 替换那块里残留的原生区间 ✗。修法：先**纯本地**删除选区并取回起点（落库交给下方统一
+  // `scheduleSave`，避免与 `normalizeAndFlush` 的即时落库抢序 ✗），再按正常分叉在起点插入。
+  const range = selRange.value;
+  if (range) {
+    e.preventDefault();
+    // PATCH002.72：**一次粘贴 = 一次撤销**。唯一一次快照取在**粘贴前**（= Ctrl+A 选中的那整篇），
+    // 删选区 + 后续插入一律不再入栈 ⇒ 第一次 Ctrl+Z 就回到"粘贴前"，不会先落到"空" ✗
+    pushUndo();
+    const at = removeSelectedRange(false);
+    const html0 = e.clipboardData?.getData("text/html") ?? "";
+    const plain0 = e.clipboardData?.getData("text/plain") ?? "";
+    if (!at) return;
+    if (html0.includes("<img")) {
+      await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
+      return;
+    }
+    if (clipboardHasImage(e)) {
+      await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
+      return;
+    }
+    if (plain0.length > 0) pasteTextLines(at.index, at.offset, at.offset, plain0, false);
+    return;
+  }
   const block = blocks.value[index];
   if (!block) return;
   const start = el.selectionStart ?? 0;
@@ -591,6 +636,7 @@ async function pasteImageAt(
   start: number,
   end: number,
   fallbackText: string,
+  push = true,
 ): Promise<void> {
   const todo = props.todo;
   const block = blocks.value[index];
@@ -616,7 +662,7 @@ async function pasteImageAt(
     });
     if (props.todo?.id !== todo.id) return;
     if (outcome.status === "image") {
-      pushUndo(); // 结构性操作入栈（仅真插图入栈；文本回落走 pasteTextLines 自家入栈）
+      if (push) pushUndo(); // 结构性操作入栈（仅真插图入栈；文本回落由 pasteTextLines 按同一 push 决定）
       blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
       savedSignature = signature(blocks.value);
       brokenKeys.value = [];
@@ -624,8 +670,9 @@ async function pasteImageAt(
       emit("changed");
     } else {
       // 剪贴板无图（或非图片文件）→ 回落文本粘贴（含多行拆块），不吞粘贴
+      // （PATCH002.72：`push` 透传——本函数在回落分支**未**入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);
-      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText);
+      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
     }
   } catch (err) {
     console.error("插入图片失败", err);
@@ -641,6 +688,7 @@ async function pasteHtmlAt(
   end: number,
   html: string,
   fallbackText: string,
+  push = true,
 ): Promise<void> {
   const todo = props.todo;
   const block = blocks.value[index];
@@ -668,11 +716,12 @@ async function pasteHtmlAt(
     if (props.todo?.id !== todo.id) return;
     if (outcome.status !== "image") {
       // 片段全空（剪贴板 HTML 里没有可入块的内容）→ 回落纯文本，不吞这次粘贴
+      // （PATCH002.72：`push` 透传——回落分支未入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);
-      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText);
+      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
       return;
     }
-    pushUndo();
+    if (push) pushUndo();
     blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
     savedSignature = signature(blocks.value);
     brokenKeys.value = [];
@@ -684,10 +733,16 @@ async function pasteHtmlAt(
 }
 
 /** 多行文本粘贴：按行拆成多块（保持"一段一行一块"不变量）；单行不走此处（原生粘贴） */
-function pasteTextLines(index: number, start: number, end: number, text: string): void {
+function pasteTextLines(
+  index: number,
+  start: number,
+  end: number,
+  text: string,
+  push = true,
+): void {
   const block = blocks.value[index];
   if (!block) return;
-  pushUndo();
+  if (push) pushUndo();
   const head = block.text.slice(0, start);
   const tail = block.text.slice(end);
   const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
@@ -910,7 +965,13 @@ function undoStructural(): void {
   clearSel();
   selectedKey.value = "";
   blocks.value = snapshot.map((b) => ({ ...b }));
-  void nextTick(() => autosizeAll());
+  void nextTick(() => {
+    autosizeAll();
+    // PATCH002.72：焦点若停在**已被 Vue 移除**的文本域上（快照换掉了该块），之后打的字只进
+    // 那个游离 DOM、不进 blocks ⇒ signature 不变 ⇒ 保存被静默跳过（"写了字、退板还是空"）
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.classList.contains("note-block-text") && !active.isConnected) active.blur();
+  });
   scheduleSave();
 }
 
@@ -1048,22 +1109,31 @@ async function copySelection(): Promise<void> {
   }
 }
 
-/** 删除选区（三段拼接的删除：起点块留前段 + 接终点块后段，中间块整体删除；
- * 起点块对象复用 → 保 `_key` 不重挂） */
-function deleteSelection(): void {
+/** 删除选区（三段拼接：起点块留前段 + 接终点块后段，中间块整体删除；起点块对象复用 →
+ * 保 `_key` 不重挂）。**纯本地**：只改 `blocks` + 清选区，**不落库、不重算高度**，
+ * 供"键位删除"与"粘贴替换选区"两个入口各取所需（PATCH002.70）。
+ * @returns 选区**起点**（= 删除后的插入位置；`offset` 取前段长度）；null = 无可删 */
+function removeSelectedRange(push = true): SelPoint | null {
   const r = selRange.value;
-  if (!r) return;
+  if (!r) return null;
   const first = blocks.value[r.from.index];
   const last = blocks.value[r.to.index];
-  if (!first || !last) return;
-  pushUndo();
+  if (!first || !last) return null;
+  if (push) pushUndo();
   const head = first.kind === "Text" ? first.text.slice(0, r.from.offset) : "";
   const tail = last.kind === "Text" ? last.text.slice(r.to.offset) : "";
   first.kind = "Text";
   first.text = head + tail;
   first.image_path = null;
   blocks.value.splice(r.from.index + 1, r.to.index - r.from.index);
+  const at: SelPoint = { index: r.from.index, offset: head.length };
   clearSel();
+  return at;
+}
+
+/** 删除选区（键位入口：Backspace / Delete）：本地删除 + 重算高度 + 落库 */
+function deleteSelection(): void {
+  if (!removeSelectedRange()) return;
   void nextTick(() => autosizeAll());
   void normalizeAndFlush();
 }
@@ -1106,14 +1176,103 @@ let selDragIndex = -1;
 let selDownX = -1;
 let selDownY = -1;
 
-/** 文本块 mousedown：记拖源块与**按下点坐标** + 清互斥态（选区/图块选中） */
+/** 文本块 mousedown：记拖源块与**按下点坐标** + 清互斥态（选区/图块选中）。
+ * PATCH002.39（2026-10-20 口径修正）：**Shift+点击 = 原生语义扩选**——不重设锚点，端点取
+ * **鼠标所在那一点**（文本块精确到**字符**、图块取**最近边界**），**不是整块选取**；
+ * 无既有选区时退化为普通按下（等同单击，语义安全）。 */
 function onTextMouseDown(index: number, e: MouseEvent): void {
+  if (e.shiftKey && selAnchor.value) {
+    extendSelectionByShiftClick(e);
+    return;
+  }
   selDownX = e.clientX;
   selDownY = e.clientY;
   selDragIndex = index;
   clearSel();
   selCrossKey.value = blocks.value[index]?._key ?? ""; // 源块标记（跨块期间压制其原生选区）
   if (selectedKey.value) selectedKey.value = "";
+}
+
+/** PATCH002.39 的 Shift+点击实现（文本块与图块共用）。
+ *
+ * **字符级命中必须借自绘覆盖层**：`document.caretPositionFromPoint` 落在**文本域**上只
+ * 返回元素（不是文本节点）⇒ 拿不到字符偏移（`.45` 已实证）。故与拖选同款三段式：
+ * ① 先用**元素命中**定"指针块"（此时覆盖层未挂，不会被自绘层挡住）→ ② **记 `selHoverIndex`
+ * 并挂覆盖层**（`cross-selecting` 让文本域让出 caret 命中）→ ③ **下一拍**用
+ * `offsetFromPoint` 精确采样，采完**立即收层**并把 `selHoverIndex` 复位。
+ *
+ * ⚠️ **② 里的 `selHoverIndex` 不可省**（2026-10-20 live 实证）：覆盖层按
+ * `selCrossKey === key || i === selHoverIndex || blockSelRange(i) !== null` 逐块挂载
+ * ——首击时后两条都不成立（`selFocus` 还没设 ⇒ `selRange` 为 null），漏了 `selHoverIndex`
+ * 就**没有覆盖层** ⇒ 命中返回 null ⇒ 降级取"块末尾" ⇒ **首击看起来是整块选** ✗
+ * （第二击之所以正常，是因为 `selRange` 已建立、覆盖层已挂 ✓）。
+ *
+ * 图块无字符：**点上半 ⇒ 止于图前**（端点落到上一块末尾）、**点下半 ⇒ 含该图**
+ * （端点落到该图，索引在区内即整块入选）。 */
+function extendSelectionByShiftClick(e: MouseEvent): void {
+  const x = e.clientX;
+  const y = e.clientY;
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>(".note-block");
+  if (!el) return;
+  const index = Number(el.dataset.rowId) - 1;
+  const block = blocks.value[index];
+  if (!block) return;
+  const rect = el.getBoundingClientRect();
+  const upperHalf = y < rect.top + rect.height / 2;
+
+  // PATCH002.70（B）：**单块内 Shift 扩选交原生**（`.45` 口径）——不进入自绘管线，
+  // 也不收原生选区（否则会把"单块内原生扩选"这个正常行为也弄丢 ✗）
+  if (selAnchor.value && selAnchor.value.index === index) return;
+
+  if (block.kind === "Image") {
+    const prev = index > 0 ? blocks.value[index - 1] : null;
+    applyShiftEndpoint(
+      upperHalf && prev
+        ? { index: index - 1, offset: prev.kind === "Text" ? prev.text.length : 0 }
+        : { index, offset: 0 },
+    );
+    return;
+  }
+
+  markShiftSource(); // 源块原生选区压制（否则与自绘层叠成双层涂色 ✗）
+  selHoverIndex.value = index; // 挂载条件之一：本拍就让**指针块**的覆盖层出现
+  crossSelecting.value = true; // 文本域让出 caret 命中
+  void nextTick(() => {
+    const at = offsetFromPoint(x, y); // 字符级
+    selFocus.value = at ?? { index, offset: upperHalf ? 0 : block.text.length };
+    crossSelecting.value = false; // 采完收层：pointer-events 还给文本域
+    selHoverIndex.value = -1; // Shift+点击无 mouseup 收尾流程 ⇒ 须自己复位
+    // PATCH002.70（B）：把目标文本域的**原生选区收成光标** —— 浏览器在 mousedown 时仍会
+    // 做一次原生 Shift 扩选、留下"原生区间"；随后 Ctrl+V 若走原生粘贴就会**替换**它 ✗
+    const tel = textEls.get(block._key);
+    if (tel) {
+      const pos = Math.min(selFocus.value?.offset ?? 0, block.text.length);
+      tel.setSelectionRange(pos, pos);
+    }
+  });
+}
+
+/** Shift+扩选的共同前置：源块原生选区压制 + 与"图块单击选中态"互斥 */
+function markShiftSource(): void {
+  const anchor = selAnchor.value;
+  selCrossKey.value = anchor ? (blocks.value[anchor.index]?._key ?? "") : "";
+  if (selectedKey.value) selectedKey.value = "";
+}
+
+/** 图块分支的落点（同步可定）：前置 + 置终点 */
+function applyShiftEndpoint(point: SelPoint): void {
+  markShiftSource();
+  selFocus.value = point;
+}
+
+/** 图块点击（PATCH002.39）：Shift+点击 = **原生语义扩选**（按落点取边界，非整块）；
+ * 普通点击 = 选中态（原语义） */
+function onImageClick(block: LocalBlock, e: MouseEvent): void {
+  if (e.shiftKey && selAnchor.value) {
+    extendSelectionByShiftClick(e);
+    return;
+  }
+  selectedKey.value = block._key;
 }
 
 /** 锚点偏移（方案 B ③ 两级求法）：先按**按下点坐标**精确命中（覆盖层已挂载时可用）；
@@ -1546,6 +1705,9 @@ function onGlobalDown(e: MouseEvent): void {
   const ov = overlay.value;
   const target = e.target as HTMLElement | null;
   if (!ov || !ov.contains(e.target as Node)) return; // 板外交给 onDocClick
+  // PATCH002.39：Shift+点击是"**扩选**"——**不得清选区**（否则锚点在 click 之前就没了）。
+  // 捕获阶段最先到这里 ⇒ 只此一处即可覆盖文本块与图块两种落点。
+  if (e.shiftKey) return;
   if (selectedKey.value && !target?.closest(".note-block-image")) selectedKey.value = "";
   // 文本块 mousedown 由 onTextMouseDown 自处理（拖选锚点）；其余位置一律清选区
   if (!target?.closest(".note-block-text")) clearSel();
@@ -1666,7 +1828,7 @@ onBeforeUnmount(() => {
                   :src="blockSrc(block)"
                   alt="详情图片"
                   draggable="false"
-                  @click="selectedKey = block._key"
+                  @click="onImageClick(block, $event)"
                   @dblclick="openBlockImage(block)"
                   @error="onBlockImageError(block)"
                 />

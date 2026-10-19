@@ -17,7 +17,7 @@ use crate::todo::{
 /// 方案对 JS 监听者整个无效，故改载荷显式 origin（详见 AGENTS 环境陷阱节）
 fn emit_todo_changed(window: &tauri::Window, app: &tauri::AppHandle) {
     if let Err(err) = app.emit("todo-changed", window.label().to_string()) {
-        eprintln!("todo-changed 广播失败：{err}");
+        crate::diag::warn_diag(&format!("todo-changed 广播失败：{err}"));
     }
 }
 
@@ -106,7 +106,9 @@ pub fn todo_remove_core(
     let storage = ctx.lock_storage()?;
     storage.remove(id)?;
     if let Err(err) = storage.sweep_orphan_note_images(images_dir) {
-        eprintln!("删条目后详情图清扫失败（best-effort 不阻断）：{err}");
+        crate::diag::warn_diag(&format!(
+            "删条目后详情图清扫失败（best-effort 不阻断）：{err}"
+        ));
     }
     Ok(())
 }
@@ -163,9 +165,11 @@ pub fn todo_archive_list_core(
     let cutoff = storage.now_ms() - ARCHIVE_RETENTION_MS;
     let purged = storage.purge_expired_done(cutoff)?;
     if purged > 0 {
-        eprintln!("归档回收：清理 {purged} 条超期条目");
+        crate::diag::console(&format!("归档回收：清理 {purged} 条超期条目"));
         if let Err(err) = storage.sweep_orphan_note_images(images_dir) {
-            eprintln!("归档回收后详情图清扫失败（best-effort 不阻断）：{err}");
+            crate::diag::warn_diag(&format!(
+                "归档回收后详情图清扫失败（best-effort 不阻断）：{err}"
+            ));
         }
     }
     Ok(storage.list_done()?)

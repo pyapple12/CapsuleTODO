@@ -152,10 +152,10 @@ pub fn load(path: &Path) -> Result<Option<WindowSettings>, SettingsError> {
     // 热键规范化（PL015 白名单⑦）：用户手改 config.json 非法热键静默回默认，
     // 不崩常驻应用（与 max_bubbles 越界钳制同款纪律）
     if crate::hotkey::parse(&settings.bubble_hotkey).is_err() {
-        eprintln!(
+        crate::diag::warn_diag(&format!(
             "config.json 气泡热键非法（{}），回默认 {DEFAULT_BUBBLE_HOTKEY}",
             settings.bubble_hotkey
-        );
+        ));
         settings.bubble_hotkey = default_bubble_hotkey();
     }
     Ok(Some(settings))
@@ -170,7 +170,7 @@ pub fn save(path: &Path, settings: &WindowSettings) -> Result<(), SettingsError>
     std::fs::write(&tmp, serde_json::to_string_pretty(settings)?)?;
     if let Err(err) = std::fs::rename(&tmp, path) {
         if let Err(cleanup) = std::fs::remove_file(&tmp) {
-            eprintln!("设置临时文件清理失败：{cleanup}");
+            crate::diag::warn_diag(&format!("设置临时文件清理失败：{cleanup}"));
         }
         return Err(SettingsError::Io(err));
     }

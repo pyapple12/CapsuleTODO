@@ -132,7 +132,7 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
     let path = match crate::paths::settings_path() {
         Ok(p) => p,
         Err(err) => {
-            eprintln!("托盘开关切换失败（定位设置文件）：{err}");
+            crate::diag::warn_diag(&format!("托盘开关切换失败（定位设置文件）：{err}"));
             return;
         }
     };
@@ -144,11 +144,11 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
         "tray-top" => {
             let on = !top_current(app);
             let Some(w) = app.get_webview_window("main") else {
-                eprintln!("托盘置顶切换失败：主窗不存在（异常态）");
+                crate::diag::warn_diag("托盘置顶切换失败：主窗不存在（异常态）");
                 return;
             };
             if let Err(err) = w.set_always_on_top(on) {
-                eprintln!("托盘置顶切换生效失败：{err}");
+                crate::diag::warn_diag(&format!("托盘置顶切换生效失败：{err}"));
                 return;
             }
             crate::commands::settings::settings_set_always_on_top_core(on, &path, &ctx)
@@ -156,7 +156,7 @@ pub fn on_pref_menu(app: &tauri::AppHandle, id: &str) {
         _ => return,
     };
     if let Err(err) = result {
-        eprintln!("托盘开关切换失败（落库未变）：{err}");
+        crate::diag::warn_diag(&format!("托盘开关切换失败（落库未变）：{err}"));
         return;
     }
     // 全量广播（FIX005.9 单源：settings.rs emit_prefs_changed 统一快照与载荷）
@@ -269,7 +269,7 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
     };
     if menu_win.is_visible().unwrap_or(false) {
         if let Err(err) = menu_win.hide() {
-            eprintln!("菜单窗收起失败：{err}");
+            crate::diag::warn_diag(&format!("菜单窗收起失败：{err}"));
         }
         return; // 菜单开着再右键 = 收起；锁死由守候探测解除
     }
@@ -284,7 +284,7 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
     }
     if let Some(pw) = app.get_webview_window("tray-preview") {
         if let Err(err) = pw.hide() {
-            eprintln!("右键收预览窗失败：{err}");
+            crate::diag::warn_diag(&format!("右键收预览窗失败：{err}"));
         }
     }
     // 菜单窗锚定（用户定案）：左缘对齐图标水平中轴向右展开（区别于预览窗的
@@ -300,19 +300,19 @@ pub fn on_tray_right_button(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, r
     }
     // 先落位再取所在屏（窗口在屏外 -2000 时 monitor 判定不可靠），超右缘左移
     if let Err(err) = menu_win.set_position(tauri::PhysicalPosition::new(px, py)) {
-        eprintln!("菜单窗定位失败：{err}");
+        crate::diag::warn_diag(&format!("菜单窗定位失败：{err}"));
     }
     if let Ok(Some(mon)) = menu_win.current_monitor() {
         let screen_right = mon.position().x + mon.size().width as i32;
         if px + size.width as i32 > screen_right - ANCHOR_MARGIN {
             px = screen_right - ANCHOR_MARGIN - size.width as i32;
             if let Err(err) = menu_win.set_position(tauri::PhysicalPosition::new(px, py)) {
-                eprintln!("菜单窗贴边修正失败：{err}");
+                crate::diag::warn_diag(&format!("菜单窗贴边修正失败：{err}"));
             }
         }
     }
     if let Err(err) = menu_win.show() {
-        eprintln!("菜单窗显示失败：{err}");
+        crate::diag::warn_diag(&format!("菜单窗显示失败：{err}"));
         return;
     }
     spawn_menu_watch(app);
@@ -337,7 +337,7 @@ fn anchor_preview(w: &tauri::WebviewWindow, tray_top: i32, tray_right: i32, tray
         py = tray_bottom + ANCHOR_MARGIN; // 翻到下方
     }
     if let Err(err) = w.set_position(tauri::PhysicalPosition::new(px, py)) {
-        eprintln!("预览窗定位失败：{err}");
+        crate::diag::warn_diag(&format!("预览窗定位失败：{err}"));
     }
 }
 
@@ -412,12 +412,12 @@ pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
                 }
                 anchor_preview(&w, anchors.0, anchors.1, anchors.2);
                 if let Err(err) = w.show() {
-                    eprintln!("预览窗显示失败：{err}");
+                    crate::diag::warn_diag(&format!("预览窗显示失败：{err}"));
                 }
             }
             WatchAction::Hide => {
                 if let Err(err) = w.hide() {
-                    eprintln!("预览窗隐藏失败：{err}");
+                    crate::diag::warn_diag(&format!("预览窗隐藏失败：{err}"));
                 }
             }
             WatchAction::None => {}
@@ -462,7 +462,7 @@ fn spawn_menu_watch(app: &tauri::AppHandle) {
                 && !cursor_in_window(&w);
             if clicked_outside {
                 if let Err(err) = w.hide() {
-                    eprintln!("菜单窗点外收起失败：{err}");
+                    crate::diag::warn_diag(&format!("菜单窗点外收起失败：{err}"));
                 }
                 return;
             }

@@ -6,6 +6,7 @@ pub mod todo;
 pub mod tray_menu;
 pub mod tray_preview;
 pub mod whiteboard;
+pub mod window;
 use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
 
 use crate::bubble::BubbleError;

@@ -1,6 +1,8 @@
-//! 玻璃背板（SYSTEMBACKDROP 聚焦联动实验）：DWMWA_SYSTEMBACKDROP_TYPE 属性级
-//! 系统背板——聚焦 DWMSBT_TRANSIENTWINDOW（系统亚克力，Win11 22H2+），失焦
-//! DWMSBT_NONE（背板移除，窗口回纯 alpha 透明）。
+//! 玻璃背板（SYSTEMBACKDROP **按需毛玻璃**，PATCH002.60 口径改定）：DWMWA_SYSTEMBACKDROP_TYPE
+//! 属性级系统背板——**常态纯透明**（`DWMSBT_NONE`），**板开 && 窗口聚焦时**挂
+//! `DWMSBT_TRANSIENTWINDOW`（系统亚克力，Win11 22H2+）；收板 / 失焦立即摘回。
+//! 触发口径由前端驱动（`commands/window.rs::set_board_backdrop`），**不再与焦点直接联动**
+//! ——用户 2026-10-19 定案："清单和泡泡在完全透明下完全没问题"，故聚焦态即纯透明。
 //!
 //! 接入面与 AccentPolicy 同级（DWM 窗口属性），不初始化应用侧组合引擎——路线①
 //! 实证的组合引擎/WebView2 同线程互斥风险在此不存在（AccentPolicy 同面已实证
@@ -83,38 +85,46 @@ extern "system" {
 
 // —— 私有纯 FFI 核（收裸句柄；供公开壳复用，亦保留裸句柄入口）——
 
-/// 切换系统背板：聚焦传 true 挂亚克力，失焦传 false 回纯透明。
-/// 失败落日志维持前态（下次焦点切换自动重试自愈）
+/// 切换系统背板：`on = true` 挂亚克力、`false` 回纯透明。
+/// 失败落日志维持前态（下次切换自动重试自愈）
 #[cfg(target_os = "windows")]
-fn set_focused_backdrop_raw(hwnd: isize, focused: bool) {
-    let backdrop = if focused {
+fn set_backdrop_raw(hwnd: isize, on: bool) {
+    let backdrop = if on {
         DWMSBT_TRANSIENTWINDOW
     } else {
         DWMSBT_NONE
     };
     let hr = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, 4) };
     if hr != 0 {
-        eprintln!("系统背板切换失败 hr={hr:#x}（维持前态）");
+        crate::diag::warn_diag(&format!("系统背板切换失败 hr={hr:#x}（维持前态）"));
+    }
+}
+
+/// 隐藏 Win11 激活描边（PATCH002.63 抽出为独立原语，供浮窗复用）：DWM 给活动窗口画一圈
+/// 系统强调色描边，在透明无边框窗上表现为"**窗口外面一圈蓝框**"（绘制方是 OS ⇒ CSS 不可达）。
+/// 失败落日志维持前态。
+#[cfg(target_os = "windows")]
+fn hide_active_border_raw(hwnd: isize) {
+    let border_none = DWMWA_COLOR_NONE;
+    let hr_border = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border_none, 4) };
+    if hr_border != 0 {
+        crate::diag::warn_diag(&format!("边框隐藏失败 hr={hr_border:#x}"));
     }
 }
 
 /// 窗口框架风格一次性整定（setup 调用）：①按窗口主题声明深色模式——未声明时
 /// DWM 背板按浅色基调渲染（深色主题系统上白雾化，2026-09-29 实测"变白"根因）；
-/// ②隐藏激活边框——背板挂载后 DWM 按完整窗口框架渲染，Win11 活动描边显形
-/// （实测蓝色一圈根因）
+/// ②隐藏激活边框（复用 [`hide_active_border_raw`]）——背板挂载后 DWM 按完整窗口框架
+/// 渲染，Win11 活动描边显形（实测蓝色一圈根因）
 #[cfg(target_os = "windows")]
 fn apply_frame_style_raw(hwnd: isize, dark: bool) {
     let dark_flag = dark as u32;
     let hr_dark =
         unsafe { DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_flag, 4) };
     if hr_dark != 0 {
-        eprintln!("深色模式声明失败 hr={hr_dark:#x}");
+        crate::diag::warn_diag(&format!("深色模式声明失败 hr={hr_dark:#x}"));
     }
-    let border_none = DWMWA_COLOR_NONE;
-    let hr_border = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border_none, 4) };
-    if hr_border != 0 {
-        eprintln!("边框隐藏失败 hr={hr_border:#x}");
-    }
+    hide_active_border_raw(hwnd);
 }
 
 /// 窗口系统圆角（PL018，托盘预览小窗）：DWMWA_WINDOW_CORNER_PREFERENCE = ROUND——
@@ -125,23 +135,28 @@ fn apply_round_corners_raw(hwnd: isize) {
     let pref = DWMWCP_ROUND;
     let hr = unsafe { DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, 4) };
     if hr != 0 {
-        eprintln!("窗口圆角设置失败 hr={hr:#x}（Win10 无此属性，可忽略）");
+        // Win10 无此属性属**预期**：只落 dev 控制台、**不落 diag**（免 Win10 每次启动写常驻噪音）
+        crate::diag::console(&format!(
+            "窗口圆角设置失败 hr={hr:#x}（Win10 无此属性，可忽略）"
+        ));
     }
 }
 
 // —— 公开壳（收窗口；Windows 内部提句柄，其余平台空桩 → 调用点零 cfg）——
 
-/// 切换系统背板（聚焦联动）：聚焦挂亚克力、失焦回纯透明；失败落日志维持前态
+/// 切换系统背板（**按需毛玻璃**，PATCH002.60）：`on = true` 挂系统亚克力、`false` 摘回
+/// 纯透明。由前端在"板开合 + 窗口聚焦"变化时驱动（失焦必须传 `false`——DWM 材质焦点
+/// 绑定，不摘会退回不透明灰板）。失败落日志维持前态、下次切换自愈。
 #[cfg(target_os = "windows")]
-pub fn set_focused_backdrop<W: WinHandle>(window: &W, focused: bool) {
+pub fn set_backdrop<W: WinHandle>(window: &W, on: bool) {
     if let Some(hwnd) = window.win_hwnd() {
-        set_focused_backdrop_raw(hwnd, focused);
+        set_backdrop_raw(hwnd, on);
     }
 }
 
 /// 切换系统背板（非 Windows 空桩：无系统背板，静默 no-op）
 #[cfg(not(target_os = "windows"))]
-pub fn set_focused_backdrop<W: WinHandle>(_window: &W, _focused: bool) {}
+pub fn set_backdrop<W: WinHandle>(_window: &W, _on: bool) {}
 
 /// 窗口框架风格整定（深色模式声明 + 边框隐藏）
 #[cfg(target_os = "windows")]
@@ -154,6 +169,20 @@ pub fn apply_frame_style<W: WinHandle>(window: &W, dark: bool) {
 /// 窗口框架风格整定（非 Windows 空桩）
 #[cfg(not(target_os = "windows"))]
 pub fn apply_frame_style<W: WinHandle>(_window: &W, _dark: bool) {}
+
+/// 隐藏 Win11 激活描边（PATCH002.63，浮窗整定**第二步**）：主窗由 [`apply_frame_style`]
+/// 一并做，两个托盘浮窗**须单独调用**（此前只抄了圆角 ⇒ 浮窗获焦时窗口外显一圈蓝框）。
+/// 非 Windows 空桩。
+#[cfg(target_os = "windows")]
+pub fn hide_active_border<W: WinHandle>(window: &W) {
+    if let Some(hwnd) = window.win_hwnd() {
+        hide_active_border_raw(hwnd);
+    }
+}
+
+/// 隐藏 Win11 激活描边（非 Windows 空桩）
+#[cfg(not(target_os = "windows"))]
+pub fn hide_active_border<W: WinHandle>(_window: &W) {}
 
 /// 窗口系统圆角（与两个托盘窗同款调用）
 #[cfg(target_os = "windows")]

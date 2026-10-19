@@ -9,23 +9,25 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 /** 拖拽启动阈值（px）：位移低于此视为点击，不启动拖拽 */
 const DRAG_THRESHOLD = 5;
 
-/**
- * 标题阈值拖拽：把手元素按下记录起点，移动超阈值 invoke 系统拖拽，单击不拦截
- * click（浮板文档级关闭依赖它）。左键限定；preventDefault 仅抑制文本选择，
- * click 照常派发。返回显式 destroy——调用点在异步上下文时生命周期钩子不生效
- * （Vue 铁律，FIX013.5），由持有方在顶层 onUnmounted 显式调用；同步上下文
- * 调用时仍注册卸载钩子兜底
- */
-export function useThresholdDrag(handle: HTMLElement): () => void {
+/** 给把手元素装上阈值拖拽（左键限定；`preventDefault` 仅抑制文本选择，不拦 click）。
+ * `options.onDragStart`（PATCH002.61）：在 `startDragging()` **之前**触发——原生拖拽
+ * 循环会给出成对的 `Focused(false/true)` 抖动，调用方据此在抖动发生**前**置"拖拽中"
+ * 标记，屏蔽系统背板 / 纱态被误摘（"磨砂闪烁"）。 */
+export function useThresholdDrag(
+  handle: HTMLElement,
+  options?: { onDragStart?: () => void },
+): () => void {
   let startX = 0;
   let startY = 0;
   let tracking = false;
 
+  /** 位移超阈值 → 启动系统拖拽并解绑（本次手势只触发一次） */
   const onMove = (e: MouseEvent): void => {
     if (!tracking) return;
     if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_THRESHOLD) return;
     tracking = false;
     detach();
+    options?.onDragStart?.();
     void getCurrentWindow()
       .startDragging()
       .catch((err) => console.error("窗口拖拽启动失败", err));

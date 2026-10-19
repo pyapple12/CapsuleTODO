@@ -483,18 +483,21 @@ mod win {
         let meta = match std::fs::metadata(path) {
             Ok(m) => m,
             Err(err) => {
-                eprintln!("剪贴板图片读取：文件元数据失败（{err}）");
+                crate::diag::warn_diag(&format!("剪贴板图片读取：文件元数据失败（{err}）"));
                 return None;
             }
         };
         if !super::source_file_within_limit(meta.len()) {
-            eprintln!("剪贴板图片读取：文件超上限（{} 字节）", meta.len());
+            crate::diag::warn_diag(&format!(
+                "剪贴板图片读取：文件超上限（{} 字节）",
+                meta.len()
+            ));
             return None;
         }
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(err) => {
-                eprintln!("剪贴板图片读取：文件读取失败（{err}）");
+                crate::diag::warn_diag(&format!("剪贴板图片读取：文件读取失败（{err}）"));
                 return None;
             }
         };
@@ -510,7 +513,7 @@ mod win {
     /// 格式缺席返回 None——热键路径静默、手动路径可见报错由调用层分派
     pub fn read_clipboard_image() -> Option<super::CapturedImage> {
         if unsafe { OpenClipboard(0) } == 0 {
-            eprintln!("剪贴板图片读取：打开失败（占用竞争，下次捕获自愈）");
+            crate::diag::warn_diag("剪贴板图片读取：打开失败（占用竞争，下次捕获自愈）");
             return None;
         }
         let png_fmt = png_format();
@@ -541,7 +544,7 @@ mod win {
                     file_name: None,
                 }),
                 Err(err) => {
-                    eprintln!("剪贴板图片读取：CF_DIB 编码失败（{err}）");
+                    crate::diag::warn_diag(&format!("剪贴板图片读取：CF_DIB 编码失败（{err}）"));
                     None
                 }
             };

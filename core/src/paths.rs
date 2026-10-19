@@ -64,6 +64,13 @@ pub fn settings_path() -> std::io::Result<PathBuf> {
     Ok(configs_dir_under(&runtime_root()?)?.join("config.json"))
 }
 
+/// 诊断日志路径：<运行时根>/data/todo.log（PATCH002.62）。
+/// release 走 GUI 子系统**无控制台**，`eprintln!` 落空 ⇒ 失败日志的唯一落点；
+/// 路径解析失败由调用方（`diag::log`）静默忽略——日志自身不得引发二次故障。
+pub fn default_log_path() -> std::io::Result<PathBuf> {
+    Ok(data_dir()?.join("todo.log"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +107,19 @@ mod tests {
     #[test]
     fn runtime_root_exists() {
         assert!(runtime_root().expect("运行时根必须可解析").is_dir());
+    }
+
+    /// 诊断日志路径落在 data/ 下且名为 todo.log（PATCH002.62）。
+    #[test]
+    fn default_log_path_is_under_data() {
+        let path = default_log_path().expect("日志路径必须可解析");
+        assert!(
+            path.ends_with("todo.log"),
+            "日志名必须是 todo.log：{path:?}"
+        );
+        assert!(
+            path.parent().expect("必有父目录").ends_with("data"),
+            "日志必须落 data/ 下：{path:?}"
+        );
     }
 }

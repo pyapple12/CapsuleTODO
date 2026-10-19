@@ -69,17 +69,17 @@ fn finish_quiet_capture_image(app: &AppHandle, captured: &crate::clipboard_image
     let images_dir = match crate::paths::images_dir() {
         Ok(d) => d,
         Err(err) => {
-            eprintln!("热键图片捕获失败：图片目录解析失败：{err}");
+            crate::diag::warn_diag(&format!("热键图片捕获失败：图片目录解析失败：{err}"));
             return;
         }
     };
     match bubble_capture_image_core(&images_dir, captured, &ctx) {
         Ok(BubbleCaptureOutcome::Added { .. }) => {
             if let Err(err) = app.emit("bubble-changed", ()) {
-                eprintln!("bubble-changed 事件发送失败：{err}");
+                crate::diag::warn_diag(&format!("bubble-changed 事件发送失败：{err}"));
             }
         }
-        Err(err) => eprintln!("热键图片捕获失败：{err}"),
+        Err(err) => crate::diag::warn_diag(&format!("热键图片捕获失败：{err}")),
         Ok(BubbleCaptureOutcome::Duplicate) => {}
     }
 }
@@ -120,7 +120,7 @@ fn capture_quiet_windows(app: &AppHandle) {
     // 成立，且下次粘贴拿到的是刚圈选的文本损失为零）；原本无文本（None）无可恢复
     if let Some(old) = &before_text {
         if let Err(err) = app.clipboard().write_text(old) {
-            eprintln!("热键捕获：原剪贴板恢复失败：{err}");
+            crate::diag::warn_diag(&format!("热键捕获：原剪贴板恢复失败：{err}"));
         }
     }
     match hit {
@@ -137,7 +137,7 @@ fn capture_quiet_windows(app: &AppHandle) {
 fn capture_quiet_direct(app: &AppHandle) {
     match app.clipboard().read_text() {
         Ok(text) => finish_quiet_capture(app, &text),
-        Err(err) => eprintln!("热键捕获：剪贴板读取失败（{err}）"),
+        Err(err) => crate::diag::warn_diag(&format!("热键捕获：剪贴板读取失败（{err}）")),
     }
 }
 
@@ -149,11 +149,11 @@ fn finish_quiet_capture(app: &AppHandle, text: &str) {
     match bubble_capture_core(text, &ctx) {
         Ok(BubbleCaptureOutcome::Added { .. }) => {
             if let Err(err) = app.emit("bubble-changed", ()) {
-                eprintln!("bubble-changed 事件发送失败：{err}");
+                crate::diag::warn_diag(&format!("bubble-changed 事件发送失败：{err}"));
             }
         }
         Ok(BubbleCaptureOutcome::Duplicate) => {}
-        Err(err) => eprintln!("热键捕获失败：{err}"),
+        Err(err) => crate::diag::warn_diag(&format!("热键捕获失败：{err}")),
     }
 }
 
@@ -411,7 +411,7 @@ fn remove_image_folder(images_dir: &std::path::Path, folder: &str) {
     let path = images_dir.join(folder);
     if path.is_dir() {
         if let Err(err) = std::fs::remove_dir_all(&path) {
-            eprintln!("图片文件夹删除失败（{path:?}）：{err}");
+            crate::diag::warn_diag(&format!("图片文件夹删除失败（{path:?}）：{err}"));
         }
     }
 }
@@ -419,7 +419,7 @@ fn remove_image_folder(images_dir: &std::path::Path, folder: &str) {
 /// 广播气泡变更（PL025.8.2：详情删除/清空后驱动气泡页列表重拉；emit 失败落日志不阻断，沿捕获同规）
 fn emit_bubble_changed(app: &AppHandle) {
     if let Err(err) = app.emit("bubble-changed", ()) {
-        eprintln!("bubble-changed 事件发送失败：{err}");
+        crate::diag::warn_diag(&format!("bubble-changed 事件发送失败：{err}"));
     }
 }
 

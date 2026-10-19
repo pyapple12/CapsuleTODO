@@ -175,6 +175,10 @@ impl Storage {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path)?;
+        // PATCH002.64：并发等待窗口——rusqlite 默认 `busy_timeout = 0`（撞车立刻
+        // `SQLITE_BUSY`）；给 5s 宽限，让"另一实例 / 另一连接正持锁"的短事务自然收敛
+        // （旧插件形态下两实例并存共享同一 db 时，该默认值会让其一直接报错退出）
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let storage = Self { conn, now };
         storage.init()?;
         Ok(storage)
@@ -658,7 +662,9 @@ impl Storage {
         }
         let dir = images_dir.join(folder_of(rel));
         if let Err(err) = std::fs::remove_dir_all(&dir) {
-            eprintln!("详情图文件夹删除失败（best-effort 不阻断）：{err}");
+            crate::diag::warn_diag(&format!(
+                "详情图文件夹删除失败（best-effort 不阻断）：{err}"
+            ));
         }
         Ok(())
     }
@@ -670,7 +676,7 @@ impl Storage {
         let entries = match std::fs::read_dir(images_dir) {
             Ok(e) => e,
             Err(err) => {
-                eprintln!("详情图清扫跳过（目录不可读）：{err}");
+                crate::diag::warn_diag(&format!("详情图清扫跳过（目录不可读）：{err}"));
                 return Ok(0);
             }
         };
@@ -690,7 +696,9 @@ impl Storage {
                 continue;
             }
             if let Err(err) = std::fs::remove_dir_all(entry.path()) {
-                eprintln!("详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}");
+                crate::diag::warn_diag(&format!(
+                    "详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}"
+                ));
                 continue;
             }
             removed += 1;
@@ -718,7 +726,9 @@ impl Storage {
     /// 孤儿夹"（清扫只碰 `note_*` 且只删零引用夹；best-effort 不阻断错误向上传播）
     fn sweep_after_failed_write(&self, images_dir: &Path) {
         if let Err(err) = self.sweep_orphan_note_images(images_dir) {
-            eprintln!("粘贴失败后详情图清扫失败（best-effort 不阻断）：{err}");
+            crate::diag::warn_diag(&format!(
+                "粘贴失败后详情图清扫失败（best-effort 不阻断）：{err}"
+            ));
         }
     }
 
@@ -788,7 +798,7 @@ impl Storage {
             Ok(()) => self.conn.execute_batch("COMMIT")?,
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("详情块写入事务回滚失败：{rollback}");
+                    crate::diag::warn_diag(&format!("详情块写入事务回滚失败：{rollback}"));
                 }
                 return Err(err);
             }
@@ -926,7 +936,7 @@ impl Storage {
             Ok(()) => self.conn.execute_batch("COMMIT")?,
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("插图事务回滚失败：{rollback}");
+                    crate::diag::warn_diag(&format!("插图事务回滚失败：{rollback}"));
                 }
                 self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
                 return Err(err);
@@ -968,7 +978,7 @@ impl Storage {
         std::fs::write(dir.join(&inner), bytes)?;
         if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
             if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
-                eprintln!("详情图预览写入失败（降级用原图）：{err}");
+                crate::diag::warn_diag(&format!("详情图预览写入失败（降级用原图）：{err}"));
             }
         }
         Ok((hash, format!("{folder}/{inner}")))
@@ -1127,7 +1137,7 @@ impl Storage {
             Ok(()) => self.conn.execute_batch("COMMIT")?,
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("多段粘贴事务回滚失败：{rollback}");
+                    crate::diag::warn_diag(&format!("多段粘贴事务回滚失败：{rollback}"));
                 }
                 self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
                 return Err(err);
@@ -1267,7 +1277,7 @@ impl Storage {
             // 大图预览（失败降级不阻断——详情退回原图）
             if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
                 if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
-                    eprintln!("图片预览写入失败（降级用原图）：{err}");
+                    crate::diag::warn_diag(&format!("图片预览写入失败（降级用原图）：{err}"));
                 }
             }
             let rel = format!("{folder}/{inner}");
@@ -1288,7 +1298,7 @@ impl Storage {
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("图片入库事务回滚失败：{rollback}");
+                    crate::diag::warn_diag(&format!("图片入库事务回滚失败：{rollback}"));
                 }
                 Err(err)
             }
@@ -1384,7 +1394,7 @@ impl Storage {
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
-                    eprintln!("重排事务回滚失败：{rollback}");
+                    crate::diag::warn_diag(&format!("重排事务回滚失败：{rollback}"));
                 }
                 Err(err)
             }

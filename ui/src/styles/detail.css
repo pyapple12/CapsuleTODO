@@ -229,6 +229,13 @@
 .detail-note.bubble-note {
   cursor: default;
   padding: 0;
+  /* PATCH002.69（2026-10-20 修）：气泡全文板**必须有高度来源**——
+     `.detail-note` 不设 height（交给内容），而 `autosize()` 在浏览器支持
+     `field-sizing` 时**自动让位**（DetailOverlay 的 `NATIVE_FIELD_SIZING`）；
+     `.44` 只给块编辑器 `.note-block-text` 补了 `field-sizing`，**漏了气泡** ⇒
+     气泡 textarea 退回 UA 默认两行 + `overflow: hidden` 裁掉其余 = "只显示第一行"。
+     与 `.44` 同方向补一行，两条路径（原生 / JS）就都覆盖到了。 */
+  field-sizing: content;
 }
 
 /* reduced-motion 守卫（A8 自 design tabs.css 守卫块分发）：详情板揭示动画全关 */

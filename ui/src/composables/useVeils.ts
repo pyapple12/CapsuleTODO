@@ -4,6 +4,7 @@
 // 浮板开合状态由组件层经 bindOverlayState 注入（组合式不持有浮板 DOM 引用） =====
 import { glassBars } from "./useGlassBar";
 import { boardReads } from "./useBoardRead";
+import { ref } from "vue";
 
 /** 三浮板开合读取器（组件层挂载时注入；未注入按关板计） */
 const reads: {
@@ -11,6 +12,11 @@ const reads: {
   settings: (() => boolean) | null;
   detail: (() => boolean) | null;
 } = { board: null, settings: null, detail: null };
+
+/** 是否有**任一浮板**打开（PATCH002.60：系统背板按需挂摘的**唯一判据源**）。
+ * 由 [`syncVeils`] 在每次开合处刷新（三个浮板组件已在各自开合点调用 syncVeils）
+ * ——与帘联动同源，**不另立状态**（避免两处事实源漂移）。 */
+export const boardOpen = ref(false);
 
 /**
  * 浮板组件挂载时注入开合态读取器（ArchiveOverlay/SettingsOverlay/DetailOverlay 调用）
@@ -25,17 +31,19 @@ export function bindOverlayState(name: "board" | "settings" | "detail", read: ()
  * 帘联动主入口：浮板开合处调用（组件 watch 或显式挂点），遍历两注册表挂摘 .veiled
  */
 export function syncVeils(): void {
-  const boardOpen = reads.board?.() ?? false;
+  const archiveOpen = reads.board?.() ?? false;
   const settingsOpen = reads.settings?.() ?? false;
   const detailOpen = reads.detail?.() ?? false;
-  const anyOpen = boardOpen || settingsOpen || detailOpen;
+  const anyOpen = archiveOpen || settingsOpen || detailOpen;
+  // PATCH002.60：对外暴露的响应式判据（系统背板按需挂摘）——与帘联动同一次计算
+  boardOpen.value = anyOpen;
   for (const g of glassBars) {
     // 归档自家滑杆随归档板出现（!boardOpen）；详情板自家滑杆随详情板开合隐现
     //（对齐下方三角同款特判——板开时自家滑杆必须可见，不吃 anyOpen 的帘；
     // 关板 !detailOpen 罩住，顺带根治"关板后滑杆残留"）
     const veil =
       g.scroller.id === "archive-list"
-        ? !boardOpen
+        ? !archiveOpen
         : g.scroller.id === "detail-note"
           ? !detailOpen
           : anyOpen;

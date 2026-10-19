@@ -7,19 +7,21 @@ pub mod bubble;
 pub mod capture;
 pub mod clipboard_image;
 pub mod commands;
+pub mod diag;
 pub mod fullscreen;
-#[cfg(target_os = "windows")]
 pub mod glass_backdrop;
 pub mod hotkey;
 pub mod html_paste;
 pub mod paths;
 pub mod settings;
+pub mod single_instance;
 pub mod snap;
 pub mod storage;
 pub mod todo;
 pub mod tray;
 pub mod util;
 pub mod whiteboard;
+pub mod window_icon;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -45,6 +47,10 @@ static DRAG_SNAP_PENDING: AtomicBool = AtomicBool::new(false);
 /// 菜单退出标志（FIX005.4 hide 语义）：tray_menu exit 动作置位后 CloseRequested 走
 /// 真退销毁链；未置位的关窗（Alt+F4）= 保存位置后隐藏到托盘（PL018 定案对齐）
 pub(crate) static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// 应用标识（PATCH002.64 单实例闸门命名空间用）：**必须与 `tauri.conf.json` 的
+/// `identifier` 一致**——同一 identifier 的副本视为同一应用（改其一必改另一）。
+const APP_IDENTIFIER: &str = "com.pyapple12.capsule-todo";
 
 #[cfg(target_os = "windows")]
 mod win_input {
@@ -99,7 +105,7 @@ fn snap_if_needed(window: &tauri::Window) {
         .lock_settings()
         .map(|s| s.snap_to_edge)
         .unwrap_or_else(|err| {
-            eprintln!("贴边吸附：设置锁读取失败，跳过吸附：{err:?}");
+            crate::diag::warn_diag(&format!("贴边吸附：设置锁读取失败，跳过吸附：{err:?}"));
             false
         });
     if !snap_on {
@@ -140,7 +146,7 @@ fn snap_if_needed(window: &tauri::Window) {
     let (tx, ty) = (sx - (inner.x - outer.x), sy - (inner.y - outer.y));
     if (tx, ty) != (outer.x, outer.y) {
         if let Err(err) = window.set_position(PhysicalPosition::new(tx, ty)) {
-            eprintln!("贴边吸附落位失败：{err}");
+            crate::diag::warn_diag(&format!("贴边吸附落位失败：{err}"));
         }
     }
 }
@@ -183,7 +189,7 @@ fn position_on_monitor(window: &WebviewWindow, x: i32, y: i32) -> bool {
             })
         })
         .unwrap_or_else(|err| {
-            eprintln!("显示器枚举失败，按越界回默认位：{err}");
+            crate::diag::warn_diag(&format!("显示器枚举失败，按越界回默认位：{err}"));
             false
         })
 }
@@ -194,7 +200,7 @@ fn save_window_position(window: &tauri::Window, runtime: &settings::WindowSettin
     let path = match paths::settings_path() {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("设置路径解析失败（位置未保存）：{err}");
+            crate::diag::warn_diag(&format!("设置路径解析失败（位置未保存）：{err}"));
             return;
         }
     };
@@ -212,15 +218,21 @@ fn save_window_position(window: &tauri::Window, runtime: &settings::WindowSettin
                     theme: runtime.theme,
                 },
             ) {
-                eprintln!("窗口位置保存失败：{err}");
+                crate::diag::warn_diag(&format!("窗口位置保存失败：{err}"));
             }
         }
-        Err(err) => eprintln!("窗口位置读取失败（位置未保存）：{err}"),
+        Err(err) => crate::diag::warn_diag(&format!("窗口位置读取失败（位置未保存）：{err}")),
     }
 }
 
 /// 应用装配入口：构建 Tauri builder 并启动主窗口，初始化失败向上传播。
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // PATCH002.64 单实例闸门（**进程第一行**）：先于开库 / 建窗 / 写日志判重——
+    // 第二实例**零副作用**退出（旧插件判定跑在 setup，晚于开库与留痕；且 FindWindowW
+    // 取不到窗时不退出 ⇒ 竞态下两实例并存共享同一 db）。建对象失败放行（不挡用户）。
+    if crate::single_instance::enforce(APP_IDENTIFIER) == crate::single_instance::Gate::Second {
+        std::process::exit(crate::single_instance::SECOND_INSTANCE_EXIT);
+    }
     // 运行时数据双落址（PL002）：dev = 仓库根 / release = exe 同级；库打开失败启动即报错
     let db = paths::db_path()?;
     let storage = Storage::open(&db).map_err(|err| format!("清单库打开失败（{db:?}）：{err}"))?;
@@ -236,26 +248,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // PATCH002.46 启动清扫：清掉无块引用的 `note_*` 图片夹（历史孤儿 + 崩溃残留）。
     // 失败 best-effort 只落日志——残留文件代价小于阻断启动（沿"详情图删除失败不阻断"先例）
     if let Err(err) = storage.sweep_orphan_note_images(&images) {
-        eprintln!("启动详情图清扫失败（best-effort 不阻断）：{err}");
+        crate::diag::warn_diag(&format!("启动详情图清扫失败（best-effort 不阻断）：{err}"));
     }
     // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
     // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
     let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
 
     tauri::Builder::default()
-        // 单实例（PL003）：builder 首位注册；二次启动唤起已运行实例的主窗口
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(err) = window.show() {
-                    eprintln!("单实例唤起 show 失败：{err}");
-                }
-                if let Err(err) = window.set_focus() {
-                    eprintln!("单实例唤起聚焦失败：{err}");
-                }
-            } else {
-                eprintln!("单实例唤起失败：主窗不存在（异常态）");
-            }
-        }))
         // 剪贴板（PL004）：仅 Rust 侧读写，不经 ACL
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppContext {
@@ -264,6 +263,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .invoke_handler(tauri::generate_handler![
             commands::todo::todo_add,
+            commands::window::set_board_backdrop,
             commands::todo::todo_toggle,
             commands::todo::todo_rename,
             commands::todo::todo_remove,
@@ -339,6 +339,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 窗口直角区。主窗关 DWM 投影（shadow:false）后失去隐式圆角，
             // 须显式补上，否则两个上角露出窗口方角
             glass_backdrop::apply_round_corners(&window);
+            // 窗口图标整定（PATCH002.59）：把 exe 内嵌多帧图标按系统尺寸取帧、双槽同设
+            // ——Tauri 默认只塞 ICON_SMALL 单帧，高 DPI 下任务栏只能放大它 ⇒ 糊
+            window_icon::apply_app_icon(&window);
+            // 单实例唤前守候（PATCH002.64）：第二实例双击 ⇒ 命名事件置信号 ⇒ 本线程把
+            // 主窗唤到前台（等价旧插件回调）；事件未建 / 等待失败则线程直接结束（不误唤）
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    if crate::single_instance::wait_for_wake() {
+                        if let Some(main) = handle.get_webview_window("main") {
+                            if let Err(err) = main.show() {
+                                crate::diag::warn_diag(&format!("单实例唤起 show 失败：{err}"));
+                            }
+                            if let Err(err) = main.set_focus() {
+                                crate::diag::warn_diag(&format!("单实例唤起聚焦失败：{err}"));
+                            }
+                        } else {
+                            crate::diag::warn_diag("单实例唤起失败：主窗不存在（异常态）");
+                        }
+                    }
+                });
+            }
             // 全屏让位监视（PL003，Windows 实机验证平台；PL026 调用点零 cfg）
             fullscreen::spawn_fullscreen_watcher(app.handle().clone());
             // 气泡热键（PL015）：启动注册全局热键，触发即捕获剪贴板入气泡；
@@ -352,10 +374,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(|err| {
                         // FIX008.10：锁中毒回默认热键可见化（对齐下方 parse 失败
                         // 分支——静默替换用户自定义热键属不可诊断面）
-                        eprintln!(
+                        crate::diag::warn_diag(&format!(
                             "气泡热键设置锁读失败（{err:?}），回默认 {} 注册",
                             settings::DEFAULT_BUBBLE_HOTKEY
-                        );
+                        ));
                         settings::DEFAULT_BUBBLE_HOTKEY.to_string()
                     });
                 // FIX006.15 去 expect（A005 P3-11 同族末颗）：默认热键 parse 也走
@@ -364,16 +386,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let combo = match hotkey::parse(&hotkey_text) {
                     Ok(c) => Some(c),
                     Err(err) => {
-                        eprintln!(
+                        crate::diag::warn_diag(&format!(
                             "气泡热键解析失败（{err}），回默认 {}",
                             settings::DEFAULT_BUBBLE_HOTKEY
-                        );
+                        ));
                         match hotkey::parse(settings::DEFAULT_BUBBLE_HOTKEY) {
                             Ok(c) => Some(c),
                             Err(default_err) => {
-                                eprintln!(
+                                crate::diag::warn_diag(&format!(
                                     "默认热键解析失败（{default_err}）——跳过热键注册，其余功能不受影响"
-                                );
+                                ));
                                 None
                             }
                         }
@@ -385,7 +407,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         commands::bubble::bubble_capture_from_clipboard_quiet(&handle);
                     }));
                     if let Err(err) = hotkey::reregister(combo) {
-                        eprintln!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响");
+                        crate::diag::warn_diag(&format!("气泡热键注册失败（{err}）——快捷键不可用，其余功能不受影响"));
                     }
                 }
             }
@@ -414,23 +436,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 match w.is_visible() {
                                     Ok(true) => {
                                         if let Err(err) = w.hide() {
-                                            eprintln!("托盘隐藏主窗失败：{err}");
+                                            crate::diag::warn_diag(&format!("托盘隐藏主窗失败：{err}"));
                                         }
                                     }
                                     Ok(false) => {
                                         if let Err(err) = w.show() {
-                                            eprintln!("托盘唤回主窗 show 失败：{err}");
+                                            crate::diag::warn_diag(&format!("托盘唤回主窗 show 失败：{err}"));
                                         }
                                         if let Err(err) = w.set_focus() {
-                                            eprintln!("托盘唤回主窗聚焦失败：{err}");
+                                            crate::diag::warn_diag(&format!("托盘唤回主窗聚焦失败：{err}"));
                                         }
                                     }
-                                    Err(err) => eprintln!("托盘显隐切换失败：{err}"),
+                                    Err(err) => crate::diag::warn_diag(&format!("托盘显隐切换失败：{err}")),
                                 }
                             } else {
                                 // FIX005.4：hide 语义下主窗恒存活（只隐藏不销毁），
                                 // None 属异常态，落日志供排查
-                                eprintln!("托盘左键切换失败：主窗不存在（异常态）");
+                                crate::diag::warn_diag("托盘左键切换失败：主窗不存在（异常态）");
                             }
                         }
                         // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程
@@ -495,14 +517,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .resizable(false)
                 .visible(true)
                 .focused(false)
+                // PATCH002.63：预览窗**不抢系统焦点**（点击行仍照常派发鼠标事件——
+                // 与菜单窗 focusable(false) 同款；WS_EX_NOACTIVATE 只免激活、不吞鼠标）
+                .focusable(false)
                 .always_on_top(true)
                 .shadow(false) // 双下巴根因：无边框窗默认 DWM 投影，底部下沉似第二层
                 .build()?;
                 // DWM 系统圆角（PL018，用户问诊直角暗角）：DWM 切掉 CSS 圆角外的
                 // 窗口直角区——预览窗视觉与内容圆角统一（Win11 原生浮窗同款）
                 glass_backdrop::apply_round_corners(&preview);
+                // PATCH002.63：主窗窗口整定是**两步**（圆角 + 描边隐藏）——预览窗此前只抄了
+                // 圆角 ⇒ 获焦时窗口外会显 Win11 激活描边（落在 webview 之外，CSS 改不动）
+                glass_backdrop::hide_active_border(&preview);
                 if let Err(err) = preview.hide() {
-                    eprintln!("预览窗首绘后隐藏失败：{err}");
+                    crate::diag::warn_diag(&format!("预览窗首绘后隐藏失败：{err}"));
                 }
                 // 托盘菜单窗（PL021）：自绘 HTML 菜单——尺寸/间距/圆角全可控，
                 // 视觉与预览窗统一。focusable(false)：点击不抢系统焦点（原生菜单
@@ -528,6 +556,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?;
                 // DWM 系统圆角（预览窗同款）：DWM 切掉 CSS 圆角外的窗口直角区
                 glass_backdrop::apply_round_corners(&menu_win);
+                // PATCH002.63：两步整定（同上，菜单窗补描边隐藏）
+                glass_backdrop::hide_active_border(&menu_win);
                 // 创建期 inner_size 宽度被 WebView2 最小 bounds 钳制（实测 60/100
                 // 均被抬到 136 逻辑；高度不受影响）——创建后 set_size 重设（预览窗
                 // set_size 精确生效先例）
@@ -535,10 +565,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     crate::tray::MENU_WIDTH,
                     crate::tray::MENU_HEIGHT,
                 )) {
-                    eprintln!("菜单窗尺寸重设失败：{err}");
+                    crate::diag::warn_diag(&format!("菜单窗尺寸重设失败：{err}"));
                 }
                 if let Err(err) = menu_win.hide() {
-                    eprintln!("菜单窗首绘后隐藏失败：{err}");
+                    crate::diag::warn_diag(&format!("菜单窗首绘后隐藏失败：{err}"));
                 }
             }
             Ok(())
@@ -559,7 +589,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // 保存落日志（AGENTS 容错白名单登记项）
                 match window.app_handle().state::<AppContext>().lock_settings() {
                     Ok(guard) => save_window_position(window, &guard),
-                    Err(err) => eprintln!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}"),
+                    Err(err) => crate::diag::warn_diag(&format!("设置锁中毒，窗口位置与气泡上限未保存：{err:?}")),
                 }
                 api.prevent_close();
                 if EXITING.load(Ordering::Relaxed) {
@@ -570,7 +600,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(600));
                         if let Err(err) = win.destroy() {
-                            eprintln!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}");
+                            // 预期竞态（先到腿已销毁）⇒ 只落控制台、不落 diag（免噪音）
+                crate::diag::console(&format!("关窗兜底 destroy 失败（多为先到腿已销毁的预期竞态）：{err}"));
                         }
                     });
                 } else {
@@ -578,7 +609,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // 位置后隐藏到托盘；真正退出只走托盘菜单（EXITING 置位区分）。
                     // 主窗销毁会让托盘三入口全部失效（进程被两隐藏窗撑活），hide 根除
                     if let Err(err) = window.hide() {
-                        eprintln!("主窗隐藏失败：{err}");
+                        crate::diag::warn_diag(&format!("主窗隐藏失败：{err}"));
                     }
                 }
             }
@@ -614,6 +645,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         DRAG_SNAP_PENDING.store(false, Ordering::Relaxed);
                         if DRAG_ACTIVE.swap(false, Ordering::Relaxed) {
+                            // PATCH002.61：真拖动过 ⇒ 通知前端"拖拽结束"（前端据此解除
+                            // 焦点抖动屏蔽——原生拖拽循环会给出成对 `Focused(false/true)`，
+                            // 不屏蔽则系统背板/纱态被误摘再挂 = "磨砂闪烁"）。
+                            // 发送失败仅日志——装饰层纪律，下次拖拽自愈。
+                            if let Err(err) = win.emit("drag-end", ()) {
+                                crate::diag::warn_diag(&format!("drag-end 事件发送失败：{err}"));
+                            }
                             snap_if_needed(&win);
                         }
                         break;
@@ -626,13 +664,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if window.label() != "main" {
                     return;
                 }
-                // PL026：调用点零 cfg——平台分叉收在 glass_backdrop（非 Windows 空桩）
-                // 系统背板聚焦联动（SYSTEMBACKDROP 实验）：聚焦挂系统亚克力，
-                // 失焦回纯透明；失败落日志维持前态（下次焦点事件自愈）
-                glass_backdrop::set_focused_backdrop(window, *focused);
-                // 前端分态纱随事件翻转（.focused class）；发送失败由下次焦点事件纠正
+                // PATCH002.60：系统背板**不再与焦点直接联动**——改由前端按"板开合 + 聚焦"
+                // 驱动（`commands/window.rs::set_board_backdrop`）；此处只转发焦点态给前端
+                // （分态纱与背板判据都要用）。发送失败由下次焦点事件纠正。
                 if let Err(err) = window.emit("window-focus", focused) {
-                    eprintln!("window-focus 事件发送失败：{err}");
+                    crate::diag::warn_diag(&format!("window-focus 事件发送失败：{err}"));
                 }
             }
         })

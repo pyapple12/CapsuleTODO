@@ -92,22 +92,26 @@ pub fn settings_set_bubble_hotkey(
             .map(|s| s.bubble_hotkey != normalized_display)
             .unwrap_or(true);
         if taken_over {
-            eprintln!("热键设置已被并发请求接管，放弃回滚落库（err：{err}）");
+            crate::diag::warn_diag(&format!(
+                "热键设置已被并发请求接管，放弃回滚落库（err：{err}）"
+            ));
             return Err(CommandError::Hotkey(format!("热键注册失败：{err}")));
         }
         // 回滚：恢复旧热键落库 + 重注册（FIX005.16 去 expect：parse 失败属异常态，
         // 落日志跳过重注册——热键是"失败不阻断"容错域，禁业务 panic）
         if let Err(rollback_err) = settings_set_bubble_hotkey_core(&old, &path, &ctx) {
-            eprintln!("热键回滚落库失败：{rollback_err}");
+            crate::diag::warn_diag(&format!("热键回滚落库失败：{rollback_err}"));
         }
         match crate::hotkey::parse(&old) {
             Ok(rollback) => {
                 if let Err(re_err) = crate::hotkey::reregister(rollback) {
-                    eprintln!("旧热键重注册失败：{re_err}");
+                    crate::diag::warn_diag(&format!("旧热键重注册失败：{re_err}"));
                 }
             }
             Err(parse_err) => {
-                eprintln!("旧热键解析失败（跳过重注册，异常态）：{parse_err}");
+                crate::diag::warn_diag(&format!(
+                    "旧热键解析失败（跳过重注册，异常态）：{parse_err}"
+                ));
             }
         }
         return Err(CommandError::Hotkey(format!(
@@ -224,12 +228,12 @@ pub(crate) fn emit_prefs_changed(app: &tauri::AppHandle, ctx: &AppContext) {
             theme: s.theme,
         },
         Err(err) => {
-            eprintln!("prefs-changed 读取失败（跳过广播）：{err:?}");
+            crate::diag::warn_diag(&format!("prefs-changed 读取失败（跳过广播）：{err:?}"));
             return;
         }
     };
     if let Err(err) = app.emit("prefs-changed", snapshot) {
-        eprintln!("prefs-changed 广播失败：{err}");
+        crate::diag::warn_diag(&format!("prefs-changed 广播失败：{err}"));
     }
 }
 

@@ -13,7 +13,7 @@ use super::CommandError;
 pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), CommandError> {
     if let Some(menu_win) = app.get_webview_window("tray-menu") {
         if let Err(err) = menu_win.hide() {
-            eprintln!("菜单窗收起失败：{err}");
+            crate::diag::warn_diag(&format!("菜单窗收起失败：{err}"));
         }
     }
     match action.as_str() {
@@ -21,13 +21,13 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
         "show" => {
             if let Some(w) = app.get_webview_window("main") {
                 if let Err(err) = w.show() {
-                    eprintln!("聚焦主窗 show 失败：{err}");
+                    crate::diag::warn_diag(&format!("聚焦主窗 show 失败：{err}"));
                 }
                 if let Err(err) = w.set_focus() {
-                    eprintln!("聚焦主窗 set_focus 失败：{err}");
+                    crate::diag::warn_diag(&format!("聚焦主窗 set_focus 失败：{err}"));
                 }
             } else {
-                eprintln!("聚焦主窗失败：主窗不存在（异常态）");
+                crate::diag::warn_diag("聚焦主窗失败：主窗不存在（异常态）");
             }
             Ok(())
         }
@@ -51,13 +51,13 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
             crate::EXITING.store(true, std::sync::atomic::Ordering::Relaxed);
             if let Some(w) = app.get_webview_window("main") {
                 if let Err(err) = w.close() {
-                    eprintln!("托盘退出主窗关闭失败：{err}");
+                    crate::diag::warn_diag(&format!("托盘退出主窗关闭失败：{err}"));
                 }
             }
             for label in ["tray-preview", "tray-menu"] {
                 if let Some(w) = app.get_webview_window(label) {
                     if let Err(err) = w.destroy() {
-                        eprintln!("托盘退出清理 {label} 窗失败：{err}");
+                        crate::diag::warn_diag(&format!("托盘退出清理 {label} 窗失败：{err}"));
                     }
                 }
             }
@@ -74,10 +74,10 @@ pub fn tray_menu_action(action: String, app: tauri::AppHandle) -> Result<(), Com
 pub fn main_hide_to_tray(app: tauri::AppHandle) -> Result<(), CommandError> {
     if let Some(w) = app.get_webview_window("main") {
         if let Err(err) = w.close() {
-            eprintln!("缩回托盘主窗关闭失败：{err}");
+            crate::diag::warn_diag(&format!("缩回托盘主窗关闭失败：{err}"));
         }
     } else {
-        eprintln!("缩回托盘失败：主窗不存在（异常态）");
+        crate::diag::warn_diag("缩回托盘失败：主窗不存在（异常态）");
     }
     Ok(())
 }

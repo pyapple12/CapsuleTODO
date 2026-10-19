@@ -75,13 +75,13 @@ const WATCH_INTERVAL_MS: u64 = 1000;
 #[cfg(target_os = "windows")]
 pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
-        eprintln!("全屏让位监视未启动：主窗口不存在");
+        crate::diag::warn_diag("全屏让位监视未启动：主窗口不存在");
         return;
     };
     let hwnd = match window.hwnd() {
         Ok(h) => h.0 as isize,
         Err(err) => {
-            eprintln!("全屏让位监视未启动：获取主窗句柄失败：{err}");
+            crate::diag::warn_diag(&format!("全屏让位监视未启动：获取主窗句柄失败：{err}"));
             return;
         }
     };
@@ -103,7 +103,9 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
                 Ok(v) => v,
                 Err(err) => {
                     if polling {
-                        eprintln!("全屏监视设置锁失败（跳过本轮，维持当前置顶态）：{err:?}");
+                        crate::diag::warn_diag(&format!(
+                            "全屏监视设置锁失败（跳过本轮，维持当前置顶态）：{err:?}"
+                        ));
                         polling = false;
                     }
                     continue;
@@ -120,7 +122,7 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
                 let mut rect = win32::RectPx::default();
                 if win32::GetWindowRect(foreground, &mut rect) == 0 {
                     if polling {
-                        eprintln!("全屏监视 GetWindowRect 失败（维持当前置顶态）");
+                        crate::diag::warn_diag("全屏监视 GetWindowRect 失败（维持当前置顶态）");
                         polling = false;
                     }
                     continue;
@@ -137,7 +139,7 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
                 };
                 if win32::GetMonitorInfoW(monitor, &mut info) == 0 {
                     if polling {
-                        eprintln!("全屏监视 GetMonitorInfoW 失败（维持当前置顶态）");
+                        crate::diag::warn_diag("全屏监视 GetMonitorInfoW 失败（维持当前置顶态）");
                         polling = false;
                     }
                     continue;
@@ -162,7 +164,7 @@ pub fn spawn_fullscreen_watcher(app: tauri::AppHandle) {
             if covering != yielded {
                 // set_always_on_top 内部派发主线程，工作线程可直调；失败维持前态下轮重试
                 if let Err(err) = window.set_always_on_top(!covering) {
-                    eprintln!("全屏让位置顶切换失败（维持前态）：{err}");
+                    crate::diag::warn_diag(&format!("全屏让位置顶切换失败（维持前态）：{err}"));
                     continue;
                 }
                 yielded = covering;
