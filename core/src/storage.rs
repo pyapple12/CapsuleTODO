@@ -769,7 +769,15 @@ impl Storage {
                                 rusqlite::params![block.id, i as i64, text, todo_id],
                             )?;
                             if changed == 0 {
-                                return Err(StorageError::NotFound(block.id));
+                                // PATCH002.72 C7：**旧行可能已被删除** —— "粘贴替换选区"落库时会把
+                                // 被快照引用的行删掉，随后 Ctrl+Z 要把它们写回 ⇒ 原 `NotFound`
+                                // 会让**整次保存**失败（实证：`pre-save` 有、`save` 无、重开是粘贴版 ✗）
+                                // ⇒ 改为**按新块插入**（内容保真；id 换新，无外部引用）
+                                self.conn.execute(
+                                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                                     VALUES (?1, ?2, 'text', ?3)",
+                                    rusqlite::params![todo_id, i as i64, text],
+                                )?;
                             }
                         } else {
                             self.conn.execute(
@@ -2412,6 +2420,29 @@ mod tests {
         assert_eq!(updated[0].id, first_id, "既有块 id 稳定");
         assert_eq!(updated[0].text, "改过的");
         assert_eq!(updated[2].text, "第三行");
+    }
+
+    /// PATCH002.72 C7：**旧 id 的行已被删除 ⇒ 按新块插入**（撤销"粘贴替换选区"要把被删的行写回；
+    /// 原实现报 `NotFound` ⇒ 整次保存失败 ⇒ 撤销内容永远落不了库 ✗）
+    #[test]
+    fn set_note_blocks_reinserts_missing_text_id() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "原文")])
+            .expect("写块必须成功");
+        let old_id = saved[0].id;
+        // 用另一个块覆盖 ⇒ 差分删除会把 old_id 那一行删掉
+        st.set_note_blocks(&dir, item.id, &[nb_text(0, "临时")])
+            .expect("覆盖保存必须成功");
+        // 把**旧 id** 写回 ⇒ 行已不存在 ⇒ 必须 upsert（原实现 NotFound ✗）
+        let restored = st
+            .set_note_blocks(&dir, item.id, &[nb_text(old_id, "原文")])
+            .expect("旧 id 缺失时必须插入而不是拒绝");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].text, "原文");
+        assert!(restored[0].id > 0, "新行必须有 id");
     }
 
     #[test]

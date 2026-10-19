@@ -3,6 +3,10 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { BubbleItem, NoteBlock, NotePasteOutcome, TodoItem } from "../../types";
 import { UI_TEXT_MAX_LEN } from "../../types";
+import {
+  normalizeBlocks as normalizeBlankBlocks,
+  type LocalBlock,
+} from "../composables/normalizeBlocks";
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
@@ -42,11 +46,7 @@ const bubbleImgSrc = ref("");
 const imageError = ref("");
 
 // —— PL027 块模型（一段一行一块 + 图块混排）——
-
-/** 本地块（带客户端稳定 key：id 落库回填不重挂 DOM，防输入焦点/光标丢失） */
-interface LocalBlock extends NoteBlock {
-  _key: string;
-}
+// 本地块类型 `LocalBlock` 与空块归一化统一在 `composables/normalizeBlocks.ts`（PATCH002.75）
 
 const blocks = ref<LocalBlock[]>([]);
 /** 整篇是否为空（全部文本块 trim 后皆空）——占位文案**仅此时**显示（PATCH002.23）：
@@ -182,9 +182,23 @@ function sigFingerprint(sig: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** 块列表 id 短序列（**临时诊断专用**）：`T12,I0` —— 用于日志里比对"是哪一代块集"
+ * （`0` = 本地未落库块）。只拼接字符串，不参与任何业务判定。 */
+function idsOf(list: LocalBlock[]): string {
+  return list.map((b) => `${b.kind === "Image" ? "I" : "T"}${b.id}`).join(",");
+}
+
+/** 撤销栈登记（**临时诊断专用**）：记录每次入栈时的代际 id 序列 */
+function undoLog(line: string): void {
+  void invoke("debug_log", { line })
+    .then(() => undefined)
+    .catch((err) => console.error("诊断上报失败", err));
+}
+
 /** 排入防抖保存（无变更/未开板直接跳过）。**捕获** {todoId, list} 再排定（PATCH002.47）：
  * 切源会整体换数组 → 捕获引用即"那一条目的那一份"（同条目内 v-model 原地改仍取到最新文本） */
 function scheduleSave(): void {
+  if (pasteInFlight > 0 || editInFlight > 0) return; // PATCH002.72 C5：粘贴窗口内不排保存（最终态由收尾统一写）
   clearTimeout(saveTimer);
   const todo = props.todo;
   if (todo == null) return;
@@ -192,6 +206,8 @@ function scheduleSave(): void {
   const todoId = todo.id;
   const list = blocks.value;
   saveTimer = window.setTimeout(() => {
+    // 临时诊断（.72 排查）：哪个保存入口
+    undoLog(`save:caller=debounce inFlight=${pasteInFlight} len=${list.length}`);
     void saveBlocksFor(todoId, list);
   }, 300);
 }
@@ -235,7 +251,9 @@ async function saveBlocksFor(todoId: number, list: LocalBlock[], force = false):
     }).catch((err) => console.error("诊断上报失败", err));
     emit("changed");
   } catch (err) {
+    // 临时诊断（.72 排查）：保存失败原先只落 console ⇒ 日志里完全隐身 ✗（本次就靠它才能定位）
     console.error("详情保存失败", err);
+    undoLog(`save:fail todo=${todoId} len=${payload.length} err=${String(err)}`);
   }
 }
 
@@ -262,8 +280,11 @@ async function loadBlocks(todoId: number): Promise<void> {
     // PATCH002.72：**撤销快照不得跨"重新载入"生效** —— 载入后 id / _key 全换，旧快照与库
     // 已无对应关系；若仍可恢复，Ctrl+Z 会把模型换回旧状态，再被保存点写回库（实证：
     // 载入 3 块 #611 → focusout 时模型变 1 块 #609 → 落库 1 块）
+    const undoDepth = undoStack.length; // 临时诊断（.72 排查）：清栈前深度
     undoStack.length = 0;
     undoSeq += 1; // 在飞的删块动效收场按代际放弃（沿 .44 口径）
+    // 临时诊断（.72 排查）：清栈前多深（>0 说明旧代快照确实存在过 ✓）+ 本次载入的代际
+    undoLog(`undo:clear depth=${undoDepth} arr=${idsOf(blocks.value)}`);
     brokenKeys.value = [];
     void nextTick(() => autosizeAll());
   } catch (err) {
@@ -288,15 +309,25 @@ function focusBlock(key: string, caret: number): void {
 function onBlockInput(e: Event): void {
   autosize(e.target as HTMLTextAreaElement);
   if (selAnchor.value || selFocus.value) clearSel();
-  dropUndo();
+  // PATCH002.73：替换/组字的那一下输入**不清栈**（刚压的快照要活到撤销时 ✓）；
+  // 其余输入照旧"打字即清结构性栈" ✓
+  if (keepUndoComposing) {
+    undoLog("undo:keep consume reason=ime");
+  } else if (keepUndoOnce) {
+    keepUndoOnce = false;
+    if (editInFlight > 0) editInFlight -= 1; // 字符已写入 ⇒ 关闭结构性编辑窗口 ✓
+    undoLog(`undo:keep consume reason=input editInFlight=${editInFlight}`);
+  } else {
+    dropUndo();
+  }
   scheduleSave();
 }
 
 /** 光标处拆块（Enter）：前段留原块、后段新块，光标落新块首 */
-function splitBlock(index: number, at: number): void {
+function splitBlock(index: number, at: number, push = true): void {
   const block = blocks.value[index];
   if (!block) return;
-  pushUndo(); // 结构性操作入栈（Ctrl+Z 可回退本次拆块）
+  if (push) pushUndo(); // 结构性操作入栈（Ctrl+Z 可回退本次拆块）
   const created: LocalBlock = {
     id: 0,
     kind: "Text",
@@ -446,6 +477,20 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
   const collapsed = start === end; // 无选区：两键的"分隔"语义只在光标态成立
   if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
+    // PATCH002.73：有自绘选区 ⇒ **先删选区，再在选区起点拆块**（首块留空、光标落第二行行首 ✓，
+    // 等价"空行上回车"）；全程**一次**撤销（快照取在删除前 ✓）
+    if (selRange.value) {
+      pushUndo();
+      const at = removeSelectedRange(false);
+      const afterDel = blocks.value.length;
+      if (at) splitBlock(at.index, at.offset, false);
+      // 临时诊断（.73 排查）：Enter 走的是哪条路 + 删/拆之后的块数
+      undoLog(
+        `enter:sel at=${at ? `${at.index}:${at.offset}` : "null"} afterDel=${afterDel} afterSplit=${blocks.value.length}`,
+      );
+      return;
+    }
+    undoLog(`enter:plain index=${index} start=${start}`);
     splitBlock(index, start);
     return;
   }
@@ -543,7 +588,51 @@ function onWindowKeydown(e: KeyboardEvent): void {
   }
   if ((e.key === "Delete" || e.key === "Backspace") && selRange.value) {
     e.preventDefault();
-    deleteSelection();
+    // PATCH002.73：**只删选区**，删后**光标落到选区起点**（整篇全选 ⇒ 正好是第一块开头 ✓）
+    const at = removeSelectedRange();
+    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    scheduleSave(); // 删除必须落库（原 `deleteSelection` 走 normalizeAndFlush，已随死代码移除）
+    return;
+  }
+  // PATCH002.73（IME 前置，2026-10-20 live 修正）：**输入法的第一个键**（`keyCode === 229` /
+  // `key === "Process"`，此刻 `isComposing` 仍为 false）就删选区。若等到 `compositionstart`
+  // 才删，输入法**已接管 textarea 的 value** ⇒ `v-model` 写入落不到 DOM ⇒ **旧文本残留 +
+  // 预编辑串插在行首** ✗（实证）。这里**不 preventDefault**：输入法照常起手 ✓
+  if (selRange.value && !e.isComposing && (e.keyCode === 229 || e.key === "Process")) {
+    const at = removeSelectedRange();
+    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    armKeepUndo("ime");
+    return;
+  }
+  // PATCH002.73：**可打印字符 / 空格 = 原生"替换选区"语义** —— 删选区 → 光标落起点 → **放行**这次
+  // 按键（不 preventDefault：浏览器把字打进已就位的焦点文本域 ✓）
+  if (
+    selRange.value &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.altKey &&
+    !e.isComposing &&
+    e.key.length === 1
+  ) {
+    const at = removeSelectedRange();
+    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    armKeepUndo("char"); // 这一下输入不清栈：Ctrl+Z 要能回到"替换前" ✓
+    return;
+  }
+  // PATCH002.73：**方向键按原生** —— 取消自绘选区，并把光标落到对应端（←/↑ 起点、→/↓ 终点 ✓）
+  if (
+    selRange.value &&
+    (e.key === "ArrowLeft" ||
+      e.key === "ArrowRight" ||
+      e.key === "ArrowUp" ||
+      e.key === "ArrowDown")
+  ) {
+    const r = selRange.value;
+    const target = e.key === "ArrowLeft" || e.key === "ArrowUp" ? r.from : r.to;
+    clearSel();
+    e.preventDefault();
+    focusBlock(blocks.value[target.index]?._key ?? "", target.offset);
+    return;
   }
 }
 
@@ -564,6 +653,17 @@ function clipboardHasImage(e: ClipboardEvent): boolean {
 /** 文本块粘贴：带图 → 拦截走 Rust 插图；多行文本 → 拦截按行拆块；单行文本 → 原生 */
 async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const el = e.target as HTMLTextAreaElement;
+  // 临时诊断（.72 排查）：粘贴走了哪个分支 + 自绘选区是否还在（`selRange` 空 ⇒ 普通粘贴）
+  {
+    const r = selRange.value;
+    const a = selAnchor.value;
+    const f = selFocus.value;
+    undoLog(
+      `paste:enter sel=${r ? `${r.from.index}:${r.from.offset}->${r.to.index}:${r.to.offset}` : "null"}` +
+        ` anchor=${a ? `${a.index}:${a.offset}` : "null"} focus=${f ? `${f.index}:${f.offset}` : "null"}` +
+        ` native=${el.selectionStart}-${el.selectionEnd} lines=${(e.clipboardData?.getData("text/plain") ?? "").split("\n").length}`,
+    );
+  }
   // PATCH002.70（A）：**自绘选区存在时，粘贴 = 整体替换选区**。
   // 根因：Ctrl+A 是板级自绘选区（`preventDefault` 掉原生全选），而粘贴只看**焦点文本域的
   // 原生选区** ⇒ 两套状态互不相认：粘贴落在原生光标处，单行文本甚至放行给浏览器原生粘贴、
@@ -574,20 +674,40 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     e.preventDefault();
     // PATCH002.72：**一次粘贴 = 一次撤销**。唯一一次快照取在**粘贴前**（= Ctrl+A 选中的那整篇），
     // 删选区 + 后续插入一律不再入栈 ⇒ 第一次 Ctrl+Z 就回到"粘贴前"，不会先落到"空" ✗
-    pushUndo();
-    const at = removeSelectedRange(false);
-    const html0 = e.clipboardData?.getData("text/html") ?? "";
-    const plain0 = e.clipboardData?.getData("text/plain") ?? "";
-    if (!at) return;
-    if (html0.includes("<img")) {
-      await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
-      return;
+    const todoId = props.todo?.id ?? null;
+    clearKeepUndo("paste"); // 粘贴开始：豁免一律失效 ✓
+    pasteInFlight += 1; // C5：窗口内所有保存入口跳过（防"删完未插"的空中间态落库）
+    try {
+      pushUndo();
+      const at = removeSelectedRange(false);
+      const html0 = e.clipboardData?.getData("text/html") ?? "";
+      const plain0 = e.clipboardData?.getData("text/plain") ?? "";
+      if (!at) return;
+      // PATCH002.72 C6：图 / HTML 分支让 Rust 按"库里的块集"重建列表 ⇒ 本地删除必须先落库，
+      // 否则服务端返回"未删的旧块 + 插入"（实证 len=6 ⇒ 旧内容跑到粘贴内容之后 ✗）
+      if (html0.includes("<img") || clipboardHasImage(e)) await saveBlocks(true);
+      if (html0.includes("<img")) {
+        await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
+        return;
+      }
+      if (clipboardHasImage(e)) {
+        await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
+        return;
+      }
+      if (plain0.length > 0) pasteTextLines(at.index, at.offset, at.offset, plain0, false);
+    } finally {
+      pasteInFlight -= 1;
+      // 临时诊断（.72 排查）：替换分支收尾时的模型规模与去向
+      undoLog(
+        `paste:end inFlight=${pasteInFlight} len=${blocks.value.length} sameTodo=${props.todo?.id === todoId}`,
+      );
+      // 窗口关闭后统一落**最终态**：板已切走/已关 ⇒ 按快照写回原条目（沿 `.47` 口径）；
+      // 仍在同一条目 ⇒ 交给防抖（`pasteTextLines` 在窗口内的 scheduleSave 被跳过了 ✗）
+      if (todoId != null) {
+        if (props.todo?.id === todoId) scheduleSave();
+        else void saveBlocksFor(todoId, blocks.value);
+      }
     }
-    if (clipboardHasImage(e)) {
-      await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
-      return;
-    }
-    if (plain0.length > 0) pasteTextLines(at.index, at.offset, at.offset, plain0, false);
     return;
   }
   const block = blocks.value[index];
@@ -624,7 +744,11 @@ async function ensureBlocksReady(): Promise<boolean> {
     await loadBlocks(todo.id); // 切源/开板未载完 → 先载
     if (savedTodoId !== todo.id) return false;
   }
-  if (blocks.value.some((b) => b.id <= 0)) await saveBlocks(true); // 本地独有的块必须先拿到 id
+  if (blocks.value.some((b) => b.id <= 0)) {
+    // 临时诊断（.72 排查）：哪个保存入口
+    undoLog(`save:caller=ensureReady inFlight=${pasteInFlight} len=${blocks.value.length}`);
+    await saveBlocks(true); // 本地独有的块必须先拿到 id
+  }
   return true;
 }
 
@@ -814,37 +938,25 @@ function onBlockContainerKeydown(index: number, e: KeyboardEvent): void {
 }
 
 // —— 空块归一化（PATCH002：合并连续空块 / 删前导空块 / 结果为空补一个空文本块）——
+// 纯逻辑在 `composables/normalizeBlocks.ts`（PATCH002.75 抽出：可测 + 全空补块复用焦点块）；
+// 组件侧只留"焦点 key 取值 + 块数变化诊断"。
 
-/** 空文本块判定（trim 后为空） */
-function isBlank(block: LocalBlock): boolean {
-  return block.kind === "Text" && block.text.trim() === "";
+/** 当前焦点所在文本块的 `_key`（无焦点 / 焦点不在块区 ⇒ undefined） */
+function focusedBlockKey(): string | undefined {
+  const el = document.activeElement;
+  if (!el) return undefined;
+  for (const [key, node] of textEls) if (node === el) return key;
+  return undefined;
 }
 
-/** 空块归一化：**合并连续空块 / 删前导空块 / 结果为空补一个空文本块**；
- * 复用同一批对象（保 `_key`，不重挂 DOM） */
+/** 空块归一化（组件侧包装）：带"当前焦点块 key"（PATCH002.75）+ 块数变化诊断 */
 function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
-  const out: LocalBlock[] = [];
-  for (const block of list) {
-    if (isBlank(block)) {
-      if (out.length === 0) continue; // 前导空块：丢弃
-      if (isBlank(out[out.length - 1])) continue; // 连续空块：合并
-    }
-    out.push(block);
-  }
-  if (!out.some((b) => b.kind === "Text")) {
-    out.push({ id: 0, kind: "Text", text: "", image_path: null, _key: localKey() });
-  }
-  // PATCH002.56（口径改定，2026-10-19）：**末块不得为图块** → 补一个空文本块（保"图后能输入"）。
-  // 归一化本身是"保存点"语义（PATCH002.8），故补块也只在保存点发生；**补块由前端唯一负责**
-  // （storage 侧不再自行补：两边都管会导致"补 → 下次保存被差分删"的来回抖动）
-  if (out[out.length - 1]?.kind === "Image") {
-    out.push({ id: 0, kind: "Text", text: "", image_path: null, _key: localKey() });
-  }
-  // 临时诊断（抖动定位，测完即删）：归一化**改变块数**时记一笔（定位"补出的块被谁丢掉"）
+  const out = normalizeBlankBlocks(list, { preferredKey: focusedBlockKey(), makeKey: localKey });
+  // 临时诊断（抖动定位，测完即删）：归一化**改变块数**时记一笔（`keep` = 留下的是哪一块）
   if (out.length !== list.length) {
     const last = list[list.length - 1];
     void invoke("debug_log", {
-      line: `normalize ${list.length}->${out.length} inLast=${last ? `${last.kind}#${last.id}` : "none"}`,
+      line: `normalize ${list.length}->${out.length} inLast=${last ? `${last.kind}#${last.id}` : "none"} keep=${out[0] ? `${out[0].kind}#${out[0].id}` : "none"}`,
     }).catch((err) => console.error("诊断上报失败", err));
   }
   return out;
@@ -855,6 +967,10 @@ function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
  * 落库、不回写当前板，且**强制落库**（此时 `savedTodoId` 可能已被切源改写，PATCH002.47） */
 async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<void> {
   clearTimeout(saveTimer);
+  // 临时诊断（.72 排查）：哪个保存入口
+  undoLog(
+    `save:caller=normalizeAndFlush inFlight=${pasteInFlight} len=${(list ?? blocks.value).length}`,
+  );
   const target = list ?? blocks.value;
   if (todoId != null && todoId !== props.todo?.id) {
     const snapshot = normalizeBlocks(target);
@@ -864,6 +980,11 @@ async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<
   const next = normalizeBlocks(blocks.value);
   if (next.length !== blocks.value.length) {
     blocks.value = next;
+    // 临时诊断（.75 排查）：赋值**后一拍**看焦点是否仍在块区（保 `_key` ⇒ `focus=blk-N` ✓；
+    // 若为 `focus=none` ⇒ 焦点仍被销毁 ✗）
+    void nextTick(() =>
+      undoLog(`normalize:apply len=${blocks.value.length} focus=${focusedBlockKey() ?? "none"}`),
+    );
   }
   await saveBlocks();
 }
@@ -925,11 +1046,34 @@ function focusAdjacent(index: number, edge: "start" | "end"): void {
   focusBlock(block._key, edge === "start" ? 0 : block.text.length);
 }
 
+/** 组字开始（PATCH002.73 乙）：先把自绘选区**删掉**、光标落到选区起点 ⇒ 输入法提交的文字
+ * 即为"**替换**" ✓（与直接打字一致）。**风险与定案**：部分输入法在组字开始时改焦点可能被打断
+ * ⇒ 用户定案走"乙"；若实测某输入法异常，退回"甲"（不插手，提交=插入）并把本条登记为已知边界 */
+function onBlocksCompositionStart(): void {
+  if (!selRange.value) return;
+  const at = removeSelectedRange();
+  if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+  armKeepUndo("ime"); // 组字期间的连续 input 都不许清栈 ✓
+}
+
+/** 组字结束（PATCH002.73）：**延迟一拍**再清豁免 —— 部分浏览器 `compositionend` 早于最后一次
+ * `input` ⇒ 立即清会把刚压的快照清掉 ✗（回到"撤销成空白" ✓） */
+function onBlocksCompositionEnd(): void {
+  undoLog("undo:keep compositionend");
+  window.setTimeout(() => {
+    clearKeepUndo("compositionend");
+    scheduleSave(); // 窗口关闭后把组字结果落库 ✓
+  }, 0);
+}
+
 /** 焦点离开块区（PATCH002.8 保存点）：归一化 + 立即落库 */
 function onBlocksFocusOut(e: FocusEvent): void {
   const container = scrollEl.value;
   const next = e.relatedTarget as Node | null;
   if (container && next && container.contains(next)) return; // 仍在块区内
+  // PATCH002.72 C5：粘贴"先删后插"期间，被删文本域的失焦会伪造一次 focusout ⇒
+  // 此刻归一化落库 = 把"删完、还没插"的空中间态写进库（实证：`sig=36` 的空块被保存 ✗）
+  if (pasteInFlight > 0 || editInFlight > 0) return;
   // 临时诊断（抖动定位，测完即删）：焦点离开块区 → 会走保存点归一化
   dragDiag("focusout:normalizeAndFlush");
   void normalizeAndFlush();
@@ -942,6 +1086,42 @@ function onBlocksFocusOut(e: FocusEvent): void {
 /** 结构性操作快照栈（上限 30；浅拷贝块对象——_key 一并保留，还原时不重挂 DOM） */
 const undoStack: Array<LocalBlock[]> = [];
 const UNDO_LIMIT = 30;
+/** **粘贴进行中**计数（PATCH002.72 C5）：`.70` 的"替换选区"是**先删后插**——删完那一瞬
+ * 被删的文本域失焦 ⇒ 浏览器抛 `focusout` ⇒ 保存点会把"删完、还没插"的**空中间态**落库
+ * （实证：`sig=36` 的空块被保存）。窗口内**所有保存入口一律跳过**，最终态由粘贴收尾统一写。 */
+let pasteInFlight = 0;
+/** **一次性保留撤销栈**（PATCH002.73）：打字默认 `dropUndo()`（清结构性栈），但"替换选区"刚压了快照
+ * ⇒ 必须让它活过**这一下输入**，否则 Ctrl+Z 只能落到原生（回退成空白 ✗）。只允许一个 ✓ */
+let keepUndoOnce = false;
+/** 输入法组字期间保留（`compositionstart` → `compositionend` 之间会连续触发多次 `input` ✓） */
+let keepUndoComposing = false;
+/** **结构性编辑窗口**（PATCH002.73）：替换/组字都是"**先删后写**"——删的那一瞬被删文本域失焦会
+ * 伪造一次 `focusout` ⇒ 若此刻归一化落库/清豁免，就会把空中间态写进库、并把撤销快照清掉 ✗
+ * （实证：`undo:keep clear reason=focusout` 紧接 `pre-save len=1`）。窗口内**保存入口与豁免清理一律跳过**。 */
+let editInFlight = 0;
+/** 置一次豁免（`char` = 普通字符，下一拍兜底自清；`ime` = 组字，活到 `compositionend`） */
+function armKeepUndo(reason: "char" | "ime"): void {
+  keepUndoOnce = true;
+  if (reason === "ime") keepUndoComposing = true;
+  editInFlight += 1; // 打开结构性编辑窗口（删→写之间不许落库、不许清豁免 ✓）
+  undoLog(`undo:keep set reason=${reason} editInFlight=${editInFlight}`);
+  if (reason === "char") {
+    // 兜底：万一那一下没产生 input（键被别处拦了 / 焦点丢了），下一拍自清 ✓
+    window.setTimeout(() => clearKeepUndo("timeout"), 0);
+  } else {
+    // 兜底：一旦判"输入法起手"却没真的进入组字（键被吞 / 输入法直接上屏），5s 后自清，
+    // 免得结构性编辑窗口一直挂着把保存全挡住 ✗
+    window.setTimeout(() => clearKeepUndo("ime-timeout"), 5000);
+  }
+}
+/** 清豁免（带原因 ⇒ 万一泄漏，日志能定位是哪条路径清的/没清 ✓） */
+function clearKeepUndo(reason: string): void {
+  const had = keepUndoOnce || keepUndoComposing;
+  keepUndoOnce = false;
+  keepUndoComposing = false;
+  if (editInFlight > 0) editInFlight -= 1; // 关闭窗口
+  if (had) undoLog(`undo:keep clear reason=${reason} editInFlight=${editInFlight}`);
+}
 /** 撤销代际（PATCH002.44）：删块动效是"**延迟收场**"，收场前复核本代际——用户已撤销则放弃
  * 收场（否则 180ms 后的摘除会覆盖用户的回退 = "动效期间按 Ctrl+Z 无效"） */
 let undoSeq = 0;
@@ -950,6 +1130,8 @@ let undoSeq = 0;
 function pushUndo(): void {
   undoStack.push(blocks.value.map((b) => ({ ...b })));
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  // 临时诊断（.72 排查）：这次压进去的是**哪一代**
+  undoLog(`undo:push depth=${undoStack.length} ids=${idsOf(blocks.value)}`);
 }
 
 /** 打字即清空结构性栈（原生接管；见段首语义） */
@@ -959,12 +1141,22 @@ function dropUndo(): void {
 
 /** 撤销一次结构性操作（Ctrl+Z；栈空由调用方放行原生） */
 function undoStructural(): void {
+  // PATCH002.73（A）：**组字在飞时必须重建文本域** —— 输入法持有该 textarea 的 value ⇒ 程序写入
+  // 的旧文本会被忽略（实证：Ctrl+Z 后模型已恢复 3 块、屏幕仍停在组字结果 "a" ✗）。
+  // 换新 `_key` ⇒ Vue 重建元素 ⇒ 摆脱输入法 ✓；**普通撤销不重建**（保 `_key` ⇒ DOM 不重挂、焦点不丢 ✓）
+  const wasComposing = keepUndoComposing;
+  clearKeepUndo("undo"); // 撤销时豁免必须失效（防旧快照跨操作存活 ✓）
   const snapshot = undoStack.pop();
   if (!snapshot) return;
+  // 临时诊断（.72 排查）：恢复**前**的当前代 vs 恢复**后**的 id 序列（跨代即 bug ✗）
+  const beforeIds = idsOf(blocks.value);
   undoSeq += 1; // PATCH002.44：撤销代际 +1（在飞的删块动效收场时据此放弃）
   clearSel();
   selectedKey.value = "";
-  blocks.value = snapshot.map((b) => ({ ...b }));
+  blocks.value = wasComposing
+    ? snapshot.map((b) => ({ ...b, _key: localKey() })) // 组字在飞 ⇒ 全量重建（脱开输入法持有的元素 ✓）
+    : snapshot.map((b) => ({ ...b }));
+  undoLog(`undo:pop depth=${undoStack.length} before=${beforeIds} restored=${idsOf(blocks.value)}`);
   void nextTick(() => {
     autosizeAll();
     // PATCH002.72：焦点若停在**已被 Vue 移除**的文本域上（快照换掉了该块），之后打的字只进
@@ -1132,11 +1324,6 @@ function removeSelectedRange(push = true): SelPoint | null {
 }
 
 /** 删除选区（键位入口：Backspace / Delete）：本地删除 + 重算高度 + 落库 */
-function deleteSelection(): void {
-  if (!removeSelectedRange()) return;
-  void nextTick(() => autosizeAll());
-  void normalizeAndFlush();
-}
 
 /** 命中测试取块内字符偏移（焦点端精度）：借覆盖层文本节点（内容 = 该块文本，
  * 段上有 data-sel-base 基准）→ 失败返回 null 由调用方降级 */
@@ -1533,6 +1720,7 @@ function open(): void {
 /** 关板：flush 未决保存 + 摘 open 类 + 帘布复位 + 卸套件 */
 function close(): void {
   if (!isOpen.value) return; // 幂等守卫：已关再调不重复 flush/emit（FIX003.10⑧）
+  clearKeepUndo("close"); // 关板：豁免失效 ✓
   clearSel(); // 选区随板关闭复位（PATCH002.16）
   void flushPending();
   isOpen.value = false;
@@ -1662,6 +1850,9 @@ watch(titleDraft, (text) => {
  * 捕获的** {todoId, list} 快照：watch 里 `props.todo` 已是新条目，必须按快照写回旧 id
  * （否则守卫必假 → 旧条目的未决编辑丢失，PATCH002.47）。缺省按当前条目 */
 async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }): Promise<void> {
+  // PATCH002.72 C5：粘贴窗口内不落库（此时 `blocks` 可能是"删完未插"的中间态 ✗）；
+  // 收尾的 `finally` 会把最终态按快照写回（板已切走时也能写，沿 `.47` 口径）
+  if (pasteInFlight > 0 || editInFlight > 0) return;
   clearTimeout(renameTimer);
   clearTimeout(saveTimer);
   const rename = renamePending;
@@ -1685,6 +1876,7 @@ async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }
   const todoId = prev ? prev.todoId : (props.todo?.id ?? null);
   const list = prev ? prev.list : blocks.value;
   if (todoId != null && savedTodoId === todoId && signature(list) !== savedSignature) {
+    undoLog(`save:caller=flush inFlight=${pasteInFlight} len=${list.length}`);
     jobs.push(normalizeAndFlush(todoId, list));
   }
   await Promise.all(jobs);
@@ -1779,6 +1971,8 @@ onBeforeUnmount(() => {
             'note-blocks': !isBubbleMode,
           }"
           @focusout="onBlocksFocusOut"
+          @compositionstart="onBlocksCompositionStart"
+          @compositionend="onBlocksCompositionEnd"
         >
           <!-- bubble 模式：图片 / 全文只读（PL024/PL025 原样） -->
           <template v-if="isBubbleMode">
