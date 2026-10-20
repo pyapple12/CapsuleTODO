@@ -1,7 +1,7 @@
 // ===== 整板阅读组合式（PL009.2 自 design/assets/js/glass-bar.js makeBoardRead 1:1）：
-// 上下溶解遮罩 + ▲▼ 边缘三角 + scrollend 收尾（半截行 --fade-btm 渐隐）+ 到底抬带
-// （at-bottom 100ms）+ 隐区位移（maskShift）。算法与数值沿实测定案（上下软边 14px、
-// 三角 26px、padB 8、迟滞判定 ±2）；顶部软边 PATCH002.12 参数化为 --fade-top，
+// 上下溶解遮罩 + ▲▼ 边缘三角 + scrollend 收尾（**两态**：到底抬带 100% / 其余默认软边；
+// PATCH002.50 起删掉"半截行整行溶解"）+ 隐区位移（maskShift）。数值沿实测定案（上下软边 14px、
+// 三角 26px、迟滞判定 ±2）；顶部软边 PATCH002.12 参数化为 --fade-top，
 // 贴顶（scrollTop ≤ 2）收到 0px、滚过阈值回落 14px（与 at-bottom 同规） =====
 import { getCurrentInstance, onUnmounted } from "vue";
 
@@ -14,10 +14,6 @@ export interface BoardReadEntry {
 }
 
 export interface BoardReadOptions {
-  /** 底缘判定内距（默认 8，与 CSS scroll-padding-bottom 同源） */
-  padB?: number;
-  /** 半截行判定用行选择器（默认 .todo-item；气泡列表 .bubble-row） */
-  rowSel?: string;
   /** 门控（详情板 textarea：仅打开时亮三角）——返回 false 三角全隐 */
   gate?: () => boolean;
   /** 走 offsetParent 布局盒（揭示缩放动画宿主内的容器：详情板/归档板） */
@@ -69,8 +65,6 @@ export function useBoardRead(
   down.textContent = "▼";
   hintHost.append(up, down);
   const hints: [HTMLElement, HTMLElement] = [up, down];
-  const padB = opts.padB ?? 8;
-  const rowSel = opts.rowSel ?? ".todo-item";
 
   /** 边缘三角几何与显隐：容器可滚动且未到对应尽头才显示；hintHost 场景走布局盒 */
   const sync = (): void => {
@@ -123,7 +117,9 @@ export function useBoardRead(
     down.style.top = `${bottom - 26}px`;
   };
 
-  /** 吸附收尾：半截行顶推给 --fade-btm 渐隐；到底分支抬带 100%；空容器补 sync 防残留 */
+  /** 收尾：**只保留两态**（PATCH002.50 定案）——到底分支抬带 100%；其余回落默认软边。
+   * 原"把 `--fade-btm` 推到跨底半截行行顶"的整行溶解已删除（观感差异过大，
+   * 五容器统一为"上下软边"）；空容器补 sync 防三角残留 */
   const settle = (): void => {
     if (opts.skipDuringDrag && dragEngagedProbe()) return;
     const sr = el.getBoundingClientRect();
@@ -139,17 +135,7 @@ export function useBoardRead(
       return;
     }
     el.classList.remove("at-bottom");
-    const bottomEdge = sr.bottom - padB;
-    let fadeStart: number | null = null;
-    for (const li of el.querySelectorAll(rowSel)) {
-      const r = li.getBoundingClientRect();
-      if (r.top < bottomEdge && r.bottom > bottomEdge + 0.5) {
-        fadeStart = r.top - sr.top - 2; // 半截行顶略上 2px，连间隙一起隐去
-        break;
-      }
-    }
-    if (fadeStart !== null) el.style.setProperty("--fade-btm", `${Math.round(fadeStart)}px`);
-    else el.style.removeProperty("--fade-btm");
+    el.style.removeProperty("--fade-btm"); // 回落 `.board-read` 默认 14px 软边（与详情板/白板同口径）
     sync();
   };
 

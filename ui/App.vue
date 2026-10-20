@@ -522,7 +522,9 @@ onUnmounted(() => {
 }
 
 .glass-card.focused::before {
-  background: transparent;
+  /* PATCH002.67（甲·CP 方案，2026-10-20 用户定案）：暗色下聚焦态**不再退 0%**，
+     仍保留整卡纱 30%（令牌暗色块给 `var(--glass-bg)`，浅色块给 `transparent` ⇒ 浅色零变化） */
+  background: var(--glass-focus-bg);
 }
 
 /* 流内直接子件浮于纱层之上（显式列举——通配 `.glass-card > *` 会以 scoped 高特异性

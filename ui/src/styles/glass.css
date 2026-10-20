@@ -19,6 +19,9 @@
   --font-stack: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --glass-bg: rgba(255, 255, 255, 0.3); /* 纱浓度 30%（基准） */
   --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，深浅主题同值，见头部③） */
+  /* PATCH002.67（甲 + 浮板常驻黑纱，2026-10-20 用户定案）：**只暗色生效**，浅色保持原样 */
+  --glass-focus-bg: transparent; /* 整卡聚焦态纱：浅色维持 0%（PATCH002.67 只改暗色） */
+  --panel-veil: transparent; /* 浮板常驻黑纱：浅色不叠 */
   --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.78);
   --panel-bg: rgba(255, 255, 255, 0.76); /* 玻璃板深度 ×2（REC 配方推广，前值 0.38） */
   --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
@@ -55,6 +58,9 @@
     --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
     --glass-bg: rgba(0, 0, 0, 0.3);
     --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，见头部③） */
+    /* PATCH002.67（甲·CP 方案）：**聚焦态整卡同样是 30% 黑纱**（不再退 0%）+ 浮板常驻黑纱 18% */
+    --glass-focus-bg: var(--glass-bg);
+    --panel-veil: rgba(0, 0, 0, 0.12);
     --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
     --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
     --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
@@ -76,6 +82,9 @@
   --ink-2: color-mix(in srgb, #f5f5f7 55%, transparent);
   --glass-bg: rgba(0, 0, 0, 0.3);
   --glass-bg-strong: rgba(0, 0, 0, 0.25); /* 浮板黑纱档（用户定案，见头部③） */
+  /* PATCH002.67（甲·CP 方案）：与上方 @media 暗色块保持一致 */
+  --glass-focus-bg: var(--glass-bg);
+  --panel-veil: rgba(0, 0, 0, 0.12);
   --glass-stroke: inset 0 0 0 1.5px rgba(255, 255, 255, 0.28);
   --panel-bg: rgba(255, 255, 255, 0.14); /* 玻璃板深度 ×2（REC 配方推广，前值 0.07） */
   --panel-stroke: inset 0 0 0 1px rgba(255, 255, 255, 0.14);

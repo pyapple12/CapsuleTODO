@@ -37,7 +37,10 @@
   height: 100%;
   padding: 12px;
   border-radius: var(--radius-board);
-  background: var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
+  /* PATCH002.67：浮板常驻黑纱 —— 暗色叠 18% 黑（`--panel-veil`，浅色为 transparent ⇒ 零变化），
+     与下方 `--glass-bg-strong` 25% 黑叠加（用户目测定值，可再调） */
+  background:
+    linear-gradient(var(--panel-veil), var(--panel-veil)), var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
   box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
   /* blur 3→40px + saturate（2026-09-28 目验定案）：同归档板——板下内容糊到不可辨认 */
   -webkit-backdrop-filter: blur(40px) saturate(1.6);
@@ -118,7 +121,10 @@
 
 /* 气泡图片模式（PL024）：img 接管板面，超高图由内层自行滚动（textarea 缺席，
    滑杆/阅读三角不挂载属可接受降态——图片模式无长文滚动需求） */
+/* PATCH002.52：图片模式的内距**自己声明**（原为继承 `.bubble-shell` 的 2px ⇒ 归属不清、
+   想单独调图片会连气泡全文一起动 ✗）。数值与改前逐像素一致；调图片左右只改这里的水平值 */
 .note-scroll.image-shell {
+  padding: 1px 2px;
   display: flex;
   align-items: safe center; /* 短图垂直居中；超高图退回顶部对齐（safe 防滚动容器裁头） */
   justify-content: center;
@@ -129,6 +135,57 @@
   width: 100%;
   height: auto;
   border-radius: var(--radius-panel);
+}
+
+/* PATCH002.51（C）：气泡图开板揭纱 —— **25% 黑纱先盖住图面，开板（0.4s）后 1s 由上到下掀开**。
+   图在开板那一刻才挂载（模板 `&& isOpen`）⇒ 纱必在可见帧开始；`pointer-events: none` ⇒ 双击开原图不受影响 */
+.bubble-img-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-panel);
+}
+
+.bubble-img-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.25); /* 纱浓度（用户目测可调） */
+  /* `--wipe` = 已揭开的下边界（px）。**按视口高推进**（JS 给 `--veil-h`，已按图高收敛）：
+     超高图若按图高百分比算，可见段会"一秒刷完"。100px = 渐变过渡带宽（越大越雾、越小越"刀切"） */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--wipe) - 100px),
+    #000 var(--wipe),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--wipe) - 100px),
+    #000 var(--wipe),
+    #000 100%
+  );
+  animation: bubble-veil-wipe 1s linear both; /* **开板即开始**（与缩放同步，不延迟） */
+}
+
+@property --wipe {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes bubble-veil-wipe {
+  from {
+    --wipe: 0px;
+  }
+  to {
+    /* 只能写**纯长度**：`--wipe` 注册为 `<length>`，带 `%` 的值会整条失效
+       （实证：写成 `min(var(--veil-h), 100%)` ⇒ 纱完全不显示 ✗） */
+    --wipe: var(--veil-h, 400px);
+  }
 }
 
 /* 图片失效态（PL025；PL025.8 溢出修复 + 样式对齐）：文件缺失提示 + 删除按钮 */
@@ -228,7 +285,9 @@
 
 .detail-note.bubble-note {
   cursor: default;
-  padding: 0;
+  /* PATCH002.52：水平显式写 0（总左右 = 容器 2px + 本值 0 = 2px，与改前一致）——
+     气泡全文的左右留白只改这一处，不牵动清单与气泡图 */
+  padding: 0 0;
   /* PATCH002.69（2026-10-20 修）：气泡全文板**必须有高度来源**——
      `.detail-note` 不设 height（交给内容），而 `autosize()` 在浏览器支持
      `field-sizing` 时**自动让位**（DetailOverlay 的 `NATIVE_FIELD_SIZING`）；
@@ -244,6 +303,9 @@
   .detail-overlay .board-glass {
     transition: none;
   }
+  .detail-overlay.bubble-mode .bubble-img-wrap::after {
+    display: none; /* PATCH002.51：揭纱关掉（否则动画被禁 ⇒ 图永久被纱盖住 ✗） */
+  }
 }
 
 /* 详情板不设提示行：保存/加载/插图等失败一律 UI 静默（详情板没有空间给提示行），
@@ -258,10 +320,11 @@
   padding: 6px 2px;
 }
 
-/* 气泡全文（只读 textarea）模式：与块列表同口径的垂直内距——滑杆轨道按它 inset 定上下
-   （用户定案：气泡详情有内外板，滑杆须复合**内层 inset**）；水平 2px 与块列表对齐 */
-.note-scroll.bubble-shell {
-  padding: 6px 2px;
+/* 气泡全文（只读 textarea）模式：**上下 0 / 左右 2px**（用户定案 2026-10-20：气泡纯文字上下收到 0，
+   原 6px；滑杆轨道按本层 inset 定上下，随之自适应）。
+   PATCH002.52：`:not(.image-shell)` 使本条**只归气泡全文**（图片模式由 `.image-shell` 自己声明） */
+.note-scroll.bubble-shell:not(.image-shell) {
+  padding: 0 2px;
 }
 
 .note-block {
@@ -282,7 +345,7 @@
   box-sizing: border-box;
   border: none;
   outline: none;
-  padding: 2px 12px;
+  padding: 2px 10px;
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -307,7 +370,7 @@
   position: absolute;
   inset: 0;
   z-index: 0; /* 涂色画在**文字下面**（与原生选择同款）：文字清晰不被纱盖住 */
-  padding: 2px 12px;
+  padding: 2px 10px;
   color: transparent;
   font: inherit;
   font-size: 12px;
@@ -361,7 +424,7 @@
 
 /* 图块：与气泡详情图同款尺寸配方（宽 100% / 高自适应 / 同圆角） */
 .note-block-image {
-  padding: 4px 12px;
+  padding: 4px 10px;
 }
 
 .note-block-img {

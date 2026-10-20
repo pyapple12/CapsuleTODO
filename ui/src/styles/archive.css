@@ -36,7 +36,9 @@
      会让浮板自己可滚：冒原生滑轨（浮板没有 glass-scroll 类）、裁掉浮钮与落影。
      滚动只发生在内层容器上（归档 .board-list / 详情 .note-scroll） */
   border-radius: var(--radius-board);
-  background: var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
+  /* PATCH002.67：浮板常驻黑纱 —— 暗色叠 18% 黑（`--panel-veil`，浅色 transparent ⇒ 零变化） */
+  background:
+    linear-gradient(var(--panel-veil), var(--panel-veil)), var(--glass-bg-strong); /* 浮板补偿档（APP 无壁纸语境，glass.css 头部③） */
   box-shadow: var(--glass-stroke), var(--rim-light), var(--panel-shadow), var(--shadow-candy);
   /* blur 3→40px + saturate（2026-09-28 目验定案）：浮板毛玻璃 = 板下内容糊到不可
      辨认——16px 下文字轮廓仍可辨，40px 彻底溶掉（IAB 截图实证）；配

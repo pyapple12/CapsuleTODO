@@ -108,7 +108,6 @@ async function refresh(notify: boolean = true): Promise<void> {
 // 时显式调用（泄漏教训同 TodoList 2026-09-28；FIX005.24 收敛至 useScrollKit）
 const scrollKit = useScrollKit(listEl, {
   boardRead: {
-    rowSel: ".bubble-row",
     skipDuringDrag: true,
     maskShift: { threshold: 8.5, depth: 6 },
   },

@@ -1617,6 +1617,34 @@ function resolveImageSrc(value: string): string {
   return convertFileSrc(value);
 }
 
+/** 等图片就绪（PATCH002.51）：`decode()` 完成才开板 ⇒ 无"空板面/黑纱褪去"。
+ * **800ms 安全阀**只为防 `decode()` 死锁（本地文件正常 <20ms；超时即放行，退回旧行为）；
+ * 解码失败不阻断开板（交给 `@error` 走既有失效态） */
+async function decodeImageSrc(src: string, timeoutMs = 800): Promise<void> {
+  const img = new Image();
+  img.src = src;
+  const decoded = typeof img.decode === "function" ? img.decode() : Promise.resolve();
+  await Promise.race([
+    decoded.catch(() => undefined),
+    new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+/** 揭纱推进距离（PATCH002.51）：按**视口高**给 `--veil-h`（px）—— 超高图若按图高百分比算，
+ * 可见段会"一秒刷完"。取 `min(滚动容器 clientHeight, 图实际高) + 100px`（渐变带宽）：
+ * 短图到图底即结束（不空跑），长图始终按可见高推进。**必须是纯 px**（注册属性不接受 %） */
+function setVeilHeight(): void {
+  void nextTick(() => {
+    const el = scrollEl.value;
+    if (!el) return;
+    const box = el.querySelector<HTMLElement>(".bubble-img-wrap");
+    const visible = el.clientHeight;
+    const imgH = box?.clientHeight ?? 0;
+    const base = imgH > 0 ? Math.min(visible, imgH) : visible;
+    if (base > 0) el.style.setProperty("--veil-h", `${Math.round(base) + 100}px`);
+  });
+}
+
 /** 图片加载失败（asset 协议取不到/文件缺失）→ 失效态 */
 function onImageError(): void {
   imageError.value = "文件已移动或删除，请删除气泡";
@@ -1661,8 +1689,9 @@ let kit: DetailKit | null = null;
 
 /** 挂/卸套件（幂等：关板即卸——FIX013.5 显式清理先例）。
  * PATCH002.10/.11：套件挂**内层滚动容器**（mask 只作用内容，不碰外壳的描边/落影）；
- * `rowSel` **不传** → `settle()` 找不到行 → 回落 `.board-read` 默认 `--fade-btm`
- * （**固定 14px 软边**，不再有"跨底缘扩大"的半截块溶解动效） */
+ * PATCH002.50 起**统一两态**（到底 100% / 其余默认 14px 软边，与清单/气泡/归档/白板同口径，
+ * 不再有"跨底缘半截块溶解"） */
+
 function syncKit(): void {
   kit?.boardRead.destroy();
   kit?.glassBar.destroy();
@@ -1767,21 +1796,29 @@ watch(
         bubbleText.value = "";
         bubbleImgSrc.value = "";
         imageError.value = "";
-        void invoke<string>("bubble_get_image_path", { id: b.id })
-          .then((path) => {
-            if (props.bubble?.id === b.id) bubbleImgSrc.value = resolveImageSrc(path);
-          })
-          .catch((err) => {
+        // PATCH002.51（A+C）：**先取图 + 解码，再开板** —— 旧实现先开板 ⇒ 图就位前是一整块
+        // 只有黑纱的空板面（用户所说"黑纱褪去"）。安全阀 800ms 见 decodeImageSrc
+        void (async () => {
+          try {
+            const path = await invoke<string>("bubble_get_image_path", { id: b.id });
+            if (props.bubble?.id !== b.id) return;
+            const src = resolveImageSrc(path);
+            await decodeImageSrc(src);
+            if (props.bubble?.id !== b.id) return;
+            bubbleImgSrc.value = src;
+          } catch (err) {
             console.error("气泡图片取数失败", err);
-            if (props.bubble?.id === b.id) {
-              imageError.value = "文件已移动或删除，请删除气泡";
-            }
-          });
-      } else {
-        bubbleImgSrc.value = "";
-        imageError.value = "";
-        bubbleText.value = b.text; // 气泡全文只读展示
+            if (props.bubble?.id !== b.id) return;
+            imageError.value = "文件已移动或删除，请删除气泡";
+          }
+          open();
+          setVeilHeight(); // PATCH002.51：揭纱距离按视口高
+        })();
+        return; // 本分支自己开板（等图就位）
       }
+      bubbleImgSrc.value = "";
+      imageError.value = "";
+      bubbleText.value = b.text; // 气泡全文只读展示
       open();
     } else if (!props.todo) {
       bubbleImgSrc.value = "";
@@ -1976,14 +2013,15 @@ onBeforeUnmount(() => {
         >
           <!-- bubble 模式：图片 / 全文只读（PL024/PL025 原样） -->
           <template v-if="isBubbleMode">
-            <img
-              v-if="bubbleImgSrc && !imageError"
-              class="detail-image"
-              :src="bubbleImgSrc"
-              alt="气泡图片"
-              @error="onImageError"
-              @dblclick="onImageDblClick"
-            />
+            <div v-if="bubbleImgSrc && !imageError && isOpen" class="bubble-img-wrap">
+              <img
+                class="detail-image"
+                :src="bubbleImgSrc"
+                alt="气泡图片"
+                @error="onImageError"
+                @dblclick="onImageDblClick"
+              />
+            </div>
             <div v-else-if="imageError" class="detail-image-broken">
               <p class="detail-image-broken-text">{{ imageError }}</p>
               <button class="detail-image-broken-del" @click="onDeleteImageBubble">删除气泡</button>
