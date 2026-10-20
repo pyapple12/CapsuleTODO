@@ -101,6 +101,7 @@ function pinViewport(
 ): Promise<void> {
   const el = scrollEl.value;
   const atBottom = el ? el.scrollTop >= el.scrollHeight - el.clientHeight - 1 : false;
+  kit?.boardRead.setPinned(atBottom); // PATCH002.69：结构变更前显式声明贴底态（RO 据此 paint 前贴底）
   const before = anchorEl ? anchorEl.getBoundingClientRect().top : null;
   return Promise.resolve(mutate()).then(() =>
     nextTick(() => {
@@ -1537,6 +1538,9 @@ function onDocMouseUp(): void {
 async function reloadAfterDrag(todoId: number): Promise<void> {
   const el = scrollEl.value;
   const wasAtBottom = el ? el.scrollTop >= el.scrollHeight - el.clientHeight - 1 : false;
+  // PATCH002.69：把"收场前是否贴底"**显式告诉阅读套件** —— 收场补末块会让内容在同帧长高，
+  // 靠滚动事件维护的标志此时会判错（拖拽期"先矮后长"）；套件的 RO 会在 paint 前贴底。
+  kit?.boardRead.setPinned(wasAtBottom);
   await loadBlocks(todoId);
   if (wasAtBottom && el) {
     await nextTick();
@@ -1682,7 +1686,12 @@ bindOverlayState("detail", () => isOpen.value);
 // 板内整板阅读 + 玻璃滑杆：挂**内层滚动容器**（PATCH002.11 内外分层；id 沿用 detail-note → 帘特判零改动）
 const scrollEl = ref<HTMLElement | null>(null);
 interface DetailKit {
-  boardRead: { sync: () => void; settle: () => void; destroy: () => void };
+  boardRead: {
+    sync: () => void;
+    settle: () => void;
+    destroy: () => void;
+    setPinned: (v: boolean) => void;
+  };
   glassBar: { sync: () => void; destroy: () => void };
 }
 let kit: DetailKit | null = null;
@@ -1698,7 +1707,11 @@ function syncKit(): void {
   kit = null;
   if (!isOpen.value || !scrollEl.value) return;
   kit = {
-    boardRead: useBoardRead(scrollEl.value, { gate: () => isOpen.value, layout: true }),
+    boardRead: useBoardRead(scrollEl.value, {
+      gate: () => isOpen.value,
+      layout: true,
+      onDiag: dragDiag,
+    }),
     // 气泡模式：滑杆在玻璃内部但本板有内外板 → 轨道按**内层容器的 inset** 定上下（用户定案）；
     // 清单（todo）模式的视觉逻辑已正确（见 y.problems #10），故**不传 inset**、保持原样
     glassBar: useGlassBar(scrollEl.value, {

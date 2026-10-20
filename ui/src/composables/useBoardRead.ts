@@ -11,11 +11,15 @@ export interface BoardReadEntry {
   hints: [HTMLElement, HTMLElement];
   sync: () => void;
   settle: () => void;
+  /** PATCH002.69：由调用方**直接声明**"收场前是否贴底"（拖拽/结构变更路径已知，比滚动事件可靠） */
+  setPinned: (value: boolean) => void;
 }
 
 export interface BoardReadOptions {
   /** 门控（详情板 textarea：仅打开时亮三角）——返回 false 三角全隐 */
   gate?: () => boolean;
+  /** 临时诊断出口（PATCH002.69 排查；不传即无副作用） */
+  onDiag?: (line: string) => void;
   /** 走 offsetParent 布局盒（揭示缩放动画宿主内的容器：详情板/归档板） */
   layout?: boolean;
   /** 三角宿主（默认 #board；归档板传玻璃板——方案 B 三角随板缩放生长） */
@@ -44,7 +48,7 @@ export function registerDragProbe(fn: () => boolean): void {
  * 调用方持有 destroy 并在卸载/重挂前手动调用
  * @param el 滚动容器
  * @param opts 见 BoardReadOptions
- * @returns { sync, settle, hints, destroy } 手动同步/收尾入口、三角对与显式清理
+ * @returns `BoardReadEntry`（sync / settle / hints / destroy / setPinned）
  */
 export function useBoardRead(
   el: HTMLElement,
@@ -54,6 +58,7 @@ export function useBoardRead(
   settle: () => void;
   hints: [HTMLElement, HTMLElement];
   destroy: () => void;
+  setPinned: (value: boolean) => void;
 } {
   el.classList.add("board-read");
   const hintHost = opts.hintHost ?? (document.getElementById("board") as HTMLElement);
@@ -139,6 +144,24 @@ export function useBoardRead(
     sync();
   };
 
+  /** PATCH002.69：**贴底标志** —— 只在 `scroll` 时更新（内容增减不改 `scrollTop` 时不失真）。
+   * 用它判"原本是否贴底"，不再用高度差值（高度在同一批 DOM 变更里"先矮后长"会判错 ✗） */
+  let pinned = false;
+  /** 一次性覆盖（PATCH002.69）：`setPinned` 后到"增长结算"之间，滚动事件**不得**改写贴底态
+   * （实测：拖拽收场"先矮后长"时，夹取产生的 scroll 事件会把刚声明的 true 翻回 false ✗） */
+  let pinOverride = false;
+  let pinOverrideTimer: number | undefined;
+  const syncPinned = (): void => {
+    if (pinOverride) return; // 调用方已显式声明 ⇒ 本批变更加完前不接受滚动事件改写
+    const next = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (next !== pinned) {
+      opts.onDiag?.(
+        `pin:flip ${pinned ? 1 : 0}->${next ? 1 : 0} st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight} ch=${el.clientHeight}`,
+      );
+    }
+    pinned = next;
+  };
+
   const onScroll = (): void => {
     // 到底判定实时化：滚动途中贴底就地抬带；未到底清值回落默认带
     const dragging = opts.skipDuringDrag && dragEngagedProbe();
@@ -155,22 +178,79 @@ export function useBoardRead(
         el.classList.contains("has-warning") && el.scrollTop >= opts.maskShift.threshold;
       el.style.setProperty("--mask-shift", shifted ? `${opts.maskShift.depth}px` : "0px");
     }
+    syncPinned(); // 滚动即刷新贴底标志（PATCH002.69）
     sync();
   };
   const onScrollEnd = (): void => settle();
-  const observer = new MutationObserver(onScrollEnd);
+  /**
+   * 内容增长时**贴底补偿**（PATCH002.69）：容器自身尺寸不变，必须观察**子元素**。
+   * 五容器的行/块都直接挂在滚动容器上（**没有内容层 wrapper**）⇒ 观察全部元素子节点，
+   * 并在 `MutationObserver(childList)` 里**重绑**（行增删后新行也要被观察）。
+   * `pinned` = **滚动时**维护的贴底标志（内容增益不改 `scrollTop` ⇒ 不能用高度差判，实测会判错 ✗）。
+   * RO 回调在 **paint 之前**执行 ⇒ 贴底补偿**零可见帧**（治"拉回旧底再弹回"）。
+   */
+  const ro = new ResizeObserver(() => {
+    const sh = el.scrollHeight;
+    if (!el.clientHeight || !sh) return;
+    // 只在**真的要补**时打点（否则每次尺寸变化都记一条，日志噪声大）
+    if (pinned && el.scrollTop + el.clientHeight < sh - 1) {
+      opts.onDiag?.(`ro:fix st=${el.scrollTop.toFixed(1)} sh=${sh} ch=${el.clientHeight}`);
+      el.scrollTop = sh;
+    }
+    pinOverride = false; // 本批增长已结算 ⇒ 交回滚动判定
+  });
+  /** 重绑观察目标（**增量**：只 observe 新增、unobserve 移除——整体 disconnect 会丢同帧回调 ✗） */
+  const observed = new Set<Element>();
+  const observeRows = (): void => {
+    const now = new Set<Element>(Array.from(el.children));
+    for (const child of observed) {
+      if (!now.has(child)) {
+        ro.unobserve(child);
+        observed.delete(child);
+      }
+    }
+    for (const child of now) {
+      if (!observed.has(child)) {
+        ro.observe(child);
+        observed.add(child);
+      }
+    }
+  };
+  observeRows();
+  const observer = new MutationObserver(() => {
+    observeRows();
+    settle();
+  });
   observer.observe(el, { childList: true });
   el.addEventListener("scroll", onScroll);
   el.addEventListener("scrollend", onScrollEnd);
 
+  syncPinned();
   sync();
-  const inst: BoardReadEntry = { el, hints, sync, settle };
+  /** PATCH002.69：供调用方**显式声明**"此刻是否贴底"——拖拽/结构变更路径（`.57` / `.44`）
+   * 在内容变化前就知道答案，比滚动事件可靠（内容"先矮后长"时滚动时序会判错 ✗） */
+  const setPinned = (value: boolean): void => {
+    opts.onDiag?.(
+      `pin:set ${value ? 1 : 0} (was ${pinned ? 1 : 0}) st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight}`,
+    );
+    pinned = value;
+    pinOverride = true;
+    if (pinOverrideTimer) window.clearTimeout(pinOverrideTimer);
+    // 安全阀：增长一直没来（无 RO 命中）时最多挡 300ms，之后交回滚动判定
+    pinOverrideTimer = window.setTimeout(() => {
+      pinOverride = false;
+    }, 300);
+  };
+
+  const inst: BoardReadEntry = { el, hints, sync, settle, setPinned };
   boardReads.push(inst);
 
   /** 显式清理（异步上下文挂载时生命周期钩子失效，调用方手动调） */
   const destroy = (): void => {
     el.removeEventListener("scroll", onScroll);
     el.removeEventListener("scrollend", onScrollEnd);
+    if (pinOverrideTimer) window.clearTimeout(pinOverrideTimer);
+    ro.disconnect();
     observer.disconnect();
     const idx = boardReads.indexOf(inst);
     if (idx >= 0) boardReads.splice(idx, 1);
@@ -183,7 +263,7 @@ export function useBoardRead(
     onUnmounted(destroy);
   }
 
-  return { sync, settle, hints, destroy };
+  return { sync, settle, hints, destroy, setPinned };
 }
 
 /** 全局别名：换页监听等挂点调用，逐实例重算三角显隐与几何 */
