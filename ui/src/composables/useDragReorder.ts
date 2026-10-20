@@ -178,6 +178,8 @@ export const DRAG_TARGETS: DragTarget[] = [
     autoScrollProbe: "pointer",
     swapRule: noteSwapRule,
     onDown(_row, e) {
+      // PATCH002.77：Shift+点击 = 跨块扩选——不起拖、也不许清掉刚提升的选区锚点
+      if (e.shiftKey) return false;
       if (!(e.target as HTMLElement).closest(".note-block-image")) return false;
       noteHooks.onDown?.(); // 起拖前 flush 未决保存（保证块 id 已回填）
       return true;

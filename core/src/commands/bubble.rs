@@ -332,28 +332,36 @@ pub fn bubble_copy_payload_core(
 
 /// 复制气泡内容回剪贴板（捕获→粘贴走→清理闭环的回程；PL025 按 kind + 来源分叉——
 /// 文本走插件写文本；文件图走 CF_HDROP 文件引用（原样）；截图走 Win32 三格式写入
-/// [PNG 注册格式 + CF_DIB + CF_DIBV5]，用户主动覆盖剪贴板无恢复逻辑）
+/// [PNG 注册格式 + CF_DIB + CF_DIBV5]，用户主动覆盖剪贴板无恢复逻辑）。
+/// PATCH002.71：写剪贴板（含大图三格式解码）移到阻塞线程，复制图片气泡不再冻结 UI
 #[tauri::command]
-pub fn bubble_copy(
+pub async fn bubble_copy(
     id: i64,
     app: AppHandle,
     ctx: State<'_, AppContext>,
 ) -> Result<(), CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    match bubble_copy_payload_core(id, &images_dir, &ctx)? {
+    let payload = bubble_copy_payload_core(id, &images_dir, &ctx)?;
+    tauri::async_runtime::spawn_blocking(move || write_bubble_copy(payload, &app))
+        .await
+        .map_err(|err| CommandError::Clipboard(format!("复制任务失败：{err}")))?
+}
+
+/// 写气泡剪贴板（阻塞线程侧；图片三格式的解码不再占用 UI 主线程）
+fn write_bubble_copy(payload: BubbleCopyPayload, app: &AppHandle) -> Result<(), CommandError> {
+    match payload {
         BubbleCopyPayload::Text(text) => app
             .clipboard()
             .write_text(&text)
-            .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))?,
+            .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}"))),
         BubbleCopyPayload::ImageFile(path) => {
             crate::clipboard_image::write_clipboard_files(&[path.as_path()])
-                .map_err(|err| CommandError::Clipboard(format!("文件写回剪贴板失败：{err}")))?
+                .map_err(|err| CommandError::Clipboard(format!("文件写回剪贴板失败：{err}")))
         }
         BubbleCopyPayload::ImagePng(bytes) => crate::clipboard_image::write_clipboard_image(&bytes)
-            .map_err(|err| CommandError::Clipboard(format!("图片写回剪贴板失败：{err}")))?,
+            .map_err(|err| CommandError::Clipboard(format!("图片写回剪贴板失败：{err}"))),
     }
-    Ok(())
 }
 
 /// 删除单条气泡（命令薄壳：解析图片目录 + 调核心 + 广播；不存在严格报错）

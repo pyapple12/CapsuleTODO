@@ -1,7 +1,7 @@
 //! Todo 命令：清单增删勾查改（操作即落库，单一事实源 = db；核心抽自由函数直测）。
 //! PL010 扩容：todo_rename/todo_set_note 新命令 + todo_list 附龄期裁决（业务在 Rust）。
 
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 use super::{AppContext, CommandError};
 use crate::todo::{
@@ -315,19 +315,26 @@ pub fn note_blocks_save_core(
 }
 
 /// 粘贴插图（**唯一插图入口**）：命中剪贴板图片 → 落盘/复用 + 光标处切分插入 → 广播
+/// 粘贴剪贴板图片（PATCH002.71：读剪贴板 / 解码 / 落盘 / 预览全部移到阻塞线程，
+/// 不再冻结 UI 主线程）
 #[tauri::command]
-pub fn note_paste_image(
+pub async fn note_paste_image(
     window: tauri::Window,
     todo_id: i64,
     block_id: i64,
     before: String,
     after: String,
     app: tauri::AppHandle,
-    ctx: State<'_, AppContext>,
 ) -> Result<NotePasteOutcome, CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    let outcome = note_paste_image_core(todo_id, block_id, &before, &after, &images_dir, &ctx)?;
+    let task_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let ctx = task_app.state::<AppContext>();
+        note_paste_image_core(todo_id, block_id, &before, &after, &images_dir, &ctx)
+    })
+    .await
+    .map_err(|err| CommandError::Storage(format!("图片粘贴任务失败：{err}")))??;
     if matches!(outcome, NotePasteOutcome::Image { .. }) {
         emit_todo_changed(&window, &app);
     }
@@ -475,71 +482,95 @@ fn escape_html(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// 任意受支持图片字节 → PNG（CF_DIB 需 PNG 源；已是 PNG 原样直用）
-fn to_png(bytes: &[u8]) -> Result<Vec<u8>, CommandError> {
+/// 首图三格式所需数据（PATCH002.71：**只解码一次**，PNG / DIB / DIBV5 全部同源）
+pub struct NoteCopyFirstImage {
+    /// PNG 注册格式载荷（源为 PNG 原样直通；其余按旧 `to_png` 同路径重编码）
+    pub png: Vec<u8>,
+    /// 已解码像素（行序 RGBA）
+    pub rgba: (u32, u32, Vec<u8>),
+}
+
+/// 复制载荷（**锁外**构建的纯函数产出：CF_HTML + 纯文本 + 首图数据）
+pub struct NoteCopyPayload {
+    pub html: String,
+    pub text: String,
+    pub first: Option<NoteCopyFirstImage>,
+}
+
+/// 首图 → 三格式数据：**1 次解码**（PNG 源直通；其余解码后按旧口径重编码，
+/// 与原 `to_png` 逐字节一致）——PATCH002.71 的核心省时点
+fn first_image_formats(bytes: &[u8]) -> Result<NoteCopyFirstImage, CommandError> {
     crate::clipboard_image::validate_image_bytes(bytes)?;
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        return Ok(bytes.to_vec());
+        let (w, h, rgba) = crate::clipboard_image::decode_to_rgba(bytes)
+            .map_err(|err| CommandError::Clipboard(format!("图片解码失败：{err}")))?;
+        return Ok(NoteCopyFirstImage {
+            png: bytes.to_vec(),
+            rgba: (w, h, rgba),
+        });
     }
     let img = image::load_from_memory(bytes)
         .map_err(|err| CommandError::Clipboard(format!("图片解码失败：{err}")))?;
+    let (w, h) = (img.width(), img.height());
     let mut out = std::io::Cursor::new(Vec::new());
     img.write_to(&mut out, image::ImageFormat::Png)
         .map_err(|err| CommandError::Clipboard(format!("图片转 PNG 失败：{err}")))?;
-    Ok(out.into_inner())
+    Ok(NoteCopyFirstImage {
+        png: out.into_inner(),
+        rgba: (w, h, img.to_rgba8().into_raw()),
+    })
 }
 
-/// 复制选区 / 图块到系统剪贴板（命令薄壳：解析图片目录 + 调核心）
-#[tauri::command]
-pub fn note_copy_selection(
-    blocks: Vec<NoteCopyBlock>,
-    ctx: State<'_, AppContext>,
-) -> Result<(), CommandError> {
-    let images_dir = crate::paths::images_dir()
-        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    note_copy_selection_core(&blocks, &images_dir, &ctx)
-}
-
-/// 复制核心（**入参自带块集、不读剪贴板 → 可直测**）：拼纯文本 + CF_HTML（应用内图
-/// **内联 base64 data URL**，超上限降级占位）+ 首图 PNG（CF_DIB 系）一次写入。
-/// 图块取文件按 `block_id` 查库（未落库 / 文件缺失 → 该图降级占位，不中断整体复制）
-pub fn note_copy_selection_core(
+/// 收集图块对应的图片相对路径（**锁内只此一步**；PATCH002.71 出锁后不再持库）
+fn copy_image_rels(
     blocks: &[NoteCopyBlock],
+    storage: &crate::storage::Storage,
+) -> Vec<Option<String>> {
+    blocks
+        .iter()
+        .map(|block| {
+            if !matches!(block.kind, NoteBlockKind::Image) || block.block_id <= 0 {
+                return None;
+            }
+            storage
+                .get_note_block(block.block_id)
+                .ok()
+                .and_then(|b| b.image_file)
+        })
+        .collect()
+}
+
+/// 构建复制载荷（**入参自带块集与图块路径、不读剪贴板、不持库 → 可直测**）：
+/// 拼纯文本 + CF_HTML（应用内图**内联 base64 data URL**，超上限降级占位）+ 首图三格式数据。
+/// 图块文件缺失 → 该图降级占位，不中断整体复制
+pub fn note_copy_payload(
+    blocks: &[NoteCopyBlock],
+    rels: &[Option<String>],
     images_dir: &std::path::Path,
-    ctx: &AppContext,
-) -> Result<(), CommandError> {
+) -> Result<NoteCopyPayload, CommandError> {
     use base64::Engine as _;
-    let storage = ctx.lock_storage()?;
     let mut texts: Vec<String> = Vec::new();
     let mut htmls: Vec<String> = Vec::new();
-    let mut first_png: Option<Vec<u8>> = None;
+    let mut first: Option<NoteCopyFirstImage> = None;
     let mut inline_total: u64 = 0;
-    for block in blocks {
+    for (i, block) in blocks.iter().enumerate() {
         if matches!(block.kind, NoteBlockKind::Text) {
             texts.push(block.text.clone());
             htmls.push(escape_html(&block.text).replace('\n', "<br>"));
             continue;
         }
         texts.push("🖼 图片".to_string());
-        let rel = if block.block_id > 0 {
-            storage
-                .get_note_block(block.block_id)
-                .ok()
-                .and_then(|b| b.image_file)
-        } else {
-            None
-        };
-        let Some(rel) = rel else {
+        let Some(rel) = rels.get(i).and_then(|rel| rel.as_deref()) else {
             htmls.push("🖼 图片".to_string());
             continue;
         };
-        let abs = images_dir.join(&rel);
+        let abs = images_dir.join(rel);
         let Ok(bytes) = std::fs::read(&abs) else {
             htmls.push("🖼 图片".to_string()); // 文件缺失 → 占位，不中断整体复制
             continue;
         };
-        if first_png.is_none() {
-            first_png = Some(to_png(&bytes)?);
+        if first.is_none() {
+            first = Some(first_image_formats(&bytes)?);
         }
         let len = bytes.len() as u64;
         if len > COPY_INLINE_MAX_ONE || inline_total + len > COPY_INLINE_MAX_ALL {
@@ -557,11 +588,50 @@ pub fn note_copy_selection_core(
             base64::engine::general_purpose::STANDARD.encode(&bytes)
         ));
     }
-    let text = texts.join("\n");
-    let html = crate::clipboard_image::build_cf_html(&htmls.join("<br>"));
-    crate::clipboard_image::write_clipboard_rich(&html, first_png.as_deref(), &text)
-        .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))?;
-    Ok(())
+    Ok(NoteCopyPayload {
+        html: crate::clipboard_image::build_cf_html(&htmls.join("<br>")),
+        text: texts.join("\n"),
+        first,
+    })
+}
+
+/// 复制串行锁（PATCH002.71：异步化后两次复制并发会抢剪贴板，串行化保证后一次完整覆盖）
+static COPY_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 复制选区 / 图块到系统剪贴板（PATCH002.71：**锁外构建 + 阻塞线程写剪贴板** ——
+/// 重活（读文件 / 解码 / base64 / DIB 构建 / 写剪贴板）不再冻结 UI，也不再堵自动保存）
+#[tauri::command]
+pub async fn note_copy_selection(
+    blocks: Vec<NoteCopyBlock>,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    let images_dir = crate::paths::images_dir()
+        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+    // 锁内只收集图块文件（毫秒级）；`MutexGuard` 不是 Send ⇒ 必须出锁再 await
+    let rels = {
+        let storage = ctx.lock_storage()?;
+        copy_image_rels(&blocks, &storage)
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _serial = match COPY_SERIAL.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(), // 中毒恢复取值（复制不携状态，安全）
+        };
+        let NoteCopyPayload { html, text, first } = note_copy_payload(&blocks, &rels, &images_dir)?;
+        let (png, pixels) = match first {
+            Some(image) => (Some(image.png), Some(image.rgba)),
+            None => (None, None),
+        };
+        crate::clipboard_image::write_clipboard_rich_with_pixels(
+            &html,
+            png.as_deref(),
+            pixels,
+            &text,
+        )
+        .map_err(|err| CommandError::Clipboard(format!("写入剪贴板失败：{err}")))
+    })
+    .await
+    .map_err(|err| CommandError::Clipboard(format!("复制任务失败：{err}")))?
 }
 
 // —— 粘贴含图 HTML（PATCH002.25：CF_HTML 多图 → 文本块 / 图块按原序插入）——
@@ -569,10 +639,9 @@ pub fn note_copy_selection_core(
 /// `data:` 图体积上限（超限降级为文本链接，不阻断其余段）
 const PASTE_HTML_MAX_ONE: usize = 10 * 1024 * 1024;
 
-/// 粘贴含图 HTML（命令薄壳：解析图片目录 + 调核心 + 有插图才广播）
-#[allow(clippy::too_many_arguments)] // 粘贴输入集完整传递（与 note_paste_image 同款）
+/// 粘贴含图 HTML（PATCH002.71：base64 解码 / 落盘 / 预览移到阻塞线程，不再冻结 UI）
 #[tauri::command]
-pub fn note_paste_html(
+pub async fn note_paste_html(
     window: tauri::Window,
     todo_id: i64,
     block_id: i64,
@@ -580,12 +649,16 @@ pub fn note_paste_html(
     after: String,
     html: String,
     app: tauri::AppHandle,
-    ctx: State<'_, AppContext>,
 ) -> Result<NotePasteOutcome, CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    let outcome =
-        note_paste_html_core(todo_id, block_id, &before, &after, &html, &images_dir, &ctx)?;
+    let task_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let ctx = task_app.state::<AppContext>();
+        note_paste_html_core(todo_id, block_id, &before, &after, &html, &images_dir, &ctx)
+    })
+    .await
+    .map_err(|err| CommandError::Storage(format!("HTML 粘贴任务失败：{err}")))??;
     if matches!(outcome, NotePasteOutcome::Image { .. }) {
         emit_todo_changed(&window, &app);
     }
@@ -1022,5 +1095,65 @@ mod tests {
             note_open_image_core(999, &dir, &ctx).is_err(),
             "不存在块报错"
         );
+    }
+
+    // —— PATCH002.71：复制载荷（锁外构建、纯函数可直测）——
+
+    #[test]
+    fn copy_payload_text_only_has_no_image_formats() {
+        let dir = temp_images_dir();
+        let blocks = [NoteCopyBlock {
+            kind: NoteBlockKind::Text,
+            text: "甲".to_string(),
+            block_id: 0,
+        }];
+        let payload = note_copy_payload(&blocks, &[None], &dir).expect("构建必须成功");
+        assert_eq!(payload.text, "甲");
+        assert!(
+            payload.html.contains("<!--StartFragment-->甲"),
+            "片段必须进 CF_HTML"
+        );
+        assert!(payload.first.is_none(), "纯文本不带图片格式");
+    }
+
+    #[test]
+    fn copy_payload_inlines_image_and_keeps_png_passthrough() {
+        let dir = temp_images_dir();
+        let sub = dir.join("note_test_1");
+        std::fs::create_dir_all(&sub).expect("子目录必须可建");
+        let png = fixture_png();
+        std::fs::write(sub.join("a.png"), &png).expect("夹具必须可写");
+        let blocks = [
+            NoteCopyBlock {
+                kind: NoteBlockKind::Text,
+                text: "前".to_string(),
+                block_id: 0,
+            },
+            NoteCopyBlock {
+                kind: NoteBlockKind::Image,
+                text: String::new(),
+                block_id: 7,
+            },
+        ];
+        let rels = [None, Some("note_test_1/a.png".to_string())];
+        let payload = note_copy_payload(&blocks, &rels, &dir).expect("构建必须成功");
+        assert!(payload.html.contains("data:image/png;base64,"), "图要内联");
+        let first = payload.first.expect("首图必须解码");
+        assert_eq!(first.png, png, "PNG 源必须原样直通");
+        assert_eq!((first.rgba.0, first.rgba.1), (1, 1), "像素尺寸对");
+    }
+
+    #[test]
+    fn copy_payload_missing_file_degrades_to_placeholder() {
+        let dir = temp_images_dir();
+        let blocks = [NoteCopyBlock {
+            kind: NoteBlockKind::Image,
+            text: String::new(),
+            block_id: 9,
+        }];
+        let rels = [Some("note_missing/a.png".to_string())];
+        let payload = note_copy_payload(&blocks, &rels, &dir).expect("缺文件不中断");
+        assert!(payload.html.contains("🖼 图片"), "缺文件降级占位");
+        assert!(payload.first.is_none(), "无图不带图片格式");
     }
 }

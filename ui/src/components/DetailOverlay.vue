@@ -76,6 +76,14 @@ function setTextEl(key: string, el: unknown): void {
   else textEls.delete(key);
 }
 
+/** 最近一次获得焦点的文本块 key（PATCH002.77：焦点已丢时提升原生选区锚点的兜底） */
+let lastTextKey = "";
+
+/** 文本块获得焦点：记下最近聚焦块（PATCH002.77） */
+function onTextFocus(key: string): void {
+  lastTextKey = key;
+}
+
 // —— 临时诊断（PATCH002.44 打点，测完即删）已按纪律全清 ——
 
 /** 浏览器原生按内容定高（Chromium 123+）：可用时**不做** JS 增高——内联 `height` 会压过它。
@@ -287,6 +295,7 @@ async function loadBlocks(todoId: number): Promise<void> {
     // 临时诊断（.72 排查）：清栈前多深（>0 说明旧代快照确实存在过 ✓）+ 本次载入的代际
     undoLog(`undo:clear depth=${undoDepth} arr=${idsOf(blocks.value)}`);
     brokenKeys.value = [];
+    lastTextKey = ""; // PATCH002.77：载入即换代，旧的"最近聚焦块"不再代表当前文档
     void nextTick(() => autosizeAll());
   } catch (err) {
     console.error("详情块拉取失败", err);
@@ -910,7 +919,9 @@ async function openBlockImage(block: LocalBlock): Promise<void> {
 }
 
 /** 图块容器单击 → 选中（文本块的点击交给 textarea 自身处理）；互斥：清选区 */
-function onBlockContainerClick(block: LocalBlock): void {
+function onBlockContainerClick(block: LocalBlock, e: MouseEvent): void {
+  // PATCH002.77：Shift+点击是扩选；`shiftGesture` 兜住"Shift 先于鼠标松开、click 丢了 shiftKey"
+  if (e.shiftKey || shiftGesture) return;
   if (block.kind === "Image") {
     clearSel();
     selectedKey.value = block._key;
@@ -1084,8 +1095,14 @@ function onBlocksFocusOut(e: FocusEvent): void {
 // 栈非空 → Ctrl+Z 截走并还原快照；栈空 → 放行原生（打字撤销）；**打字即清空本栈**
 // （"按删除 undo 删除、打字 undo 打字"：打字后 Ctrl+Z 交回原生，不回退到旧结构）。
 
-/** 结构性操作快照栈（上限 30；浅拷贝块对象——_key 一并保留，还原时不重挂 DOM） */
-const undoStack: Array<LocalBlock[]> = [];
+/** 结构性操作快照栈（上限 30；浅拷贝块对象——_key 一并保留，还原时不重挂 DOM）。
+ * PATCH002.78：**单源条目** = 块快照 + 操作前光标（同栈进出，避免平行数组失步） */
+interface UndoEntry {
+  blocks: LocalBlock[];
+  /** 操作前活动文本块与光标（不在文本块 → null：撤销不抢标题框等输入面焦点） */
+  caret: { key: string; offset: number } | null;
+}
+const undoStack: Array<UndoEntry> = [];
 const UNDO_LIMIT = 30;
 /** **粘贴进行中**计数（PATCH002.72 C5）：`.70` 的"替换选区"是**先删后插**——删完那一瞬
  * 被删的文本域失焦 ⇒ 浏览器抛 `focusout` ⇒ 保存点会把"删完、还没插"的**空中间态**落库
@@ -1127,9 +1144,17 @@ function clearKeepUndo(reason: string): void {
  * 收场（否则 180ms 后的摘除会覆盖用户的回退 = "动效期间按 Ctrl+Z 无效"） */
 let undoSeq = 0;
 
-/** 结构性操作**前**入栈（拆块/合并/删块/插图/多行粘贴/选区删除） */
+/** 结构性操作**前**入栈（拆块/合并/删块/插图/多行粘贴/选区删除；附操作前光标） */
 function pushUndo(): void {
-  undoStack.push(blocks.value.map((b) => ({ ...b })));
+  const active = document.activeElement as HTMLTextAreaElement | null;
+  let caret: UndoEntry["caret"] = null;
+  if (active?.classList.contains("note-block-text")) {
+    const host = active.closest<HTMLElement>(".note-block");
+    const index = Number(host?.dataset.rowId) - 1;
+    const block = blocks.value[index];
+    if (block?.kind === "Text") caret = { key: block._key, offset: active.selectionStart ?? 0 };
+  }
+  undoStack.push({ blocks: blocks.value.map((b) => ({ ...b })), caret });
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
   // 临时诊断（.72 排查）：这次压进去的是**哪一代**
   undoLog(`undo:push depth=${undoStack.length} ids=${idsOf(blocks.value)}`);
@@ -1147,8 +1172,10 @@ function undoStructural(): void {
   // 换新 `_key` ⇒ Vue 重建元素 ⇒ 摆脱输入法 ✓；**普通撤销不重建**（保 `_key` ⇒ DOM 不重挂、焦点不丢 ✓）
   const wasComposing = keepUndoComposing;
   clearKeepUndo("undo"); // 撤销时豁免必须失效（防旧快照跨操作存活 ✓）
-  const snapshot = undoStack.pop();
-  if (!snapshot) return;
+  const entry = undoStack.pop();
+  if (!entry) return;
+  const snapshot = entry.blocks;
+  const caret = entry.caret;
   // 临时诊断（.72 排查）：恢复**前**的当前代 vs 恢复**后**的 id 序列（跨代即 bug ✗）
   const beforeIds = idsOf(blocks.value);
   undoSeq += 1; // PATCH002.44：撤销代际 +1（在飞的删块动效收场时据此放弃）
@@ -1164,6 +1191,12 @@ function undoStructural(): void {
     // 那个游离 DOM、不进 blocks ⇒ signature 不变 ⇒ 保存被静默跳过（"写了字、退板还是空"）
     const active = document.activeElement as HTMLElement | null;
     if (active?.classList.contains("note-block-text") && !active.isConnected) active.blur();
+    // PATCH002.78：撤销后把光标放回**操作前**的位置（Ctrl+A → 粘贴 ⇒ 第一行行首）。
+    // 组字在飞时 key 已重建 ⇒ 跳过（避免找不回元素）
+    if (caret && !wasComposing) {
+      const target = blocks.value.find((b) => b._key === caret.key);
+      if (target) focusBlock(target._key, Math.min(caret.offset, target.text.length));
+    }
   });
   scheduleSave();
 }
@@ -1249,13 +1282,43 @@ function clearSel(): void {
   selHoverIndex.value = -1;
 }
 
-/** 全选所有块（Ctrl+A 板级拦截；仅一块时等价原生，直接放行） */
+/** 全选所有块（Ctrl+A 板级拦截；仅一块时改走原生全选）。
+ * PATCH002.78：① 无块焦点时补焦点（否则 Enter / 粘贴没有落点——事件只挂在 textarea 上）；
+ * ② 单块笔记不能"吃掉原生全选还什么都不选"⇒ 确定性全选（文本块原生选区 / 图块选中态） */
 function selectAllBlocks(): void {
+  const active = document.activeElement as HTMLElement | null;
+  const activeInBlock = !!active?.closest(".note-block-text");
+  // 标题等输入面：不抢焦点（沿既有行为；Ctrl+A 仍选中所有块）
+  const activeInField =
+    !activeInBlock && !!active?.closest("input, textarea, [contenteditable='true']");
   const last = blocks.value.length - 1;
-  if (last <= 0) return;
+  if (last <= 0) {
+    const only = blocks.value[0];
+    if (!only || activeInField) return;
+    if (only.kind === "Text") {
+      const el = textEls.get(only._key);
+      if (el) {
+        el.focus({ preventScroll: true });
+        el.setSelectionRange(0, el.value.length);
+        dragDiag(`ctrlA:single len=${el.value.length}`);
+      }
+    } else {
+      selectedKey.value = only._key; // 单图块：走图块选中态（Ctrl+C 可复制）
+      dragDiag("ctrlA:single image");
+    }
+    return;
+  }
   selectedKey.value = ""; // 与图块单击选中态互斥
   selAnchor.value = { index: 0, offset: 0 };
   selFocus.value = { index: last, offset: blocks.value[last].text.length };
+  // PATCH002.78：无块焦点 ⇒ 补一个（focusBlock 自带 preventScroll + 定光标，不拉视口）
+  if (!activeInBlock && !activeInField) {
+    const firstText = blocks.value.find((b) => b.kind === "Text");
+    if (firstText) {
+      focusBlock(firstText._key, 0);
+      dragDiag(`ctrlA:focus idx=${blocks.value.indexOf(firstText)}`);
+    }
+  }
 }
 
 /** 复制入参（镜像 Rust `NoteCopyBlock`，PATCH002.24）：文本块原文 + 图块 id */
@@ -1364,6 +1427,34 @@ let selDragIndex = -1;
 let selDownX = -1;
 let selDownY = -1;
 
+/** PATCH002.77：本次 Shift+点击是否已在 mousedown 阶段扩选（随后的 click 不得再走单选） */
+let shiftGesture = false;
+
+/** 源块文本域（PATCH002.77）：优先当前焦点；焦点已丢（先点了块内距/空白）则回落最近聚焦块。
+ * 实测（Chromium）：失焦后源 textarea 的原生选区仍在 ⇒ 兜底可用 */
+function sourceTextEl(): HTMLTextAreaElement | null {
+  const active = document.activeElement as HTMLTextAreaElement | null;
+  if (active?.classList.contains("note-block-text")) return active;
+  return lastTextKey ? (textEls.get(lastTextKey) ?? null) : null;
+}
+
+/** 把"块内原生选区 / 光标"提升为跨块锚点（PATCH002.77）：无锚点时才做；方向按
+ * `selectionDirection`。**光标也提升**（collapsed）——否则"光标在第一块中间 + Shift+点下一块"
+ * 会被原生截断在源块末尾；定位不到块 → 不提升（保持原生行为） */
+function promoteNativeSelectionAnchor(): boolean {
+  if (selAnchor.value) return true;
+  const el = sourceTextEl();
+  if (!el) return false;
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const host = el.closest<HTMLElement>(".note-block");
+  const index = Number(host?.dataset.rowId) - 1;
+  if (!Number.isInteger(index) || index < 0) return false;
+  selAnchor.value = { index, offset: el.selectionDirection === "backward" ? end : start };
+  dragDiag(`shift:promote idx=${index} off=${selAnchor.value.offset}`);
+  return true;
+}
+
 /** 文本块 mousedown：记拖源块与**按下点坐标** + 清互斥态（选区/图块选中）。
  * PATCH002.39（2026-10-20 口径修正）：**Shift+点击 = 原生语义扩选**——不重设锚点，端点取
  * **鼠标所在那一点**（文本块精确到**字符**、图块取**最近边界**），**不是整块选取**；
@@ -1408,9 +1499,14 @@ function extendSelectionByShiftClick(e: MouseEvent): void {
   const rect = el.getBoundingClientRect();
   const upperHalf = y < rect.top + rect.height / 2;
 
-  // PATCH002.70（B）：**单块内 Shift 扩选交原生**（`.45` 口径）——不进入自绘管线，
-  // 也不收原生选区（否则会把"单块内原生扩选"这个正常行为也弄丢 ✗）
-  if (selAnchor.value && selAnchor.value.index === index) return;
+  // PATCH002.70（B）：**单块内 Shift 扩选交原生**（`.45` 口径）——不进入自绘管线。
+  // PATCH002.77：跨块压制期间原生选区可能已被浏览器改写（`.45` 打点）⇒ 交原生之前先把源块
+  // 收成**自定义锚点**，否则会从错的锚点扩 ✗
+  if (selAnchor.value && selAnchor.value.index === index) {
+    const source = textEls.get(block._key);
+    if (source) source.setSelectionRange(selAnchor.value.offset, selAnchor.value.offset);
+    return;
+  }
 
   if (block.kind === "Image") {
     const prev = index > 0 ? blocks.value[index - 1] : null;
@@ -1456,6 +1552,8 @@ function applyShiftEndpoint(point: SelPoint): void {
 /** 图块点击（PATCH002.39）：Shift+点击 = **原生语义扩选**（按落点取边界，非整块）；
  * 普通点击 = 选中态（原语义） */
 function onImageClick(block: LocalBlock, e: MouseEvent): void {
+  // PATCH002.77：Shift 扩选已在 mousedown 完成（即使 Shift 在 mouseup 前松开）⇒ 不得再走单选
+  if (shiftGesture) return;
   if (e.shiftKey && selAnchor.value) {
     extendSelectionByShiftClick(e);
     return;
@@ -1526,6 +1624,14 @@ function onDocMouseUp(): void {
   selDragIndex = -1;
   crossSelecting.value = false;
   selHoverIndex.value = -1; // 松手后焦点块已在选区内，指针块不再需要覆盖层
+}
+
+/** 板内拦截原生 HTML5 拖拽（PATCH002.74）：从"仍在选中态的文字"起手时，浏览器会把它
+ * 当成"拖动已选文本"——拖拽会话吞掉 mousemove ⇒ 自绘跨块圈选根本起不来（禁止光标）。
+ * **只掐 DnD，不动选区机制**（`.45` 单块内原生选择照旧；图块调序走 pointer 事件不受影响）。 */
+function onBoardDragStart(e: DragEvent): void {
+  e.preventDefault();
+  dragDiag("dnd:blocked"); // 临时诊断（随 PATCH002 整批收官清）
 }
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
@@ -1944,12 +2050,29 @@ function onViewportResize(): void {
 // mousedown 口径会在拖拽启动前就把板收掉；click 与归档板 / 设置板一致（拖动不产生 click）
 function onGlobalDown(e: MouseEvent): void {
   if (!isOpen.value) return;
+  shiftGesture = false; // PATCH002.77：新手势开始，重置上一次 Shift 扩选标记
   const ov = overlay.value;
   const target = e.target as HTMLElement | null;
   if (!ov || !ov.contains(e.target as Node)) return; // 板外交给 onDocClick
   // PATCH002.39：Shift+点击是"**扩选**"——**不得清选区**（否则锚点在 click 之前就没了）。
   // 捕获阶段最先到这里 ⇒ 只此一处即可覆盖文本块与图块两种落点。
-  if (e.shiftKey) return;
+  if (e.shiftKey) {
+    // PATCH002.77：块内原生选区从不产生锚点 ⇒ 先提升；否则浏览器原生 Shift+点击只会
+    // 把源块选区拉到块尾（Chromium 实测），永远进不了下一块。只在块区内提升（标题/板头不动）
+    const inScroll = !!scrollEl.value?.contains(e.target as Node);
+    const onCtrl = target?.closest(".note-block-del");
+    const promoted = !onCtrl && inScroll && promoteNativeSelectionAnchor();
+    const inBlock = target?.closest(".note-block");
+    const onText = target?.closest(".note-block-text");
+    // 文本块交 onTextMouseDown（`.39` 既有路径）；图块 / 块内距 / 容器在这里直接扩选并
+    // 压住原生（消焦点环、防止原生把源块选区拉到块尾）
+    if (promoted && inBlock && !onText && !onCtrl) {
+      extendSelectionByShiftClick(e);
+      e.preventDefault();
+      shiftGesture = true;
+    }
+    return;
+  }
   if (selectedKey.value && !target?.closest(".note-block-image")) selectedKey.value = "";
   // 文本块 mousedown 由 onTextMouseDown 自处理（拖选锚点）；其余位置一律清选区
   if (!target?.closest(".note-block-text")) clearSel();
@@ -1994,6 +2117,7 @@ onBeforeUnmount(() => {
     ref="overlay"
     class="detail-overlay"
     :class="{ open: isOpen, 'bubble-mode': isBubbleMode, 'cross-selecting': crossSelecting }"
+    @dragstart="onBoardDragStart"
   >
     <div class="board-glass detail-glass">
       <div v-if="!isBubbleMode" class="detail-head">
@@ -2063,7 +2187,7 @@ onBeforeUnmount(() => {
               }"
               :data-row-id="i + 1"
               :tabindex="block.kind === 'Image' ? 0 : undefined"
-              @click="onBlockContainerClick(block)"
+              @click="onBlockContainerClick(block, $event)"
               @keydown="onBlockContainerKeydown(i, $event)"
             >
               <template v-if="block.kind === 'Image'">
@@ -2095,6 +2219,7 @@ onBeforeUnmount(() => {
                 :placeholder="i === 0 && noteEmpty ? '添加描述、清单、想法…' : ''"
                 spellcheck="false"
                 rows="1"
+                @focus="onTextFocus(block._key)"
                 @mousedown="onTextMouseDown(i, $event)"
                 @input="onBlockInput"
                 @keydown="onBlockKeydown(i, $event)"

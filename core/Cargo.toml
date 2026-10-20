@@ -15,3 +15,20 @@ serde_json = "1.0.151"
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-clipboard-manager = "2"
 thiserror = "2.0.20"
+
+# dev/test 下图片编解码走优化（PATCH002.71）：image / png / jpeg 在 opt-level=0 下
+# 解码慢 5–20 倍，复制 / 粘贴 / 大图预览的体感卡顿被放大；只影响 dev，release 不变
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.image-webp]
+opt-level = 3
+
+[profile.dev.package.gif]
+opt-level = 3

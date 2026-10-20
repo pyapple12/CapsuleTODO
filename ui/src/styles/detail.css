@@ -405,11 +405,12 @@
   field-sizing: content;
 }
 
-/* 跨块期间**所有**文本域让出 caret 命中（PATCH002.45）：覆盖层压在文字下层（z-index 分层），
-   文本域若仍可命中，caret 会撞在文本域上（非文本节点）→ 取不到块内偏移 → 退化成"整块选择"。
-   `.sel-crossing` 只管源块（锚点用）；焦点块（鼠标所在块）也要让路，故用挂在板根上的类覆盖全部 */
-.detail-overlay.cross-selecting .note-block-text,
-.note-block.sel-crossing .note-block-text {
+/* 跨块**拖拽/采样期间**所有文本域让出 caret 命中（PATCH002.45）：覆盖层压在文字下层
+   （z-index 分层），文本域若仍可命中，caret 会撞在文本域上（非文本节点）→ 取不到块内偏移
+   → 退化成"整块选择"。只用挂在板根上的 `.cross-selecting` 覆盖全部（含焦点块）。
+   PATCH002.77（甲案）：**不再压制 `.sel-crossing` 源块**——选区建立后源块必须可交互，
+   否则点/拖第一块回不到原生光标（`.45` 的视觉压制仍由下面 `::selection` 透明规则承担） */
+.detail-overlay.cross-selecting .note-block-text {
   pointer-events: none;
 }
 

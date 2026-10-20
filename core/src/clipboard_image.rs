@@ -269,10 +269,11 @@ fn bottom_up_bgra(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     px
 }
 
-/// PNG → CF_DIB（32bpp BI_BITFIELDS 正高自下而上 + 规范 BGRA 掩码 + 直通 alpha）
-pub fn build_dib_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
-    let (w, h, rgba) = decode_to_rgba(png)?;
-    let px = bottom_up_bgra(w, h, &rgba);
+/// 已解码像素（行序 RGBA）→ CF_DIB（32bpp BI_BITFIELDS 正高自下而上 + 规范 BGRA 掩码 +
+/// 直通 alpha）。PATCH002.71：DIB / DIBV5 共用**同一次**解码与翻转，旧 `_from_png`
+/// 保留为薄包装（测试与既有调用点零改动）
+pub fn build_dib_from_pixels(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let px = bottom_up_bgra(w, h, rgba);
     let mut out = Vec::with_capacity(52 + px.len());
     wr_u32(&mut out, BMP_INFO_HEADER as u32);
     wr_u32(&mut out, w);
@@ -289,14 +290,19 @@ pub fn build_dib_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
     wr_u32(&mut out, 0x0000_FF00); // G
     wr_u32(&mut out, 0x0000_00FF); // B
     out.extend_from_slice(&px);
-    Ok(out)
+    out
 }
 
-/// PNG → CF_DIBV5（124B V5 头带显式 alpha 掩码，像素与 CF_DIB 同源；读 alpha 的
-/// 现代应用据此正确呈现透明——PL024"一期做全"定案）
-pub fn build_dibv5_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
+/// PNG → CF_DIB（解码一次后走像素构建器）
+pub fn build_dib_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
     let (w, h, rgba) = decode_to_rgba(png)?;
-    let px = bottom_up_bgra(w, h, &rgba);
+    Ok(build_dib_from_pixels(w, h, &rgba))
+}
+
+/// 已解码像素（行序 RGBA）→ CF_DIBV5（124B V5 头带显式 alpha 掩码，像素与 CF_DIB 同源；
+/// 读 alpha 的现代应用据此正确呈现透明——PL024"一期做全"定案）
+pub fn build_dibv5_from_pixels(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let px = bottom_up_bgra(w, h, rgba);
     let mut out = Vec::with_capacity(BMP_V5_HEADER + px.len());
     wr_u32(&mut out, BMP_V5_HEADER as u32);
     wr_u32(&mut out, w);
@@ -320,7 +326,13 @@ pub fn build_dibv5_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
     wr_u32(&mut out, 0); // bV5ProfileSize
     wr_u32(&mut out, 0); // bV5Reserved
     out.extend_from_slice(&px);
-    Ok(out)
+    out
+}
+
+/// PNG → CF_DIBV5（解码一次后走像素构建器）
+pub fn build_dibv5_from_png(png: &[u8]) -> Result<Vec<u8>, BubbleError> {
+    let (w, h, rgba) = decode_to_rgba(png)?;
+    Ok(build_dibv5_from_pixels(w, h, &rgba))
 }
 
 /// 文件名是否为认可的图像文件（扩展名表驱动、大小写不敏感；Path 取末段扩展名，
@@ -347,7 +359,9 @@ pub fn source_file_within_limit(len: u64) -> bool {
 
 #[cfg(target_os = "windows")]
 mod win {
-    use super::{build_dib_from_png, build_dibv5_from_png, ClipboardImageError};
+    use super::{
+        build_dib_from_pixels, build_dibv5_from_pixels, decode_to_rgba, ClipboardImageError,
+    };
 
     // FFI 文件级单源声明（FIX013.8 先例：集中于本模块头部，调用点零散落）
     #[link(name = "user32")]
@@ -552,10 +566,31 @@ mod win {
         drop_path.and_then(|path| read_image_file(&path))
     }
 
+    /// 打开剪贴板（**写路径**重试，PATCH002.71）：其它程序可能短暂占用，
+    /// 10×10ms 内拿不到才放弃（失败仍严格报错，不降级）
+    fn open_clipboard_for_write() -> bool {
+        for _ in 0..10 {
+            if unsafe { OpenClipboard(0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
     /// 写剪贴板图片三格式（PNG 注册格式 + CF_DIB + CF_DIBV5 = 截图工具原厂写入集；
     /// 各格式独立全局内存分配，系统接管后不需释放）。任一步失败严格报错，不静默
     pub fn write_clipboard_image(png: &[u8]) -> Result<(), ClipboardImageError> {
-        if unsafe { OpenClipboard(0) } == 0 {
+        let (w, h, rgba) = decode_to_rgba(png)?;
+        write_image_formats(png, Some((w, h, rgba)))
+    }
+
+    /// 图片三格式共用写入口（PATCH002.71：像素已解码时不再二次解码，`None` 才解一次）
+    fn write_image_formats(
+        png: &[u8],
+        pixels: Option<(u32, u32, Vec<u8>)>,
+    ) -> Result<(), ClipboardImageError> {
+        if !open_clipboard_for_write() {
             return Err(ClipboardImageError::Open);
         }
         let result = (|| {
@@ -567,9 +602,13 @@ mod win {
                 return Err(ClipboardImageError::RegisterFormat);
             }
             set_bytes(png_fmt, png).map_err(|_| ClipboardImageError::Set("PNG"))?;
-            let dib = build_dib_from_png(png)?;
+            let (w, h, rgba) = match pixels {
+                Some(px) => px,
+                None => decode_to_rgba(png)?,
+            };
+            let dib = build_dib_from_pixels(w, h, &rgba);
             set_bytes(CF_DIB, &dib).map_err(|_| ClipboardImageError::Set("CF_DIB"))?;
-            let v5 = build_dibv5_from_png(png)?;
+            let v5 = build_dibv5_from_pixels(w, h, &rgba);
             set_bytes(CF_DIBV5, &v5).map_err(|_| ClipboardImageError::Set("CF_DIBV5"))?;
             Ok(())
         })();
@@ -580,7 +619,7 @@ mod win {
     /// 写剪贴板文件引用（CF_HDROP，PL025 文件图复制回）：EmptyClipboard 后一次
     /// SetClipboardData（DROPFILES 数据块）；任一步失败严格报错
     pub fn write_clipboard_files(paths: &[&std::path::Path]) -> Result<(), ClipboardImageError> {
-        if unsafe { OpenClipboard(0) } == 0 {
+        if !open_clipboard_for_write() {
             return Err(ClipboardImageError::Open);
         }
         let result = (|| {
@@ -597,13 +636,15 @@ mod win {
 
     /// 写剪贴板富格式（PATCH002.24）：CF_HTML（"HTML Format" 注册格式，UTF-8 字节）
     /// 另加可选图片三格式（PNG 注册格式 / CF_DIB / CF_DIBV5）与 CF_UNICODETEXT。
-    /// 顺序沿浏览器/Office 惯例（HTML → 图片 → 文本）；任一步失败严格报错
+    /// 顺序沿浏览器/Office 惯例（HTML → 图片 → 文本）；任一步失败严格报错。
+    /// PATCH002.71：`pixels` 传入已解码像素时 DIB/DIBV5 不再二次解码（复制路径只解一次）
     pub fn write_clipboard_rich(
         html: &str,
         png: Option<&[u8]>,
+        pixels: Option<(u32, u32, Vec<u8>)>,
         text: &str,
     ) -> Result<(), ClipboardImageError> {
-        if unsafe { OpenClipboard(0) } == 0 {
+        if !open_clipboard_for_write() {
             return Err(ClipboardImageError::Open);
         }
         let result = (|| {
@@ -622,9 +663,13 @@ mod win {
                     return Err(ClipboardImageError::RegisterFormat);
                 }
                 set_bytes(png_fmt, png).map_err(|_| ClipboardImageError::Set("PNG"))?;
-                let dib = build_dib_from_png(png)?;
+                let (w, h, rgba) = match pixels {
+                    Some(px) => px,
+                    None => decode_to_rgba(png)?,
+                };
+                let dib = build_dib_from_pixels(w, h, &rgba);
                 set_bytes(CF_DIB, &dib).map_err(|_| ClipboardImageError::Set("CF_DIB"))?;
-                let v5 = build_dibv5_from_png(png)?;
+                let v5 = build_dibv5_from_pixels(w, h, &rgba);
                 set_bytes(CF_DIBV5, &v5).map_err(|_| ClipboardImageError::Set("CF_DIBV5"))?;
             }
             let uni = utf16_bytes(text);
@@ -696,14 +741,31 @@ pub fn write_clipboard_files(_paths: &[&std::path::Path]) -> Result<(), Clipboar
     Err(ClipboardImageError::UnsupportedPlatform)
 }
 
-/// 写剪贴板富格式（Windows：CF_HTML + 图片三格式 + Unicode 文本，PATCH002.24）
+/// 写剪贴板富格式（Windows：CF_HTML + 图片三格式 + Unicode 文本，PATCH002.24）。
+/// 兼容入口：图片像素在此解一次，再交给像素版（PATCH002.71）
 #[cfg(target_os = "windows")]
 pub fn write_clipboard_rich(
     html: &str,
     png: Option<&[u8]>,
     text: &str,
 ) -> Result<(), ClipboardImageError> {
-    win::write_clipboard_rich(html, png, text)
+    let pixels = match png {
+        Some(bytes) => Some(decode_to_rgba(bytes)?),
+        None => None,
+    };
+    win::write_clipboard_rich(html, png, pixels, text)
+}
+
+/// 写剪贴板富格式（**像素已解码版**，PATCH002.71：复制路径只解一次码；
+/// `pixels = None` 且 `png = Some` 时由 FFI 层解一次）
+#[cfg(target_os = "windows")]
+pub fn write_clipboard_rich_with_pixels(
+    html: &str,
+    png: Option<&[u8]>,
+    pixels: Option<(u32, u32, Vec<u8>)>,
+    text: &str,
+) -> Result<(), ClipboardImageError> {
+    win::write_clipboard_rich(html, png, pixels, text)
 }
 
 /// 写剪贴板富格式（非 Windows 明确报暂不支持——延后基线，严格报错非降级）
@@ -711,6 +773,17 @@ pub fn write_clipboard_rich(
 pub fn write_clipboard_rich(
     _html: &str,
     _png: Option<&[u8]>,
+    _text: &str,
+) -> Result<(), ClipboardImageError> {
+    Err(ClipboardImageError::UnsupportedPlatform)
+}
+
+/// 写剪贴板富格式（非 Windows 同款占位：像素版不可用）
+#[cfg(not(target_os = "windows"))]
+pub fn write_clipboard_rich_with_pixels(
+    _html: &str,
+    _png: Option<&[u8]>,
+    _pixels: Option<(u32, u32, Vec<u8>)>,
     _text: &str,
 ) -> Result<(), ClipboardImageError> {
     Err(ClipboardImageError::UnsupportedPlatform)
@@ -945,6 +1018,24 @@ mod tests {
         assert!(
             buf.windows(want.len()).any(|w| w == want.as_slice()),
             "路径宽字符在数据块内"
+        );
+    }
+
+    // —— PATCH002.71：像素构建器与 PNG 路径逐字节一致 ——
+
+    #[test]
+    fn pixel_builders_match_png_path() {
+        let png = fixture_png();
+        let (w, h, rgba) = decode_to_rgba(&png).expect("夹具必须可解");
+        assert_eq!(
+            build_dib_from_pixels(w, h, &rgba),
+            build_dib_from_png(&png).expect("旧路径必须可用"),
+            "CF_DIB 必须与旧 PNG 路径逐字节一致"
+        );
+        assert_eq!(
+            build_dibv5_from_pixels(w, h, &rgba),
+            build_dibv5_from_png(&png).expect("旧路径必须可用"),
+            "CF_DIBV5 必须与旧 PNG 路径逐字节一致"
         );
     }
 }
