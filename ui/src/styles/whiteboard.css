@@ -4,6 +4,7 @@
 
 /* 白板页容器（.page 同款纵向约束） */
 .whiteboard {
+  position: relative; /* PATCH002.66 #4：错误行绝对定位到卡片底部内距（不参与板高） */
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -42,34 +43,29 @@
   color: var(--ink-2);
 }
 
-/* 保存失败错误行（APP 扩展：严格报错策略可见化；状态行已按 2026-09-28 目验定案移除）。
-   收敛到 .whiteboard 容器下——避免与 bubbles.css 的全局 .error 同名碰撞（FIX：原两条
-   全局 .error 同优先级、后加载者覆盖，白板样式盖掉了气泡错误行） */
+/* PATCH002.66 #4：错误行只占“白板内容玻璃板下边缘 → 整卡下边缘”的空间
+   （卡片底部内距 20px；字号 10px、垂直居中、左内距 6px、700；玻璃板高度不变）。
+   单行、不换行、不省略；错误短句由 UI 层固定，完整错误落 console / todo.log。 */
 .whiteboard .error {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -20px;
+  height: 20px;
   margin: 0;
-  font-size: 12px;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
   color: var(--danger);
+  text-shadow: 1px 1px 3px #000;
+  pointer-events: none;
 }
 
-/* 载入失败重试钮（FIX004.19）：error 行内嵌小钮，瞬态失败（库锁等）可自愈 */
-.retry-btn {
-  margin-left: 6px;
-  padding: 1px 8px;
-  font-size: 12px;
-  font-family: inherit;
-  line-height: 1.4;
-  color: var(--danger);
-  background: transparent;
-  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.retry-btn:hover {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-
-/* 载入失败禁编辑：板体降透明示意不可写（防空白覆盖旧草稿） */
+/* 载入失败禁编辑：板体降透明示意不可写（防空白覆盖旧草稿）；10s 自动重试，无按钮 */
 .board:disabled {
   opacity: 0.45;
   cursor: not-allowed;

@@ -201,24 +201,16 @@ pub fn set_on_hotkey(callback: Box<dyn Fn() + Send>) {
     *slot = Some(callback);
 }
 
-/// 启动（或替换）全局热键线程：注册结果经 mpsc 同步回传（命令层可同步失败回滚）。
-/// 旧线程经 WM_QUIT 优雅退出并轮询等待；新线程注册失败立即报错（热键被占等）。
-/// FIX004.7 四点加固：tid 先落位再回传 / PostThreadMessageW 检查返回值 / 超时报错
-/// 不带病推进 / 退出清零用 CAS 只在自己仍是登记者时清
+/// 停止当前热键线程（注销并等退出，返回本轮代际给新注册用；无线程也推进代际）。
+/// 挂起（suspend）与替换（reregister）共用；FIX007.3 / 009.1 的退出等待与代际语义原样保留。
 #[cfg(target_os = "windows")]
-pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
+fn stop_thread() -> Result<u64, String> {
     use std::sync::atomic::Ordering;
-    use std::sync::mpsc;
     use std::time::Duration;
 
-    // 1. 杀旧线程（无旧线程则跳过）并轮询等待退出——旧线程退出循环时 Unregister
-    //    热键并自行 CAS 清零 tid（消息循环退出路径配套，FIX009.10 改语义描述免
-    //    行号随插行漂移），父侧只投递 WM_QUIT 不代清
-    //    （FIX007.3：原 swap(0) 先行清零令等待条件恒假 = 死等待，且剥夺旧线程
-    //    CAS 成功权致 Unregister/Register 竞窗）
-    // 0. 捕获本轮代际（FIX009.1）：fetch_add 令旧轮线程的双查比对立即失配（含
-    //    上一轮超时未死的 stall 线程——bool 版复位会被紧随的回滚轮抹掉信号），
-    //    无需独立复位步
+    // 捕获本轮代际（FIX009.1）：fetch_add 令旧轮线程的双查比对立即失配（含
+    // 上一轮超时未死的 stall 线程——bool 版复位会被紧随的回滚轮抹掉信号），
+    // 无需独立复位步
     let my_gen = REREGISTER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let old = THREAD_ID.load(Ordering::SeqCst);
     if old != 0 {
@@ -238,6 +230,22 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
             return Err("旧热键线程退出等待超时，放弃替换以防热键残留".to_string());
         }
     }
+    Ok(my_gen)
+}
+
+/// 启动（或替换）全局热键线程：注册结果经 mpsc 同步回传（命令层可同步失败回滚）。
+/// 旧线程经 WM_QUIT 优雅退出并轮询等待；新线程注册失败立即报错（热键被占等）。
+/// FIX004.7 四点加固：tid 先落位再回传 / PostThreadMessageW 检查返回值 / 超时报错
+/// 不带病推进 / 退出清零用 CAS 只在自己仍是登记者时清
+#[cfg(target_os = "windows")]
+pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // 1. 停旧线程（挂起/替换共用的 stop_thread；FIX007.3 退出等待与 FIX009.1
+    //    代际推进原样保留）
+    let my_gen = stop_thread()?;
 
     // 2. 新线程：注册 → tid 落位 → 回传结果（FIX004.7-①：tid 先登记再回传，防
     //    "成功已返回而 tid 未登记"窗口被并发 reregister 击穿）→ 消息循环
@@ -326,6 +334,12 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
         .map_err(|_| "热键注册结果等待超时".to_string())?
 }
 
+/// 挂起全局热键（设置录制期间）：只停线程/注销，不启动新线程；恢复走 reregister。
+#[cfg(target_os = "windows")]
+pub fn suspend() -> Result<(), String> {
+    stop_thread().map(|_| ())
+}
+
 // —— 非 Windows 空桩（PL026：调用点零 cfg；行为等价现状"跳过热键注册、不报错"）——
 
 /// 设置热键触发回调（非 Windows 空桩：无全局热键，静默 no-op）
@@ -335,6 +349,12 @@ pub fn set_on_hotkey(_callback: Box<dyn Fn() + Send>) {}
 /// 启动（或替换）全局热键线程（非 Windows 空桩：恒 `Ok`——真注册语义仅 Windows 有）
 #[cfg(not(target_os = "windows"))]
 pub fn reregister(_combo: HotkeyCombo) -> Result<(), String> {
+    Ok(())
+}
+
+/// 挂起全局热键（非 Windows 空桩：恒 `Ok`）
+#[cfg(not(target_os = "windows"))]
+pub fn suspend() -> Result<(), String> {
     Ok(())
 }
 

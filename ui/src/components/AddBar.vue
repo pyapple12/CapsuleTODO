@@ -2,14 +2,16 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { UI_TEXT_MAX_LEN } from "../../types";
+import { useAutoHideError } from "../composables/useAutoHideError";
 
 // 添加行（PL008.7 重构）：REC 按钮（average-swan-99 直引配方）+ plastic-parrot-88 输入框。
 // 回车/REC 双触发；空文本禁用；失败可见反馈（成功即清空并清除错误，沿 FIX001.5 模式）。
+// PATCH002.66：错误短句固定“添加失败！”，10s 自隐；完整错误只落 console。
 // added 单一事件（FIX004.21 收敛）：消费端 onTodoAdded 统一刷新 + 拉顶——
 // 原 changed/added 双发使刷新链双跑（同一新增 6 个 invoke，其中 3 个纯重复）
 const emit = defineEmits<{ added: [] }>();
 const draft = ref("");
-const error = ref("");
+const { message: error, show: showError, hide: clearError } = useAutoHideError(10_000);
 
 async function add(): Promise<void> {
   const text = draft.value.trim();
@@ -19,10 +21,11 @@ async function add(): Promise<void> {
   try {
     await invoke("todo_add", { text });
     draft.value = "";
-    error.value = "";
+    clearError();
     emit("added");
   } catch (err) {
-    error.value = `添加失败：${String(err)}`;
+    console.error("添加待办失败", err);
+    showError("添加失败！");
   }
 }
 </script>

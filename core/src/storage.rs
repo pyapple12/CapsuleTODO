@@ -175,10 +175,10 @@ impl Storage {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path)?;
-        // PATCH002.64：并发等待窗口——rusqlite 默认 `busy_timeout = 0`（撞车立刻
-        // `SQLITE_BUSY`）；给 5s 宽限，让"另一实例 / 另一连接正持锁"的短事务自然收敛
-        // （旧插件形态下两实例并存共享同一 db 时，该默认值会让其一直接报错退出）
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // PATCH002.66：写库快速失败（对齐 CapsulePulse PATCH005.14）——默认 5s 忙等
+        // 会把一次点按拖成数秒；CT 现为单连接 + Mutex + 单实例，正常路径 app 是唯一写者，
+        // 归零不误伤；外部第二写者/锁冲突立即 `SQLITE_BUSY`，UI 立即出错误行。
+        conn.busy_timeout(std::time::Duration::from_millis(0))?;
         let storage = Self { conn, now };
         storage.init()?;
         Ok(storage)

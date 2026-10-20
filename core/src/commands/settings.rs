@@ -121,6 +121,24 @@ pub fn settings_set_bubble_hotkey(
     Ok(crate::hotkey::to_display(&normalized))
 }
 
+/// 设置录制期间挂起气泡热键（只注销全局线程，不落库）；取消/超时由 resume 恢复。
+#[tauri::command]
+pub fn settings_suspend_bubble_hotkey() -> Result<(), CommandError> {
+    crate::hotkey::suspend().map_err(CommandError::Hotkey)
+}
+
+/// 恢复当前气泡热键（录制取消/超时；保存成功由 settings_set_bubble_hotkey 接管）。
+#[tauri::command]
+pub fn settings_resume_bubble_hotkey(ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+    let combo = settings_get_bubble_hotkey_core(&ctx)?;
+    let parsed = crate::hotkey::parse(&combo)?;
+    #[cfg(target_os = "windows")]
+    crate::hotkey::reregister(parsed).map_err(CommandError::Hotkey)?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = parsed;
+    Ok(())
+}
+
 /// settings_set_bubble_hotkey 核心实现：parse 校验 + 规范化落库（不含重注册，
 /// 命令壳负责；直测 = 临时路径内存库，禁触真实用户数据）
 pub fn settings_set_bubble_hotkey_core(

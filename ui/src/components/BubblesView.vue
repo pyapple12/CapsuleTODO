@@ -11,6 +11,7 @@ import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { useScrollKit } from "../composables/useScrollKit";
 import { installDragHooks, isSuppressed } from "../composables/useDragReorder";
+import { useAutoHideError } from "../composables/useAutoHideError";
 
 // ===== 气泡页（PL012.2 换装实验场形态 V0.017–V0.020 + V0.028 对调语义）：
 // 捕获钮（clipboard 双图标 + 占字 1s 反馈）/ 一键清空二态（宽度动画 + 悬停感知 2s
@@ -28,7 +29,8 @@ const props = defineProps<{
 }>();
 
 const items = ref<BubbleItem[]>([]);
-const error = ref("");
+// PATCH002.66：#2 错误短句 5s 自隐；完整错误只落 console。
+const { message: error, show: showError, hide: clearError } = useAutoHideError(5_000);
 /** 占字态（PL025.6 单态 + 判别）："" 空闲 / "capture" 已捕获 / "copy" 已复制 / "duplicate" 重复捕获 */
 const feedback = ref<"" | "capture" | "copy" | "duplicate">("");
 const confirmingClear = ref(false);
@@ -47,7 +49,6 @@ let copiedTimer = 0;
 let confirmTimer = 0;
 let clearWidthTimer = 0;
 let clickTimer: number | undefined;
-let errorTimer = 0; // 错误行 1s 自动隐藏定时器（PL024.8a）
 let unlistenBubbleChanged: UnlistenFn | undefined; // 热键失焦刷新监听句柄（PL016.1）
 // 监听竞态防护标志（FIX006.4）：setup 层声明——生命周期钩子仅在 setup 同步上下文
 // 注册才生效（嵌套注册被 Vue 忽略 = 防护恒失效教训）
@@ -60,32 +61,6 @@ const listEl = ref<HTMLElement | null>(null);
  * 阈值由设置板步进（已持久化，PL014.2 落库）即时生效。满额裁决收敛前端本地
  * （FIX004.23：Rust 侧 snapshot.remind 死值已删，契约只剩 items） */
 const hasWarning = computed(() => items.value.length > props.maxBubbles);
-
-/**
- * 错误文案截断（PL024.8a 单点收敛）：第二个全角冒号起丢弃——系统英文细节不进 UI，
- * Rust 文案与 console 底账保持完整（FIX009.6 可见文案/底账分离先例）
- */
-function truncateError(msg: string): string {
-  const first = msg.indexOf("：");
-  if (first < 0) return msg;
-  const second = msg.indexOf("：", first + 1);
-  return second < 0 ? msg : msg.slice(0, second);
-}
-
-/** 展示错误行（PL024.8a）：置入文案 + 挂 1s 自动隐藏定时器（重复触发重新计时） */
-function showError(msg: string): void {
-  error.value = truncateError(msg);
-  window.clearTimeout(errorTimer);
-  errorTimer = window.setTimeout(() => {
-    error.value = "";
-  }, 1000);
-}
-
-/** 立即清除错误行（成功路径）：取消未决定时器并清文本（渐隐由 Transition 承担） */
-function clearError(): void {
-  window.clearTimeout(errorTimer);
-  error.value = "";
-}
 
 /**
  * 拉取气泡快照（changed 上抛：父级同步页签徽章——捕获/删除/清空都走这里）。
@@ -142,7 +117,8 @@ async function capture(): Promise<void> {
     }, 1000);
     await refresh();
   } catch (err) {
-    showError(`捕获失败：${String(err)}`);
+    console.error("捕获失败", err);
+    showError("捕获失败");
   }
 }
 
@@ -229,9 +205,12 @@ async function onClearClick(): Promise<void> {
         await invoke("bubble_clear");
         await refresh();
       } catch (err) {
-        // FIX007.7 失败可见（行已塌缩"假空"，不提示则用户以为删成功）
-        showError(`清空失败：${String(err)}`);
+        // FIX007.7 + PATCH002.66：失败可见 + UI 回滚——行已动画塌缩，库未清空；
+        // 不刷新会留下"假空"。listKey 强制重挂，清掉内联高度 / leave 类。
         console.error("清空失败", err);
+        showError("清空失败");
+        listKey.value += 1;
+        await refresh();
       }
     }, 300);
     return;
@@ -240,8 +219,9 @@ async function onClearClick(): Promise<void> {
     await invoke("bubble_clear");
     await refresh();
   } catch (err) {
-    error.value = `清空失败：${String(err)}`;
+    // PATCH002.66：无行 / 减少动效分支与上方共用 showError（5s），不再直接常驻
     console.error("清空失败", err);
+    showError("清空失败");
   }
 }
 
@@ -375,9 +355,7 @@ onUnmounted(() => {
   // clearFxTimer（清空集体退场收尾）豁免清理：用户已点"确认清空"，300ms 收尾
   // 落库必须完成——切页取消会让"确认"被吞（数据残留 + 退场动画已播 = 状态诡异）。
   // 收尾回调仅 invoke + refresh，无报错路径（IAB 实测 errs=0），卸载后执行静默无害
-  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer, errorTimer].forEach((t) =>
-    window.clearTimeout(t),
-  );
+  [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
   unlistenBubbleChanged?.();
   rebuildObserver?.disconnect();
   unmountScrollKit();

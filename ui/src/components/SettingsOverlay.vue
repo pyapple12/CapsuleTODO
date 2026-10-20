@@ -59,7 +59,7 @@ async function toggle(): Promise<void> {
     }
   } else {
     isOpen.value = false;
-    stopHotkeyRecord(); // FIX004.2：收板必须退出录制态，否则 keydown 拦截吞一切按键
+    cancelHotkeyRecord(); // FIX004.2：收板必须退出录制态；PATCH002.85：并恢复旧热键
     syncVeils();
   }
 }
@@ -68,7 +68,7 @@ async function toggle(): Promise<void> {
 function close(): void {
   if (!isOpen.value) return;
   isOpen.value = false;
-  stopHotkeyRecord(); // FIX004.2 同款：收板退出录制态
+  cancelHotkeyRecord(); // FIX004.2 同款：收板退出录制态；PATCH002.85：并恢复旧热键
   syncVeils();
 }
 
@@ -185,6 +185,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   systemDark.removeEventListener("change", onSystemChange);
   document.removeEventListener("keydown", onHotkeyKeydown, true);
+  if (hotkeyRecording.value) cancelHotkeyRecord(); // PATCH002.85：卸载时恢复旧热键
   window.clearTimeout(hotkeyRecordTimer);
 });
 
@@ -196,23 +197,39 @@ const hotkeyError = ref("");
 let hotkeyRecordTimer = 0;
 
 /** 退出录制态并清计时器（FIX004.2：收板/切页签必须复位，否则 keydown capture
- * 持续吞一切按键 = 全应用键盘失灵） */
+ * 持续吞一切按键 = 全应用键盘失灵）。PATCH002.85：只退态，不碰全局热键——
+ * 取消/超时路径走 cancelHotkeyRecord 负责 resume。 */
 function stopHotkeyRecord(): void {
   hotkeyRecording.value = false;
   window.clearTimeout(hotkeyRecordTimer);
 }
 
+/** PATCH002.85：取消录制并恢复旧热键（Esc / 3s 超时 / 收板 / 卸载）。
+ * 只有确实处于录制态才 resume，避免非录制收板时误触发重注册。 */
+function cancelHotkeyRecord(): void {
+  const was = hotkeyRecording.value;
+  stopHotkeyRecord();
+  if (!was) return;
+  void invoke("settings_resume_bubble_hotkey").catch((err) =>
+    console.error("恢复气泡热键失败", err),
+  );
+}
+
 /** 录制 3s 无操作自动结束（用户定案 2026-09-30）：任何按键都算操作，重置计时 */
 function armHotkeyRecordTimer(): void {
   window.clearTimeout(hotkeyRecordTimer);
-  hotkeyRecordTimer = window.setTimeout(stopHotkeyRecord, 3000);
+  hotkeyRecordTimer = window.setTimeout(cancelHotkeyRecord, 3000);
 }
 
-/** 进入录制态：全局 capture 阶段拦截下一个组合键（Esc 取消；3s 无操作自动结束） */
+/** 进入录制态：全局 capture 阶段拦截下一个组合键（Esc 取消；3s 无操作自动结束）。
+ * PATCH002.66：不清 hotkeyError——错误说明在录制提示后仍保留，取消即回来，保存成功才消失。
+ * PATCH002.85：先挂起当前全局热键，否则 OS 会先吃掉当前组合（Ctrl+Alt+C → Ctrl+C）。 */
 function startHotkeyRecord(): void {
-  hotkeyError.value = "";
   hotkeyRecording.value = true;
   armHotkeyRecordTimer();
+  void invoke("settings_suspend_bubble_hotkey").catch((err) =>
+    console.error("挂起气泡热键失败（录制可能不完整）", err),
+  );
 }
 
 /** 录制态按键分流：修饰键单独按下继续等待；主键（字母/数字/F1-F12）完成组合；
@@ -224,7 +241,7 @@ function onHotkeyKeydown(e: KeyboardEvent): void {
   e.stopPropagation();
   armHotkeyRecordTimer();
   if (e.key === "Escape") {
-    stopHotkeyRecord();
+    cancelHotkeyRecord();
     return;
   }
   const mods: string[] = [];
@@ -240,13 +257,15 @@ function onHotkeyKeydown(e: KeyboardEvent): void {
   void saveHotkey([...mods, mainKey].join("+"));
 }
 
-/** 落库 + 重注册：成功回显规范化组合；失败红字（Rust 已回滚旧热键） */
+/** 落库 + 重注册：成功回显规范化组合并清错误；失败短句“热键注册失败”（Rust 已回滚旧键），
+ * 完整错误只落 console / 日志。PATCH002.66：错误常驻到下一次成功保存。 */
 async function saveHotkey(combo: string): Promise<void> {
   try {
     hotkeyText.value = await invoke<string>("settings_set_bubble_hotkey", { combo });
     hotkeyError.value = "";
   } catch (err) {
-    hotkeyError.value = String(err);
+    console.error("热键注册失败", err);
+    hotkeyError.value = "热键注册失败";
   }
 }
 
@@ -425,10 +444,13 @@ async function toggleSnapToEdge(e: Event): Promise<void> {
       <div class="setting-row inline">
         <div>
           <p class="setting-name">气泡捕获热键</p>
-          <p class="setting-desc">
-            {{ hotkeyRecording ? "按下新组合键（Esc 取消）" : "任意应用复制文本后按此键捕获" }}
+          <p class="setting-desc" :class="{ 'is-error': hotkeyError && !hotkeyRecording }">
+            {{
+              hotkeyRecording
+                ? "按下新组合键（Esc 取消）"
+                : hotkeyError || "任意应用复制文本后按此键捕获"
+            }}
           </p>
-          <p v-if="hotkeyError" class="hotkey-error">{{ hotkeyError }}</p>
         </div>
         <button
           class="hotkey-btn"

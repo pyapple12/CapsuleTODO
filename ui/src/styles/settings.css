@@ -37,6 +37,14 @@
   opacity: 0.6;
 }
 
+/* PATCH002.66 #3：热键失败替换说明文字（700 加粗、单行、不省略、常驻到保存成功；无阴影） */
+.setting-desc.is-error {
+  color: var(--danger);
+  opacity: 1;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
 .setting-control {
   margin-top: 10px;
 }
@@ -402,10 +410,4 @@
   to {
     background: rgba(255, 255, 255, 0.16);
   }
-}
-
-.hotkey-error {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--danger);
 }

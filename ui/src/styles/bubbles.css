@@ -68,7 +68,7 @@
   font-weight: 700;
   line-height: 1;
   color: var(--danger);
-  text-shadow: 0.5px 0.5px 2px #000; /* age-alert/满额提醒同款阴影（PL024.8a 定案） */
+  text-shadow: 1px 1px 3px #000; /* PATCH002.66：4 条错误行统一（只有错误行改，满额/年龄保持原 0.5/0.5/2） */
 }
 
 /* 错误行渐显渐隐（PL024.8a）：0.3s opacity 过渡，进出共用（1s 后置空触发 leave 渐隐） */

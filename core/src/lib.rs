@@ -292,6 +292,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_max_bubbles,
             commands::settings::settings_get_bubble_hotkey,
             commands::settings::settings_set_bubble_hotkey,
+    commands::settings::settings_suspend_bubble_hotkey,
+    commands::settings::settings_resume_bubble_hotkey,
             commands::settings::settings_get_always_on_top,
             commands::settings::settings_set_always_on_top,
             commands::settings::settings_get_snap_to_edge,

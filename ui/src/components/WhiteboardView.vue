@@ -12,6 +12,7 @@ import { useGlassBar } from "../composables/useGlassBar";
 // 展示（2026-09-28 目验定案：状态行"编辑中…/已自动保存"移除，APP 与 design 同步）
 
 const DEBOUNCE_MS = 800; // 防抖自动保存间隔（design whiteboard.js 同值）
+const RETRY_MS = 10_000; // PATCH002.66：加载/保存失败 10s 自动重试
 
 const content = ref("");
 const savedContent = ref(""); // 最近一次成功保存的内容（脏判定基准）
@@ -19,10 +20,21 @@ const error = ref("");
 const loadFailed = ref(false); // 载入失败态：禁编辑防"空白覆盖旧草稿"（FIX004.19）
 const boardEl = ref<HTMLTextAreaElement | null>(null);
 let debounceTimer = 0;
+let retryTimer = 0;
 let glassBar: { sync: () => void; destroy: () => void } | null = null;
 let boardRead: { sync: () => void; settle: () => void; destroy: () => void } | null = null;
 
-/** 拉取白板内容（首启空串）：失败置错误行 + 禁编辑（防空白覆盖旧草稿），重试钮可再拉 */
+/** 10s 自动重试（加载/保存共用；成功即清 timer；失败重新排） */
+function scheduleRetry(kind: "load" | "save"): void {
+  window.clearTimeout(retryTimer);
+  retryTimer = window.setTimeout(() => {
+    retryTimer = 0;
+    if (kind === "load") void load();
+    else void flush();
+  }, RETRY_MS);
+}
+
+/** 拉取白板内容（首启空串）：失败置错误行 + 禁编辑（防空白覆盖旧草稿），10s 自动重试 */
 async function load(): Promise<void> {
   try {
     const text = await invoke<string>("whiteboard_load");
@@ -30,19 +42,18 @@ async function load(): Promise<void> {
     savedContent.value = text;
     loadFailed.value = false;
     error.value = "";
+    window.clearTimeout(retryTimer);
+    retryTimer = 0;
   } catch (err) {
     loadFailed.value = true;
-    error.value = `白板加载失败：${String(err)}`;
+    error.value = "白板加载失败";
     console.error("whiteboard_load 拉取失败", err);
+    scheduleRetry("load");
   }
 }
 
-/** 重试载入（错误行入口）：成功解除禁编辑并恢复内容 */
-function retryLoad(): void {
-  void load();
-}
-
-/** 立即保存脏数据；成功返回 true（供切页/关窗 flush 判定） */
+/** 立即保存脏数据；成功返回 true（供切页/关窗 flush 判定）。
+ * PATCH002.66：失败短句“白板保存失败”，完整错误 console；10s 自动重试；内容不锁。 */
 async function flush(): Promise<boolean> {
   window.clearTimeout(debounceTimer);
   if (content.value === savedContent.value) {
@@ -52,9 +63,13 @@ async function flush(): Promise<boolean> {
     await invoke("whiteboard_save", { content: content.value });
     savedContent.value = content.value;
     error.value = "";
+    window.clearTimeout(retryTimer);
+    retryTimer = 0;
     return true;
   } catch (err) {
-    error.value = `保存失败：${String(err)}`;
+    console.error("whiteboard_save 保存失败", err);
+    error.value = "白板保存失败";
+    scheduleRetry("save");
     return false;
   }
 }
@@ -106,6 +121,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.clearTimeout(debounceTimer);
+  window.clearTimeout(retryTimer);
   glassBar?.destroy();
   boardRead?.destroy();
   glassBar = null;
@@ -128,10 +144,7 @@ onUnmounted(() => {
         @keydown="onBoardKeydown"
       ></textarea>
     </div>
-    <p v-if="error" class="error">
-      {{ error }}
-      <button v-if="loadFailed" class="retry-btn" @click="retryLoad">重试</button>
-    </p>
+    <p v-if="error" class="error">{{ error }}</p>
   </section>
 </template>
 
