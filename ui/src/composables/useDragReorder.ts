@@ -19,7 +19,11 @@ const HOLD_MS = 250;
 /** 与 .group 的 gap 对应：一个槽位 = 被拖行高 + 间隙 */
 const ROW_GAP = 6;
 /** 自动滚动边缘带宽度（用户定案按推荐值） */
+/** 边缘自动滚动触发带（px）；target 可用 `autoScrollZone` 覆盖（PATCH002.79：详情块 12） */
 const AUTO_SCROLL_ZONE = 32;
+
+/** 被拖行中心钳制在卡片内时上下留的边距（px）——PATCH002.83：只在本模块用，策略读 ctx 边界 */
+const DRAG_EDGE_MARGIN = 12;
 /** 自动滚动全速：每帧像素数（约 600px/s） */
 const AUTO_SCROLL_SPEED = 10;
 
@@ -44,6 +48,9 @@ export interface DragCtx {
   fromIdx: number;
   toIdx: number;
   scrollDelta: number;
+  /** 被拖块中心的可达范围（eff 空间：已含 scrollDelta；PATCH002.83 策略与引擎共用） */
+  centerMin: number;
+  centerMax: number;
   center: number;
   /** 真实指针 y（PATCH002.54：未钳制；`autoScrollProbe === "pointer"` 时自动滚动用它） */
   pointerY: number;
@@ -70,12 +77,16 @@ export interface DragTarget {
   /** 落点提交：toIdx = 目标槽位（invoke reorder 落库） */
   commit: (ctx: { id: number; toIdx: number }) => void;
   /** 收场重绘（无论是否换位都重拉——行本体以（可能新）顺序收回列表） */
-  rerender: () => void;
+  rerender: (ctx?: DragCtx) => void;
   /** 目标自有强制重建（可选；缺省回落全局 forceRemount——详情块不重建清单列表） */
   forceRemount?: () => void;
+  /** 保留占位符到收场重拉完成（PATCH002.82：详情块专用——保列表高度、防滚动被夹） */
+  keepGhost?: boolean;
   /** 自动滚动基准（PATCH002.54，可选）：缺省 `"center"` = 现行为（被钳制的行中心）；
    * `"pointer"` = 未钳制的真实指针 y（详情块用——容器内距与卡片内距不同，行中心够不到下边缘带） */
   autoScrollProbe?: "center" | "pointer";
+  /** 边缘自动滚动触发带（px；缺省 32）——PATCH002.79：详情板矮，note 用 12 */
+  autoScrollZone?: number;
   /** 换位判定（PATCH002.55，可选）：缺省 = 现"中心对中心"公式；详情块注入"按方向取缘"
    * （见 `noteDragPolicy.ts`）。等高行时两者数学等价 → 清单 / 气泡不受影响 */
   swapRule?: (ctx: DragCtx, eff: number) => number;
@@ -174,8 +185,11 @@ export const DRAG_TARGETS: DragTarget[] = [
     rowSel: ".note-block",
     itemSel: ".note-block",
     ghostClass: "note-block note-ghost",
+    // PATCH002.82：占位符留到重拉完成（列表高度不塌，滚动不被浏览器夹到短内容底部）
+    keepGhost: true,
     // PATCH002.54 / .55（注入点，机制缺省不动）：详情块的几何策略落详情自己的模块
     autoScrollProbe: "pointer",
+    autoScrollZone: 12, // PATCH002.79：详情板矮，32px 带会让末尾拖图一路滚到底
     swapRule: noteSwapRule,
     onDown(_row, e) {
       // PATCH002.77：Shift+点击 = 跨块扩选——不起拖、也不许清掉刚提升的选区锚点
@@ -189,15 +203,13 @@ export const DRAG_TARGETS: DragTarget[] = [
       if (!ul) return;
       const slots = [...ul.querySelectorAll(".note-block")]
         .map((r) => Number((r as HTMLElement).dataset.rowId))
-        .filter((slot) => slot !== ctx.id);
+        // PATCH002.82：ghost 无 data-row-id ⇒ NaN，显式过滤（占位符留到重拉后再撤）
+        .filter((slot) => Number.isInteger(slot) && slot !== ctx.id);
       slots.splice(ctx.toIdx, 0, ctx.id);
       noteHooks.commit?.(slots);
     },
-    rerender() {
-      noteHooks.rerender?.();
-    },
-    forceRemount() {
-      noteHooks.forceRemount?.(); // 详情块重建与清单/气泡列表无关
+    rerender(ctx) {
+      noteHooks.rerender?.(ctx);
     },
   },
 ];
@@ -206,25 +218,22 @@ export const DRAG_TARGETS: DragTarget[] = [
 const noteHooks: {
   onDown?: () => void;
   commit?: (slots: number[]) => void;
-  rerender?: () => void;
-  forceRemount?: () => void;
+  rerender?: (ctx?: DragCtx) => void;
 } = {};
 
 /**
  * 安装详情块拖拽钩子（DetailOverlay 挂载时调用一次）
  * @param hooks onDown（起拖前 flush 保存）/ commit（槽位序 → 真实块序落库）/
- *   rerender（收场重拉块列表）/ forceRemount（块列表强制重建）
+ *   rerender（收场重拉块列表）
  */
 export function installNoteDragHooks(hooks: {
   onDown: () => void;
   commit: (slots: number[]) => void;
-  rerender: () => void;
-  forceRemount: () => void;
+  rerender: (ctx?: DragCtx) => void;
 }): void {
   noteHooks.onDown = hooks.onDown;
   noteHooks.commit = hooks.commit;
   noteHooks.rerender = hooks.rerender;
-  noteHooks.forceRemount = hooks.forceRemount;
 }
 
 // 组件层注入的收场重拉句柄：cancelPendingClick / markSuppress / rerenderTodos /
@@ -310,6 +319,8 @@ export function useDragReorder(): void {
         fromIdx: 0,
         toIdx: 0,
         scrollDelta: 0,
+        centerMin: 0,
+        centerMax: 0,
         center: 0,
         pointerY: 0,
         moved: false,
@@ -377,6 +388,9 @@ export function useDragReorder(): void {
   /** 拖拽让位编排：按被拖行中心算目标槽——占位符滑向目标槽、途经行 ±一槽平移 */
   function applyDragShifts(ctx: DragCtx, center: number): void {
     const eff = center + ctx.scrollDelta; // 快照定格在起拖视口：滚过的增量须加回
+    // PATCH002.83：引擎钳制边界换算到 eff 空间交给策略（策略不再 import 引擎常量）
+    ctx.centerMin = ctx.cardRect.top + DRAG_EDGE_MARGIN + ctx.selfHeight / 2 + ctx.scrollDelta;
+    ctx.centerMax = ctx.cardRect.bottom - DRAG_EDGE_MARGIN - ctx.selfHeight / 2 + ctx.scrollDelta;
     // PATCH002.55（注入点）：缺省 = 现"中心对中心"公式；详情块注入"按方向取缘"
     let to = 0;
     if (ctx.t.swapRule) {
@@ -417,16 +431,19 @@ export function useDragReorder(): void {
     const sr = ctx.listEl.getBoundingClientRect();
     const topEdge = sr.top + ctx.padTop;
     const bottomEdge = sr.bottom - ctx.padBottom;
+    // PATCH002.79：内容不溢出时不滚（短列表直接跳）；触发带按 target 覆盖
+    if (ctx.listEl.scrollHeight - ctx.listEl.clientHeight <= 1) {
+      ctx.raf = requestAnimationFrame(dragAutoScroll);
+      return;
+    }
+    const zone = ctx.t.autoScrollZone ?? AUTO_SCROLL_ZONE;
     // PATCH002.54（注入点）：缺省 = 被钳制的行中心（现行为）；详情块用未钳制的指针 y
     const probe = ctx.t.autoScrollProbe === "pointer" ? ctx.pointerY : ctx.center;
     let speed = 0;
-    if (probe < topEdge + AUTO_SCROLL_ZONE) {
-      speed =
-        -AUTO_SCROLL_SPEED * Math.min(1, (topEdge + AUTO_SCROLL_ZONE - probe) / AUTO_SCROLL_ZONE);
-    } else if (probe > bottomEdge - AUTO_SCROLL_ZONE) {
-      speed =
-        AUTO_SCROLL_SPEED *
-        Math.min(1, (probe - (bottomEdge - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE);
+    if (probe < topEdge + zone) {
+      speed = -AUTO_SCROLL_SPEED * Math.min(1, (topEdge + zone - probe) / zone);
+    } else if (probe > bottomEdge - zone) {
+      speed = AUTO_SCROLL_SPEED * Math.min(1, (probe - (bottomEdge - zone)) / zone);
     }
     if (speed) {
       const before = ctx.listEl.scrollTop;
@@ -454,12 +471,12 @@ export function useDragReorder(): void {
       }
       return;
     }
-    // 被拖行中心钳制在卡片内（上下留 12px）：行已重挂卡片层，浮起不受列表容器裁剪
+    // 被拖行中心钳制在卡片内（上下留边距）：行已重挂卡片层，浮起不受列表容器裁剪
     const dy = e.clientY - ctx.startY;
     ctx.pointerY = e.clientY; // PATCH002.54：未钳制指针 y（详情块自动滚动基准）
     if (!ctx.moved && Math.abs(dy) > 3) ctx.moved = true; // 指针位移超 3px：解锁边缘自动滚动
-    const minCenter = ctx.cardRect.top + 12 + ctx.selfHeight / 2;
-    const maxCenter = ctx.cardRect.bottom - 12 - ctx.selfHeight / 2;
+    const minCenter = ctx.cardRect.top + DRAG_EDGE_MARGIN + ctx.selfHeight / 2;
+    const maxCenter = ctx.cardRect.bottom - DRAG_EDGE_MARGIN - ctx.selfHeight / 2;
     const cdy = Math.min(Math.max(ctx.selfMid + dy, minCenter), maxCenter) - ctx.selfMid;
     ctx.li.style.transform = `translateY(${cdy}px) scale(1.03)`; // 只 Y 轴跟手，锁 X 防晃
     const center = ctx.selfMid + cdy;
@@ -479,11 +496,14 @@ export function useDragReorder(): void {
     detailTimers.markSuppress();
     ctx.listEl.classList.remove("drag-live"); // 解锁列表滚动
     ctx.rows.forEach((r) => r.el.classList.remove("shifting"));
-    ctx.ghost.remove(); // 占位符使命完成
+    // PATCH002.82：详情块保留占位符到重拉完成（ghost 保高 ⇒ 列表不瞬间变矮、滚动不被夹）
+    if (!ctx.t.keepGhost) ctx.ghost.remove(); // 占位符使命完成
     ctx.li.remove(); // 重挂的行本体由重建收回列表
     if (ctx.fromIdx !== ctx.toIdx) ctx.t.commit(ctx); // 一次性提交：落点重排（invoke 落库）
-    (ctx.t.forceRemount ?? hookBag.forceRemount)?.(); // 目标自有重建优先（详情块不重建清单）
-    ctx.t.rerender(); // 收场重拉：行本体以新顺序收回列表
+    // PATCH002.82：keepGhost 目标由重拉的 toLocal 全量换 key 重建 ⇒ 跳过收场 forceRemount
+    // （否则会先渲染"图片 + ghost"的一帧）
+    if (!ctx.t.keepGhost) (ctx.t.forceRemount ?? hookBag.forceRemount)?.();
+    ctx.t.rerender(ctx); // 收场重拉：行本体以新顺序收回列表（ghost 由目标按需收尾）
   };
 
   const onBlur = (): void => {

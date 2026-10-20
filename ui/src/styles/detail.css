@@ -434,7 +434,9 @@
   height: auto;
   border-radius: var(--radius-panel);
   cursor: pointer;
-  transition: box-shadow 0.18s ease;
+  transition:
+    box-shadow 0.18s ease,
+    opacity 0.16s ease;
 }
 
 /* 选中态：玻璃描边高亮（用现有令牌，不新造视觉体系） */
@@ -502,8 +504,10 @@
 }
 
 /* 提升感：只有图块可拖（机制 onDown 仅认 `.note-block-image`），故深影落图身上——
-   `.note-block-img` 本有 `transition: box-shadow .18s`，提升感是渐入的 */
+   `.note-block-img` 本有 `transition: box-shadow .18s`，提升感是渐入的。
+   PATCH002.81：拖拽期图片 30% 透明——多短行时能看穿背后、判断换位落点 */
 .note-block.dragging .note-block-img {
+  opacity: 0.3;
   box-shadow:
     var(--panel-stroke),
     var(--panel-shadow),

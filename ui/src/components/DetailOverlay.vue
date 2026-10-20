@@ -274,11 +274,17 @@ async function saveBlocks(force = false): Promise<void> {
 }
 
 /** 载入该条目的块（开板/切条目/收场重拉） */
-async function loadBlocks(todoId: number): Promise<void> {
+async function loadBlocks(todoId: number, ghost: HTMLElement | null = null): Promise<void> {
   try {
     const list = await invoke<NoteBlock[]>("note_blocks_list", { todoId });
-    if (props.todo?.id !== todoId) return;
+    if (props.todo?.id !== todoId) {
+      ghost?.remove(); // 板已切走：占位符一并清掉
+      return;
+    }
     const serverList = toLocal(list);
+    // PATCH002.82：占位符与新列表**同一任务交接**——先撤 ghost 再赋值；浏览器只在任务结束后
+    // paint，因此不会出现"新列表 + ghost"或"矮一截"的中间帧
+    ghost?.remove();
     blocks.value = normalizeBlocks(serverList);
     dragDiag("loadBlocks:done"); // 临时诊断（抖动定位，测完即删）：重拉赋值后的本地列表
     savedTodoId = todoId;
@@ -687,9 +693,10 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     const todoId = props.todo?.id ?? null;
     clearKeepUndo("paste"); // 粘贴开始：豁免一律失效 ✓
     pasteInFlight += 1; // C5：窗口内所有保存入口跳过（防"删完未插"的空中间态落库）
+    let at: SelPoint | null = null;
     try {
       pushUndo();
-      const at = removeSelectedRange(false);
+      at = removeSelectedRange(false);
       const html0 = e.clipboardData?.getData("text/html") ?? "";
       const plain0 = e.clipboardData?.getData("text/plain") ?? "";
       if (!at) return;
@@ -717,6 +724,8 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
         if (props.todo?.id === todoId) scheduleSave();
         else void saveBlocksFor(todoId, blocks.value);
       }
+      // PATCH002.78：替换分支收尾把光标放到**插入起点**（Ctrl+A ⇒ 第一行行首；三条插入分支统一）
+      if (at && props.todo?.id === todoId) focusInsertionStart(at);
     }
     return;
   }
@@ -903,6 +912,20 @@ function pasteTextLines(
     scheduleSave();
     focusBlock(block._key, block.text.length - tail.length);
   }
+}
+
+/** 粘贴替换收尾：光标落**插入起点**（PATCH002.78：Ctrl+A → 粘贴 ⇒ 第一行行首）。
+ * 起点落在图块上时，顺延到其后第一个文本块块首 */
+function focusInsertionStart(at: SelPoint): void {
+  let index = Math.min(Math.max(at.index, 0), blocks.value.length - 1);
+  let offset = at.offset;
+  while (index < blocks.value.length && blocks.value[index].kind !== "Text") {
+    index += 1;
+    offset = 0;
+  }
+  const target = blocks.value[index];
+  if (!target || target.kind !== "Text") return;
+  focusBlock(target._key, Math.min(offset, target.text.length));
 }
 
 // —— 图块：单击选中 / 双击开原图 / 选中态键盘删 ——
@@ -1641,17 +1664,21 @@ function onBoardDragStart(e: DragEvent): void {
  * 重挂出列表（内容变矮、`st` 停在"矮内容"的底），收场把图放回 + 归一化补末块 → 内容**合法**
  * 长高（实测 +155px = 图高 + 补块高），视口却停在旧底之上 → 观感"跳回原来那一行"。
  * **回退方式**：删掉下面 `wasAtBottom` 一行 + 末尾那个 if 块即可（其余一字不动）。 */
-async function reloadAfterDrag(todoId: number): Promise<void> {
+async function reloadAfterDrag(todoId: number, ghost: HTMLElement | null = null): Promise<void> {
   const el = scrollEl.value;
+  // PATCH002.79 回归修正：贴底判据回到 `.69` 的**收场时**计算——按下前采集会让
+  // "从中间拖到底部"松手后不跟底 ⇒ 内容往上跳（`.57` 老 bug 复现）；`.69` 原样不动
   const wasAtBottom = el ? el.scrollTop >= el.scrollHeight - el.clientHeight - 1 : false;
-  // PATCH002.69：把"收场前是否贴底"**显式告诉阅读套件** —— 收场补末块会让内容在同帧长高，
-  // 靠滚动事件维护的标志此时会判错（拖拽期"先矮后长"）；套件的 RO 会在 paint 前贴底。
-  kit?.boardRead.setPinned(wasAtBottom);
-  await loadBlocks(todoId);
+  // PATCH002.82：ghost 仍在占位 ⇒ 过渡期不钉底（RO 别按"新列表 + ghost"的虚高贴底）
+  kit?.boardRead.setPinned(false);
+  // 占位符在 loadBlocks 赋值新列表**前**同一任务撤掉（只 paint 新列表，无 715/534 中间帧）
+  await loadBlocks(todoId, ghost);
+  if (ghost?.isConnected) ghost.remove(); // 兜底（重拉失败 / 条目已切走）
+  await nextTick(); // 等新列表渲染完再定滚动
   if (wasAtBottom && el) {
-    await nextTick();
     el.scrollTop = el.scrollHeight;
   }
+  kit?.boardRead.setPinned(wasAtBottom); // 过渡结束恢复套件贴底态
   dragDiag("drag:settled");
 }
 
@@ -1693,27 +1720,22 @@ installNoteDragHooks({
         .join(" ")}`,
     }).catch((err) => console.error("诊断上报失败", err));
     const bySlot = new Map(blocks.value.map((b, i) => [i + 1, b]));
-    const reordered = slots
-      .map((slot) => bySlot.get(slot))
-      .filter((b): b is LocalBlock => b != null);
-    if (reordered.length !== blocks.value.length) return;
-    blocks.value = reordered;
-    dragDiag("commit:applied"); // 临时诊断（抖动定位，测完即删）：本地重排赋值后
-    savedSignature = signature(blocks.value);
-    void invoke("note_reorder", { todoId: todo.id, ids: reordered.map((b) => b.id) }).catch((err) =>
+    const ordered = slots.map((slot) => bySlot.get(slot)).filter((b): b is LocalBlock => b != null);
+    if (ordered.length !== blocks.value.length) return;
+    // PATCH002.82：**不本地改 blocks**——否则会先渲染“图片 + ghost”的一帧；
+    // 顺序由重拉（toLocal 全量换 key）带回，落库照旧
+    dragDiag(`commit:ordered ids=${ordered.map((b) => b.id).join(",")}`);
+    void invoke("note_reorder", { todoId: todo.id, ids: ordered.map((b) => b.id) }).catch((err) =>
       console.error("详情块重排失败", err),
     );
   },
-  rerender: () => {
+  rerender: (ctx) => {
     const todo = props.todo;
     // PATCH002.57 打点（测完即删）：进入重拉前的 DOM/数组对齐快照（候选 1 的判决点）
     dragDiag("drag:rerender-entry");
-    if (todo) void reloadAfterDrag(todo.id);
-  },
-  forceRemount: () => {
-    // 块列表就地重建（拖拽重挂后 vnode↔DOM 断链修复）：换 key 强制刷新 DOM
-    blocks.value = toLocal(blocks.value);
-    void nextTick(() => autosizeAll());
+    // PATCH002.82：ghost 由重拉流程收尾（列表高度保持到新列表就位）
+    if (todo) void reloadAfterDrag(todo.id, ctx?.ghost ?? null);
+    else ctx?.ghost.remove();
   },
 });
 
