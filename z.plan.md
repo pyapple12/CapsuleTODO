@@ -1192,6 +1192,16 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 >
 > **随批移植的文档条目**：`AGENTS.md` 素材与环境陷阱节补两条 —— ① **"停旧实例后勿立即重启 ≥4 秒"**（CP PATCH012 两次实测：2 秒重启致 setup 阻塞、日志停在"待对账"，UI 照常但启动对账未跑）；② **"DEV 基座无窗口拖拽层"**（CP PATCH002.2 + **CT 实况核查**：`ui/src/dev/mock-invoke.ts` 只有命令 mock，`plugin:window|start_dragging` 走 plugin 分支返回安全假响应 ⇒ 不会真拖 ⇒ 凡与窗口拖拽相关的问题 DEV **必然复现不出**，必须 live 验证）
 
+### PATCH002.84：详情拖拽收场写序（S2，2026-10-21 立项）
+
+> 触发：用户 live "图片拖到下面，再拖回原位置，第一次显示已交换但松手回到原位置，第二次成功；可反复复现"（2026-10-21）。
+> 根因（日志 + 当前库实证）：拖图收场三链无序——① 按下图块 `onBlocksFocusOut → normalizeAndFlush()` 与 `onDown → saveBlocks(true)` 均为**拖前旧序** force save；② `commit` 的 `note_reorder` 是 `void invoke`，**不 await**；③ `rerender → reloadAfterDrag → note_blocks_list` 在 reorder 前就发出。日志出现 `commit:ordered`（目标序）紧随 `loadBlocks`（旧序），而当前库最终是目标序（reorder 迟到）；第一次回弹 = load 抢读，第二次成功 = 吃到上一次迟到 reorder。`.82` 移除本地乐观重排后该竞态直接可见；根因不是回退，是写序未串行。`.83` ⑥ 已登记同族低概率窗口。
+> S2 范围（用户 2026-10-21 定案）：只串**拖拽收场链** —— 在飞保存（含已发出的防抖 / 失焦保存）→ `note_reorder` → 重拉。粘贴 / 删除 / 撤销 / 切源 / 关板不入链；S3（全包 per-todo 写队列）记 `y.problems.md` #24，未来做。
+> 文件 / 函数：新建 `ui/src/composables/useNoteWriteChain.ts`（纯 `run` 串行 + 失败隔离 + `idle`）；`ui/src/components/DetailOverlay.vue` 加 `noteWrite` 链与 `noteSavesInFlight` 集合（`saveBlocksFor` 薄壳登记在飞保存）；`onDown` / `onBlocksFocusOut` 入链；`commit` 链内 `await Promise.all([...noteSavesInFlight])` 后再 `note_reorder`；`rerender` 等 `dragCommit` 后再入链 `reloadAfterDrag`；`.82` ghost 单帧交接保留；`onDown` / focusout / commit / rerender 之外零改动。
+> 验证：`ui/tests/note-write-chain.spec.ts`（保存未完成不 reorder / reorder 未完成不重拉 / 失败不阻断 / S2 在飞保存收场）；live 图拖下→拖回**第一次即稳定**、连做 3 次，回归 `.79` 贴底 / `.82` ghost / `.72` 切源关板 / `.77` 选区；门禁 prettier / vitest / vue-tsc / build。
+> 打点：`drag:reorder-done` / `drag:chain-reload` 临时保留，**PATCH002 整批收官时统一清**（不 live 后删；沿既有 `drag:*` / `pin:*` 同规）。
+> 回退：删 `useNoteWriteChain` 与 `noteSavesInFlight` 接线，恢复 `onDown` / focusout / commit 的三处 `void` 原路径；`.77/.74/.82` 不受影响。
+
 ---
 
 ## 附录 PATCH003（**2026-10-19 用户定案：取消独立编号，三条并入 PATCH002 为 `.50`–`.52`；本附录保留原方案原文**）：浮板观感三修（整行溶解表达 / 图片气泡开板方式 / 气泡详情内板高度解耦）（2026-10-18 立项）
