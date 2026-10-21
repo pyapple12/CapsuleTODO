@@ -4,8 +4,9 @@
 // swapRule 时调用它，缺省仍走原"中心对中心"公式（清单 / 气泡零影响）。
 import type { DragCtx } from "./useDragReorder";
 
-/** 高度差的比例阈值（PATCH002.80 最终定案 k=0.25）：k=0 回 `.58` 缘对中线、k=0.5 为中心 */
-const HEIGHT_SWAP_K = 0.25;
+/** 高度差的比例阈值（PATCH002.80 最终定案 k=0.25）：k=0 回 `.58` 缘对中线、k=0.5 为中心。
+ * PATCH002.87：清单/气泡默认换位也复用同一阈值（等高 d=0，逐帧退回中心对中心）。 */
+export const HEIGHT_SWAP_K = 0.25;
 
 /**
  * 详情块换位判定（PATCH002.58 定案"丙" + PATCH002.80 等比阈值）：

@@ -1167,15 +1167,17 @@ PATCH001 新增面两路独立最严审零缺陷（谓词/边界/分层/锁纪�
 
 - 本段为 live 逐条派生，逐条做法见 `x.progress.md`。要点：暗色黑纱（`.67`）、详情内距定值（`.68`）、换位到底一帧拉回（`.69`，收口 `.57`）、`Ctrl+A` 后粘贴落点（`.70`）、复制选区卡顿（`.71`，live 通过）、撤销快照不跨载入（`.72`）、`Ctrl+A` 后按键原生替换语义（`.73`）、首次圈选被原生拖文本抢（`.74`，P0 已落 + live 通过）、全选回车后光标无主（`.75`）、CF_HTML http(s) 下载（`.76`，live 通过：先落“🖼 下载中…”占位 + 后台下载 + 成功/失败事件替换）、`useNoteSelection` 状态机（`.77`）、无块焦点 Enter/粘贴失效（`.78`）、末尾拖图自动滚到底（`.79`）、不等高行换位（`.80`）、拖拽 30% 透明（`.81`）、ghost 单帧交接（`.82`）、`DragCtx` 六项收口（`.83`）。
 
-**`.84`–`.87` 最新四条（2026-10-21）**
+**`.84`–`.89` 最新六条（2026-10-21/22）**
 
 - `.84` 拖拽收场写序（S2）：在飞保存 → `note_reorder` → 重拉串行；新增 `ui/src/composables/useNoteWriteChain.ts`，`DetailOverlay.vue` 加 `noteWrite` 链与 `noteSavesInFlight`，`onDown`/`onBlocksFocusOut` 入链，`commit` 等齐在飞保存后再 reorder；S3 全包写队列见 `y.problems.md` #24。
 - `.85` 热键录制被当前全局热键截胡：进入录制先 suspend 当前热键，Esc/3s/收板/卸载 resume；有效组合才 stop + save（失败由命令回滚旧键）。
 - `.86` 焦点环全局退役（live 通过）：`ui/style.css` 加 `:focus, :focus-visible { outline: none }`（`main.ts` 对所有窗口引入，托盘菜单也覆盖）；**保留** `addbar.css` `.input:focus` 与 `settings.css` `.switch input:focus + .slider` 的自定义 accent 反馈；保留功能性 `blur()`；注释登记“有意放弃键盘焦点指示，无障碍统一补”。
-- `.87` 清单/气泡末行过矮不可交换：`useDragReorder.ts` 抽 `reachableTargetMid(r, ctx)`（含 `scrollDelta`），默认 swap 与 note 策略共用；高度差阈值沿用 `d = 0.25 × max(0, selfHeight − targetHeight)`（等高 `d=0`，手感不变）；目标中点钳进 `[centerMin, centerMax]`，边界用 `<=`；顶部 `eff <= centerMin` 直接归 0（沿 `.80` 的 `atTop`）；补末行矮/高块/等高几何用例。
+- `.87` 清单/气泡末行过矮不可交换（live 通过）：根因是末行中点高于 `centerMax`（被拖行中心可达上限），默认 swap 的 `r.mid < eff` 永远不成立。做法：`useDragReorder.ts` 新增 `reachableTargetMid(row, ctx, downward)`——下拖只钳上界 `centerMax`，上拖不钳（顶部 `eff <= centerMin` 归 0）；新增 `defaultSwapRule(ctx, eff)`——等高 `d=0` 退回原中心对中心，高行下拖 `eff+d` / 上拖 `eff-d`，等高末行在 `centerMax` 边界补一次；`applyDragShifts` 默认分支改调它。`noteDragPolicy` 的 `.80` 公式不动，仅共用导出的 `HEIGHT_SWAP_K`。验证：`ui/tests/drag-reorder-geometry.spec.ts` 8 条（钳制方向、等高、末行矮、等高末行边界、顶部、高行上拖、scrollDelta）；live 待用户。
+- `.88` 框选在板外松手误收板（live 通过）：根因是 `onDocClick` 把“板内 mousedown、板外 mouseup”后补发的 click（target = 两者最近公共祖先，通常已在板外）当成新板外点击。修复：新建 `ui/src/composables/detailOutsideClick.ts` 的 `shouldCloseDetailOnOutsideClick({ startedInside, targetInside, targetIsRow })`；`DetailOverlay.vue` 的 `onGlobalDown` 记录 `downInsideBoard`，`onDocClick` 消费标记后按纯函数裁决。保留 `.49` 的 click 收板与行/气泡行例外；选区状态机、拖拽链、图片事件、焦点环零改动。验证：5 条纯函数 vitest + live（板内框选到板外松手不关、板外新按下仍关、行例外、图块/标题拖拽、Shift / Ctrl+A / Esc 回归）。
+- `.89` 拖拽收场列表视口跳回首行（已落待 live）：根因是收场对清单/气泡调用 `forceRemount` → `TodoList`/`BubblesView` 的 `listKey++` 替换整个 `<ul>`（`:key="listKey"`），新元素 `scrollTop=0`；`rerender` 只重拉数据不恢复。修复：`useDragReorder` 在 `onMouseUp` 收场前捕获 `ctx.listEl.scrollTop`，`nextTick` 后按 `scopeId` 找回新旧同 id `<ul>`，用 `clampListScrollTop` 恢复；`keepGhost`（详情块）路径不介入；`clampListScrollTop` 有 3 条纯函数用例。验证：清单/气泡中间滚动换位不跳首行、拖到底/贴底、未换位松手、单行拖拽、`.69/.82/.84` 回归；live 待用户。
 
-> 版本：fix 只推修订号，三段保持 `0.2.3`（本批 V0.2.3.1 → V0.2.3.18）。
-> 状态：`.71`/`.74`/`.76`/`.86` live 通过；`.87` 待做；其余已收口。
+> 版本：fix 只推修订号，三段保持 `0.2.3`（本批 V0.2.3.1 → V0.2.3.19）。
+> 状态：`.71`/`.74`/`.76`/`.86`/`.87`/`.88` live 通过；`.89` 已落待 live；其余已收口。
 > 收尾：临时诊断（`core/src/lib.rs` 的 `debug_log` 命令 + `DetailOverlay.vue` 的 `dragDiag` / `debug_log` 打点）整批收官时统一清，清完跑全量门禁。
 
 ---

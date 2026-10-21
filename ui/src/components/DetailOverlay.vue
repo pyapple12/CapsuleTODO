@@ -22,6 +22,7 @@ import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
 import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection";
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
+import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
 
 // ===== 详情板（PL010.5 todo 模式；bubble 模式 PL012 填充；**PL027 详情改块序列**）：
@@ -2138,12 +2139,16 @@ function onViewportResize(): void {
 // 板内 mousedown：清图块选中 / 清选区（板内交互须即时）
 // PATCH002.49（甲案）：**板外收板从 mousedown 挪到 click** —— 拖动把手（主标题）在板外，
 // mousedown 口径会在拖拽启动前就把板收掉；click 与归档板 / 设置板一致（拖动不产生 click）
+// PATCH002.88：记录本次 mousedown 是否从板内起手——框选到板外松手时补发的 click
+// target 是最近公共祖先（通常已在板外），不能把它当成“板外新点击”。
+let downInsideBoard = false;
 function onGlobalDown(e: MouseEvent): void {
   if (!isOpen.value) return;
   selection.setSuppressImageClick(false); // PATCH002.77：新手势开始，重置上一次 Shift 扩选标记
   const ov = overlay.value;
-  const target = e.target as HTMLElement | null;
-  if (!ov || !ov.contains(e.target as Node)) return; // 板外交给 onDocClick
+  downInsideBoard = !!ov && e.target instanceof Node && ov.contains(e.target);
+  if (!downInsideBoard) return; // 板外按下：仍交给 onDocClick 判断是否收板
+  const target = e.target instanceof HTMLElement ? e.target : null;
   // PATCH002.39：Shift+点击是"**扩选**"——**不得清选区**（否则锚点在 click 之前就没了）。
   // 捕获阶段最先到这里 ⇒ 只此一处即可覆盖文本块与图块两种落点。
   if (e.shiftKey) {
@@ -2173,14 +2178,20 @@ function onGlobalDown(e: MouseEvent): void {
 
 /** 板外点击收板（PATCH002.49 甲案）：`click` 而非 `mousedown`——拖动把手不产生 click，
  * 故拖窗口时板不被收掉。**行 / 气泡行上的点击例外**：那是"切换详情源"（行单击开板），
- * 由开板流程接管（否则 document 冒泡阶段晚到的 close 会把刚开的板关掉） */
+ * 由开板流程接管（否则 document 冒泡阶段晚到的 close 会把刚开的板关掉）。
+ * PATCH002.88：click target = mousedown/mouseup 最近公共祖先；框选在板内起手、板外松手时
+ * target 会落到板外 → 按 mousedown 来源识别为手势收尾，不关板；板外新按下仍照旧收板。 */
 function onDocClick(e: MouseEvent): void {
   if (!isOpen.value) return;
+  const startedInside = downInsideBoard;
+  downInsideBoard = false; // 本次 click 消费掉，防泄漏到下一次
   const ov = overlay.value;
-  const target = e.target as HTMLElement | null;
-  if (ov && ov.contains(e.target as Node)) return;
-  if (target?.closest(".todo-row") || target?.closest(".bubble-row")) return;
-  close();
+  const target = e.target instanceof HTMLElement ? e.target : null;
+  const targetInside = !!ov && e.target instanceof Node && ov.contains(e.target);
+  const targetIsRow = !!(target?.closest(".todo-row") || target?.closest(".bubble-row"));
+  if (shouldCloseDetailOnOutsideClick({ startedInside, targetInside, targetIsRow })) {
+    close();
+  }
 }
 window.addEventListener("mousedown", onGlobalDown, true);
 document.addEventListener("click", onDocClick);

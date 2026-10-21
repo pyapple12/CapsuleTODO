@@ -6,10 +6,10 @@
 // design 差异映射：全局 dragCtx → 模块级闭包（组合式无全局作用域）；commit/rerender
 // 由 DRAG_TARGETS 回调注入（Vue 侧走 invoke + 父级重拉）；Vue 冻结防线 = 注册表
 // freezeProbe（engaged 期间列表 watch 早退，落点收场统一重拉）=====
-import { onUnmounted } from "vue";
+import { nextTick, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { rowMaskDead } from "./useMaskDead";
-import { noteSwapRule } from "./noteDragPolicy";
+import { HEIGHT_SWAP_K, noteSwapRule } from "./noteDragPolicy";
 import { registerDragProbe } from "./useBoardRead";
 
 /** 长按等待期允许的抖动幅度：超出即取消本次手势 */
@@ -58,6 +58,56 @@ export interface DragCtx {
   padTop: number;
   padBottom: number;
   raf: number;
+}
+
+/**
+ * 目标行中点的可达钳制（PATCH002.87）：下拖时目标行若在 `centerMax` 之外（矮末行），
+ * 先把中点钳到 `centerMax`，拖到底才能触发最后一行；上拖不钳中点，由顶部
+ * `eff <= centerMin` 的“到顶即到首”覆盖。`ctx` 边界已含 `scrollDelta`（`.83` 口径）。
+ * @param row 目标行快照（只读 `mid`）
+ * @param ctx 拖拽上下文
+ * @param downward 当前是否向下拖
+ * @returns 可达空间中的目标中点
+ */
+export function reachableTargetMid(row: { mid: number }, ctx: DragCtx, downward: boolean): number {
+  return downward ? Math.min(row.mid, ctx.centerMax) : row.mid;
+}
+
+/**
+ * 清单 / 气泡默认换位规则（PATCH002.87）：中心对中心 + 高度差阈值 + 末行可达钳制。
+ * - 等高行 `d=0`：逐帧退回原 `r.mid < eff`，手感不变；
+ * - 高行对矮行：下拖用 `eff + d`（更早触发）、上拖用 `eff - d`（多拖 d 才越），
+ *   与 `.80` 的方向语义一致；
+ * - 顶部 `eff <= centerMin` 直接归 0（到顶即到首）；
+ * - 下拖目标中点经 `reachableTargetMid` 钳到 `centerMax`（末行可达）；上拖不钳，顶部 `atTop` 归 0。
+ * @param ctx 拖拽上下文
+ * @param eff 被拖行中心的等效位置（已含 `scrollDelta`）
+ * @returns 目标槽位号
+ */
+export function defaultSwapRule(ctx: DragCtx, eff: number): number {
+  if (eff <= ctx.centerMin + 0.5) return 0;
+  const downward = eff > ctx.selfMid;
+  let to = 0;
+  ctx.rows.forEach((row, index) => {
+    if (index === ctx.fromIdx) return;
+    const targetMid = reachableTargetMid(row, ctx, downward);
+    const d = HEIGHT_SWAP_K * Math.max(0, ctx.selfHeight - row.height);
+    const threshold = downward ? eff + d : eff - d;
+    // 等高末行 d=0：中心恰好等于 centerMax 时用边界条件补一次，避免 `<` 吃掉最后一行
+    const atBottomBoundary = downward && targetMid === ctx.centerMax && eff >= ctx.centerMax;
+    if (targetMid < threshold || atBottomBoundary) to += 1;
+  });
+  return to;
+}
+
+/** 滚动位置夹取（PATCH002.89）：恢复拖拽前的列表视口，按新内容高度限幅。 */
+export function clampListScrollTop(
+  top: number,
+  scrollHeight: number,
+  clientHeight: number,
+): number {
+  const max = Math.max(0, scrollHeight - clientHeight);
+  return Math.min(Math.max(0, top), max);
 }
 
 /** 拖拽目标注册项（差异点全在此——机制本体零差异） */
@@ -396,9 +446,7 @@ export function useDragReorder(): void {
     if (ctx.t.swapRule) {
       to = ctx.t.swapRule(ctx, eff);
     } else {
-      ctx.rows.forEach((r, i) => {
-        if (i !== ctx.fromIdx && r.mid < eff) to += 1;
-      });
+      to = defaultSwapRule(ctx, eff);
     }
     ctx.toIdx = to;
     const unit = ctx.selfHeight + ROW_GAP;
@@ -492,6 +540,11 @@ export function useDragReorder(): void {
     if (ctx.raf) cancelAnimationFrame(ctx.raf); // 停自动滚动循环
     document.body.style.userSelect = "";
     if (!ctx.engaged) return; // 长按前的松手 = 点击（详情板/复制接管）
+    // PATCH002.89：收场 forceRemount 会换掉整个 <ul>，新元素 scrollTop=0；先记下拖前/拖中
+    // 视口，重建后按新内容高度恢复，避免"拖到中间松手跳回首行"。
+    const restoreScroll = !ctx.t.keepGhost;
+    const scrollTopBefore = ctx.listEl.scrollTop;
+    const scopeId = ctx.t.scopeId;
     suppressUntil = Date.now() + 350; // 拖拽结束的落点点击不当作行点击
     detailTimers.markSuppress();
     ctx.listEl.classList.remove("drag-live"); // 解锁列表滚动
@@ -504,6 +557,15 @@ export function useDragReorder(): void {
     // （否则会先渲染"图片 + ghost"的一帧）
     if (!ctx.t.keepGhost) (ctx.t.forceRemount ?? hookBag.forceRemount)?.();
     ctx.t.rerender(ctx); // 收场重拉：行本体以新顺序收回列表（ghost 由目标按需收尾）
+    if (restoreScroll) {
+      // 新旧 <ul> 同 id；nextTick 后新元素已就位。后续数据重拉在同一 <ul> 内 patch，
+      // 不会再重置 scrollTop；高度变化交给 clamp 与 `.69` 的贴底逻辑。
+      void nextTick(() => {
+        const el = document.getElementById(scopeId);
+        if (!el) return;
+        el.scrollTop = clampListScrollTop(scrollTopBefore, el.scrollHeight, el.clientHeight);
+      });
+    }
   };
 
   const onBlur = (): void => {
