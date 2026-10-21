@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DragCtx } from "../src/composables/useDragReorder";
-import {
-  clampListScrollTop,
-  defaultSwapRule,
-  reachableTargetMid,
-} from "../src/composables/useDragReorder";
+import { defaultSwapRule, reachableTargetMid } from "../src/composables/useDragReorder";
 
 /**
  * 造一个只含默认换位规则所需字段的上下文（其余字段对该规则无意义 ⇒ 断言隔离）。
@@ -56,21 +52,6 @@ describe("reachableTargetMid（PATCH002.87 可达中点钳制）", () => {
     expect(reachableTargetMid({ mid: 200 }, ctx, true)).toBe(200);
     expect(reachableTargetMid({ mid: 50 }, ctx, false)).toBe(50);
     expect(reachableTargetMid({ mid: 350 }, ctx, false)).toBe(350);
-  });
-});
-
-describe("clampListScrollTop（PATCH002.89 收场视口恢复）", () => {
-  it("正常范围原样保留", () => {
-    expect(clampListScrollTop(500, 1000, 300)).toBe(500);
-  });
-
-  it("超过可滚范围时夹到底", () => {
-    expect(clampListScrollTop(900, 1000, 300)).toBe(700);
-  });
-
-  it("负数夹到 0；内容不足一屏也回 0", () => {
-    expect(clampListScrollTop(-5, 1000, 300)).toBe(0);
-    expect(clampListScrollTop(120, 200, 300)).toBe(0);
   });
 });
 

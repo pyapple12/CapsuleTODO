@@ -26,13 +26,21 @@ export interface ScrollKitOptions {
  * 整板阅读套件（玻璃滑杆 + 整板阅读）：挂载/拆卸显式管理
  * @param listEl TransitionGroup template ref（真实 UL 经 $el 解引用）
  * @param opts 套件选项（boardRead/glassBar 配置 + mountedFlag）
- * @returns mount（ul 在 DOM 后调用，防重挂）/ unmount（监听/observer/三角/浮钮全清）
+ * @returns mount（ul 在 DOM 后调用，防重挂）/ unmount（监听/observer/三角/浮钮全清）/
+ *   setPinned（转发 boardRead 的贴底声明；未挂载时 no-op）
  */
 export function useScrollKit(
   listEl: Ref<unknown>,
   opts: ScrollKitOptions,
-): { mount: () => void; unmount: () => void } {
-  let boardRead: { destroy: () => void } | null = null;
+): {
+  mount: () => void;
+  unmount: () => void;
+  setPinned: (value: boolean) => void;
+} {
+  let boardRead: {
+    destroy: () => void;
+    setPinned: (value: boolean) => void;
+  } | null = null;
   let glassBar: { destroy: () => void } | null = null;
 
   /** 挂套件（ul 已在 DOM 时执行；dataset[opts.mountedFlag.key] 防重挂） */
@@ -43,6 +51,11 @@ export function useScrollKit(
     ul.dataset[opts.mountedFlag.key] = "1";
     boardRead = useBoardRead(ul, opts.boardRead);
     glassBar = useGlassBar(ul, opts.glassBar);
+  }
+
+  /** 显式声明贴底态（PATCH002.89：拖拽交接期间防 ResizeObserver 按中间高度贴底） */
+  function setPinned(value: boolean): void {
+    boardRead?.setPinned(value);
   }
 
   /** 拆旧挂新前显式清理（监听/observer/三角/浮钮全清 + 摘防重挂标记） */
@@ -56,5 +69,5 @@ export function useScrollKit(
     delete document.getElementById(opts.mountedFlag.hostId)?.dataset[opts.mountedFlag.key];
   }
 
-  return { mount, unmount };
+  return { mount, unmount, setPinned };
 }

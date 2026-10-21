@@ -10,7 +10,13 @@ import { rowElById, pinLeaveHeight } from "../composables/useListRow";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { useScrollKit } from "../composables/useScrollKit";
-import { deferDuringDrag, installDragHooks, isSuppressed } from "../composables/useDragReorder";
+import {
+  deferDuringDrag,
+  installDragHooks,
+  isSuppressed,
+  type DragCtx,
+} from "../composables/useDragReorder";
+import { expectedOrderMatches } from "../composables/dragHandoff";
 
 // ===== 清单页（PL010.4 换装实验场形态）：行模板 1:1（NeonCheckbox + t-text +
 // DelButton 二态 + age-alert 黄红提醒）+ TransitionGroup 出入场（0.3s 显式 duration——
@@ -32,8 +38,12 @@ const emit = defineEmits<{
 
 const listEl = ref<HTMLElement | null>(null);
 
+/** 拖拽交接期的显示缓冲（PATCH002.89）：ghost 未撤前不直接渲染父级新数据，
+ * 命中 expectedIds 后与撤 ghost 同一任务写回，避免旧序/首行中间帧 */
+const renderItems = ref<TodoView[]>(props.items);
+
 /** 未完成行（排序视图已由 Rust 裁决，此处不再排序只过滤） */
-const active = computed(() => props.items.filter((it) => !it.done));
+const active = computed(() => renderItems.value.filter((it) => !it.done));
 
 // —— DelButton 二态单实例（FIX005.24 收敛至 useDelConfirmGroup）：全列表同时
 // 只允许一行处于确认态；再点执行 = 删除 + 变更上抛 ——
@@ -266,20 +276,6 @@ watchEffect(
   { flush: "post" }, // PATCH002.19：改 post——pre 跑在 DOM 更新前，首次装载恒扫空
 );
 
-// 拖拽钩子安装（本组件只装一次——气泡组件重复调用幂等覆盖，钩子语义一致）
-const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（见 useDragReorder）
-installDragHooks({
-  cancelPendingClick: () => clearTimeout(clickTimer),
-  markSuppress: () => {}, // suppress 时间戳在 useDragReorder 模块内自持，无需写回
-  rerenderTodos: () => {
-    emit("changed"); // 收场重拉（父级三源齐拉含本列表）
-  },
-  rerenderBubbles: () => {}, // 气泡路 rerender 由 BubblesView 覆盖注册
-  forceRemount: () => {
-    listKey.value += 1; // TransitionGroup 整列表重建（重挂节点被外部摘除，Vue 不感知）
-  },
-});
-
 // 主窗挂点（design glass-bar.js 同款）：滑杆 inset + 整板阅读 skipDuringDrag。
 // 挂载时机（泄漏教训 2026-09-28）：此前用 rAF 链轮询等 .list 入 DOM——组件卸载后
 // rAF 闭包仍存活，切页往返会给新 DOM 重复挂载滑杆/三角且无人清理（白板页黄三角
@@ -294,6 +290,121 @@ const scrollKit = useScrollKit(listEl, {
 });
 const mountScrollKit = scrollKit.mount;
 const unmountScrollKit = scrollKit.unmount;
+const setPinned = scrollKit.setPinned;
+
+// —— PATCH002.89 拖拽收场交接（详情板 .82 同款）——
+// 收场保留 ghost，父级数据到达后仅当活动行顺序命中 expectedIds 时才在同一任务
+// 撤 ghost + 换行 key + 写显示缓冲；旧刷新响应不能把列表打回旧序。
+const HANDOFF_TIMEOUT_MS = 500;
+const rowEpoch = ref(0);
+const dragRemounting = ref(false);
+interface DragHandoff {
+  ghost: HTMLElement;
+  expectedIds: number[] | null;
+  atBottom: boolean;
+  /** 交接前的视口偏移（同轮 nextTick 只兜底“被夹回 0”，不做跨帧恢复） */
+  scrollTop: number;
+}
+let pendingHandoff: DragHandoff | null = null;
+let handoffFallback: number | undefined;
+
+/** 当前清单滚动容器（TransitionGroup template ref 的 $el 也指向它） */
+function listContainer(): HTMLElement | null {
+  return document.getElementById("todo-active");
+}
+
+/** 活动行 id 序（done 项不参与拖拽排序） */
+function displayedIds(list: TodoView[]): number[] {
+  return list.filter((it) => !it.done).map((it) => it.id);
+}
+
+/** 收场时是否贴底（ghost 仍占高，此刻测得的底部是有效贴底态） */
+function isAtBottom(): boolean {
+  const el = listContainer();
+  return el ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : false;
+}
+
+/** 同一任务交接：撤 ghost + 行重建 + 写显示缓冲；只让浏览器 paint 最终列表 */
+function finishHandoff(list: TodoView[]): void {
+  const pending = pendingHandoff;
+  if (!pending) {
+    renderItems.value = list;
+    return;
+  }
+  pendingHandoff = null;
+  if (handoffFallback !== undefined) {
+    window.clearTimeout(handoffFallback);
+    handoffFallback = undefined;
+  }
+  pending.ghost.remove();
+  dragRemounting.value = true;
+  rowEpoch.value += 1;
+  renderItems.value = list;
+  void nextTick(() => {
+    const el = listContainer();
+    if (el) {
+      if (pending.atBottom) {
+        el.scrollTop = el.scrollHeight;
+      } else if (el.scrollTop < 1 && pending.scrollTop >= 1) {
+        // 同一轮 nextTick 兜底：部分浏览器在 keyed 全量替换时会把 scrollTop 夹到 0；
+        // 此时新 DOM 已就位、尚未 paint，补回仍是零可见帧（不改变正常稳定路径）
+        el.scrollTop = Math.min(pending.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
+      }
+    }
+    syncMaskDead(); // 行全量换 key 后重扫罩死态（滚动位置未变，scroll 事件不会补）
+    setPinned(pending.atBottom);
+    dragRemounting.value = false;
+  });
+}
+
+/** 收到拖拽收场：登记 ghost/目标序，触发父级重拉；数据命中目标序才交接 */
+function beginHandoff(ctx?: DragCtx): void {
+  const ghost = ctx?.ghost;
+  if (!ghost) {
+    emit("changed");
+    return;
+  }
+  if (pendingHandoff) {
+    // 连续拖拽取代上一轮：旧 ghost 立即撤掉，定时器重挂
+    pendingHandoff.ghost.remove();
+    if (handoffFallback !== undefined) window.clearTimeout(handoffFallback);
+  }
+  pendingHandoff = {
+    ghost,
+    expectedIds: ctx?.expectedIds ?? null,
+    atBottom: isAtBottom(),
+    scrollTop: listContainer()?.scrollTop ?? 0,
+  };
+  setPinned(false); // 交接期间别让 RO 按 ghost/旧行中间高度贴底
+  handoffFallback = window.setTimeout(() => {
+    handoffFallback = undefined;
+    // 重排失败 / 重拉失败 / 数据序异常：兜底撤 ghost，显示当前真实数据，不永久卡住
+    finishHandoff(props.items);
+  }, HANDOFF_TIMEOUT_MS);
+  emit("changed"); // 父级重拉（commit 已完成，读到的是新序）
+}
+
+watch(
+  () => props.items,
+  (list) => {
+    if (deferDuringDrag()) return; // 拖拽期冻结显示；收场 rerender 会重拉
+    if (!pendingHandoff) {
+      renderItems.value = list;
+      return;
+    }
+    if (!expectedOrderMatches(displayedIds(list), pendingHandoff.expectedIds)) return;
+    finishHandoff(list);
+  },
+  { flush: "pre" },
+);
+
+// 拖拽钩子安装（本组件只装一次——气泡组件重复调用幂等覆盖，钩子语义一致）
+installDragHooks({
+  cancelPendingClick: () => clearTimeout(clickTimer),
+  markSuppress: () => {}, // suppress 时间戳在 useDragReorder 模块内自持，无需写回
+  rerenderTodos: (ctx) => beginHandoff(ctx),
+  rerenderBubbles: () => {}, // 气泡路 rerender 由 BubblesView 覆盖注册
+});
 
 // items 到达/清空 → 渲染完成后挂载（覆盖首挂与重建两种时机）
 watch(
@@ -350,6 +461,9 @@ onUnmounted(() => {
   clearTimeout(clickTimer);
   toggleTimers.forEach((handle) => clearTimeout(handle));
   toggleTimers.clear();
+  if (handoffFallback !== undefined) window.clearTimeout(handoffFallback);
+  pendingHandoff?.ghost.remove();
+  pendingHandoff = null;
   rebuildObserver?.disconnect();
   unmountScrollKit();
   disposeEmptyState();
@@ -360,20 +474,21 @@ onUnmounted(() => {
   <section class="list">
     <p v-if="showEmpty" class="empty">暂无待办，添加一条吧</p>
     <!-- board-read/glass-scroll 写进静态 class（沿 #bubble-list / #detail-note 先例）：
-         元素被重建（拖拽收口 key 重建 / 空态切换）时新元素**天生带套件类**，
-         不留"类缺席 → 原生滑轨现形"的空窗；套件挂载只是幂等补挂 -->
+         空态切换等结构重建时新元素**天生带套件类**，不留"类缺席 → 原生滑轨现形"的
+         空窗；套件挂载只是幂等补挂（拖拽收场不再重建 <ul>） -->
     <TransitionGroup
       ref="listEl"
       tag="ul"
       name="todo"
       id="todo-active"
       class="group board-read glass-scroll"
-      :key="listKey"
+      :class="{ 'drag-remounting': dragRemounting }"
+      :css="!dragRemounting"
       :duration="320"
       @before-leave="pinLeaveHeight"
       @after-leave="onAfterLeave"
     >
-      <li v-for="item in active" :key="item.id" class="todo-item">
+      <li v-for="item in active" :key="`${rowEpoch}-${item.id}`" class="todo-item">
         <div
           class="todo-row"
           :data-row-id="item.id"

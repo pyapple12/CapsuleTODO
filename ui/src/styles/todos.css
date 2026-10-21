@@ -37,6 +37,18 @@
   overflow-y: auto;
 }
 
+/* PATCH002.89：拖拽收场保持同一个 <ul>，不做 scrollTop 事后恢复 ——
+   关掉浏览器滚动锚定，避免重排时浏览器自行改 scrollTop；本次行重建临时关动画。 */
+#todo-active,
+#bubble-list {
+  overflow-anchor: none;
+}
+#todo-active.drag-remounting .todo-item,
+#bubble-list.drag-remounting .bubble-row {
+  transition: none !important;
+  animation: none !important;
+}
+
 /* 行玻璃条：删除按钮右缘锚定基准（悬停向左展开、覆盖文字） */
 .todo-row {
   position: relative;
@@ -148,6 +160,13 @@
 li.todo-item.dragging {
   z-index: 5; /* 重挂卡片层后压过页签/输入区/按钮 */
   cursor: grabbing;
+}
+
+/* PATCH002.90：被拖行离开 .group（list-style:none）重挂到 #board 后，外层 li 仍是
+   display:list-item，会冒出 UA 默认 disc marker（左缘裁切后像白色小三角）。用更宽的
+   直接子项选择器兜住所有重挂到板层的 todo 行，不改变行布局与 ghost/气泡逻辑。 */
+#board > .todo-item {
+  list-style: none;
 }
 
 li.todo-item.dragging .todo-row {

@@ -6,7 +6,7 @@
 // design 差异映射：全局 dragCtx → 模块级闭包（组合式无全局作用域）；commit/rerender
 // 由 DRAG_TARGETS 回调注入（Vue 侧走 invoke + 父级重拉）；Vue 冻结防线 = 注册表
 // freezeProbe（engaged 期间列表 watch 早退，落点收场统一重拉）=====
-import { nextTick, onUnmounted } from "vue";
+import { onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { rowMaskDead } from "./useMaskDead";
 import { HEIGHT_SWAP_K, noteSwapRule } from "./noteDragPolicy";
@@ -48,6 +48,8 @@ export interface DragCtx {
   fromIdx: number;
   toIdx: number;
   scrollDelta: number;
+  /** 落点提交的目标 id 序（PATCH002.89：数据回来必须命中此序才撤 ghost / 重建行） */
+  expectedIds?: number[];
   /** 被拖块中心的可达范围（eff 空间：已含 scrollDelta；PATCH002.83 策略与引擎共用） */
   centerMin: number;
   centerMax: number;
@@ -100,16 +102,6 @@ export function defaultSwapRule(ctx: DragCtx, eff: number): number {
   return to;
 }
 
-/** 滚动位置夹取（PATCH002.89）：恢复拖拽前的列表视口，按新内容高度限幅。 */
-export function clampListScrollTop(
-  top: number,
-  scrollHeight: number,
-  clientHeight: number,
-): number {
-  const max = Math.max(0, scrollHeight - clientHeight);
-  return Math.min(Math.max(0, top), max);
-}
-
 /** 拖拽目标注册项（差异点全在此——机制本体零差异） */
 export interface DragTarget {
   /** 目标名（清单 todos / 气泡 bubbles / 详情块 note——对应 invoke 命令前缀） */
@@ -124,13 +116,11 @@ export interface DragTarget {
   ghostClass: string;
   /** 按下钩子：取消各自待办定时器 + 排除自有语义控件；返回 false 不起拖 */
   onDown: (row: HTMLElement, e: MouseEvent) => boolean;
-  /** 落点提交：toIdx = 目标槽位（invoke reorder 落库） */
-  commit: (ctx: { id: number; toIdx: number }) => void;
+  /** 落点提交：toIdx = 目标槽位（invoke reorder 落库）；可返回 Promise 供收场等待 */
+  commit: (ctx: DragCtx) => Promise<unknown> | void;
   /** 收场重绘（无论是否换位都重拉——行本体以（可能新）顺序收回列表） */
   rerender: (ctx?: DragCtx) => void;
-  /** 目标自有强制重建（可选；缺省回落全局 forceRemount——详情块不重建清单列表） */
-  forceRemount?: () => void;
-  /** 保留占位符到收场重拉完成（PATCH002.82：详情块专用——保列表高度、防滚动被夹） */
+  /** 保留占位符到收场重拉完成（PATCH002.82/89：清单/气泡/详情块共用——保高度、同任务交接） */
   keepGhost?: boolean;
   /** 自动滚动基准（PATCH002.54，可选）：缺省 `"center"` = 现行为（被钳制的行中心）；
    * `"pointer"` = 未钳制的真实指针 y（详情块用——容器内距与卡片内距不同，行中心够不到下边缘带） */
@@ -149,9 +139,9 @@ export interface DragHooks {
   cancelPendingClick: () => void;
   /** 拖拽结束后 350ms 内的点击不当作行点击（组件读 suppressUntil） */
   markSuppress: () => void;
-  /** 收场重拉转发（hookBag 透传——todo/bubbles 两路） */
-  rerenderTodos?: () => void;
-  rerenderBubbles?: () => void;
+  /** 收场重拉转发（hookBag 透传——todo/bubbles 两路；ctx 携带 ghost / expectedIds） */
+  rerenderTodos?: (ctx?: DragCtx) => void;
+  rerenderBubbles?: (ctx?: DragCtx) => void;
 }
 
 // —— 拖拽目标注册表（清单 + 气泡，V0.027 推广气泡；归档板行不注册——归档不排序）——
@@ -169,6 +159,8 @@ export const DRAG_TARGETS: DragTarget[] = [
     rowSel: ".todo-row",
     itemSel: ".todo-item",
     ghostClass: "todo-item todo-ghost",
+    // PATCH002.89：ghost 留到收场数据就位（详情板 .82 同款），不再换整个 <ul>
+    keepGhost: true,
     // 按下钩子：掐掉待开详情定时器；删除钮/行内编辑框/勾选框区域归各自语义，不起拖
     onDown(row, e) {
       detailTimers.cancelPendingClick();
@@ -192,14 +184,19 @@ export const DRAG_TARGETS: DragTarget[] = [
       if (!ul) return;
       const ids = [...ul.querySelectorAll(".todo-row")]
         .map((r) => Number((r as HTMLElement).dataset.rowId))
-        .filter((id) => id !== ctx.id);
+        .filter((id) => Number.isInteger(id) && id !== ctx.id);
       ids.splice(ctx.toIdx, 0, ctx.id);
-      void invoke("todo_reorder", { ids }).catch((err) => console.error("重排失败", err));
+      ctx.expectedIds = ids;
+      // PATCH002.89：返回 Promise——收场等落库完成再重拉，杜绝“重拉抢读旧序”
+      return invoke("todo_reorder", { ids }).catch((err) => {
+        console.error("重排失败", err);
+        ctx.expectedIds = undefined; // 失败时库序未变：不设顺序门槛，交给兜底重拉
+      });
     },
-    rerender() {
+    rerender(ctx) {
       // 收场重拉走 hookBag（installDragHooks 注册）——detailTimers 只承载
       // cancelPendingClick/markSuppress 两钩子（DragHooks 接口无 rerender 字段）
-      hookBag.rerenderTodos?.();
+      hookBag.rerenderTodos?.(ctx);
     },
   },
   {
@@ -208,6 +205,8 @@ export const DRAG_TARGETS: DragTarget[] = [
     rowSel: ".bubble-row",
     itemSel: ".bubble-row", // 气泡行身兼外壳（无内层行容器）
     ghostClass: "bubble-row bubble-ghost", // 气泡行自带玻璃底——ghost 剥视觉见 bubbles.css
+    // PATCH002.89：ghost 留到收场数据就位；ghost 自身也匹配 .bubble-row，commit 须滤 NaN
+    keepGhost: true,
     onDown(_row, e) {
       detailTimers.cancelPendingClick(); // 新按下取代上次点击的待开板（与清单待开详情同款竞态）
       if ((e.target as HTMLElement).closest(".del")) return false;
@@ -218,12 +217,17 @@ export const DRAG_TARGETS: DragTarget[] = [
       if (!ul) return;
       const ids = [...ul.querySelectorAll(".bubble-row")]
         .map((r) => Number((r as HTMLElement).dataset.rowId))
-        .filter((id) => id !== ctx.id);
+        // PATCH002.89：占位符 ghost 也匹配 .bubble-row，无 rowId ⇒ 必须滤掉 NaN
+        .filter((id) => Number.isInteger(id) && id !== ctx.id);
       ids.splice(ctx.toIdx, 0, ctx.id);
-      void invoke("bubble_reorder", { ids }).catch((err) => console.error("重排失败", err));
+      ctx.expectedIds = ids;
+      return invoke("bubble_reorder", { ids }).catch((err) => {
+        console.error("重排失败", err);
+        ctx.expectedIds = undefined;
+      });
     },
-    rerender() {
-      hookBag.rerenderBubbles?.(); // 收场重拉走 hookBag（同清单路，见上注）
+    rerender(ctx) {
+      hookBag.rerenderBubbles?.(ctx); // 收场重拉走 hookBag（同清单路，见上注）
     },
   },
   {
@@ -289,30 +293,25 @@ export function installNoteDragHooks(hooks: {
 // 组件层注入的收场重拉句柄：cancelPendingClick / markSuppress / rerenderTodos /
 // rerenderBubbles（四个钩子全部由 installDragTargets 注册——组合式不持组件引用）
 const hookBag: {
-  rerenderTodos?: () => void;
-  rerenderBubbles?: () => void;
-  /** 强制列表整建重建（vnode↔DOM 断链修复——li.remove() 外部摘除 Vue 不感知，
-   * 后续 patch 全部写进失效节点；收场重建与 design 全量重绘语义等价） */
-  forceRemount?: () => void;
+  rerenderTodos?: (ctx?: DragCtx) => void;
+  rerenderBubbles?: (ctx?: DragCtx) => void;
 } = {};
 
 /**
  * 组件层安装拖拽钩子（TodoList/BubblesView 挂载时调用一次）
  * @param hooks cancelPendingClick（掐待办定时器）/ markSuppress（落点抑制写回）/
- *   rerenderTodos / rerenderBubbles（收场重拉）/ forceRemount（列表强制重建）
+ *   rerenderTodos / rerenderBubbles（收场重拉，接 ctx 取 ghost / expectedIds）
  */
 export function installDragHooks(hooks: {
   cancelPendingClick: () => void;
   markSuppress: () => void;
-  rerenderTodos: () => void;
-  rerenderBubbles: () => void;
-  forceRemount?: () => void;
+  rerenderTodos: (ctx?: DragCtx) => void;
+  rerenderBubbles: (ctx?: DragCtx) => void;
 }): void {
   detailTimers.cancelPendingClick = hooks.cancelPendingClick;
   detailTimers.markSuppress = hooks.markSuppress;
   hookBag.rerenderTodos = hooks.rerenderTodos;
   hookBag.rerenderBubbles = hooks.rerenderBubbles;
-  hookBag.forceRemount = hooks.forceRemount;
 }
 
 let dragCtx: DragCtx | null = null;
@@ -405,7 +404,7 @@ export function useDragReorder(): void {
     ctx.cardEl.appendChild(ctx.li);
     // 列表快照：占位符占 fromIdx，其余行为让位对象（transform 不改布局，实测即原位）。
     // 单行也照常进入拖拽循环（FIX004.4 终版交互：长按浮起跟手，松手回原位——
-    // 无可让位行只是排序无变化，不能因此剥夺拖拽体验；收场 forceRemount 防断链）
+    // 无可让位行只是排序无变化，不能因此剥夺拖拽体验；收场由目标 ghost 交接收口）
     ctx.listEl = document.getElementById(ctx.t.scopeId) as HTMLElement;
     ctx.rows = [...ctx.listEl.querySelectorAll(ctx.t.itemSel)].map((el) => {
       const r = (el as HTMLElement).getBoundingClientRect();
@@ -540,31 +539,26 @@ export function useDragReorder(): void {
     if (ctx.raf) cancelAnimationFrame(ctx.raf); // 停自动滚动循环
     document.body.style.userSelect = "";
     if (!ctx.engaged) return; // 长按前的松手 = 点击（详情板/复制接管）
-    // PATCH002.89：收场 forceRemount 会换掉整个 <ul>，新元素 scrollTop=0；先记下拖前/拖中
-    // 视口，重建后按新内容高度恢复，避免"拖到中间松手跳回首行"。
-    const restoreScroll = !ctx.t.keepGhost;
-    const scrollTopBefore = ctx.listEl.scrollTop;
-    const scopeId = ctx.t.scopeId;
     suppressUntil = Date.now() + 350; // 拖拽结束的落点点击不当作行点击
     detailTimers.markSuppress();
     ctx.listEl.classList.remove("drag-live"); // 解锁列表滚动
     ctx.rows.forEach((r) => r.el.classList.remove("shifting"));
-    // PATCH002.82：详情块保留占位符到重拉完成（ghost 保高 ⇒ 列表不瞬间变矮、滚动不被夹）
-    if (!ctx.t.keepGhost) ctx.ghost.remove(); // 占位符使命完成
-    ctx.li.remove(); // 重挂的行本体由重建收回列表
-    if (ctx.fromIdx !== ctx.toIdx) ctx.t.commit(ctx); // 一次性提交：落点重排（invoke 落库）
-    // PATCH002.82：keepGhost 目标由重拉的 toLocal 全量换 key 重建 ⇒ 跳过收场 forceRemount
-    // （否则会先渲染"图片 + ghost"的一帧）
-    if (!ctx.t.keepGhost) (ctx.t.forceRemount ?? hookBag.forceRemount)?.();
-    ctx.t.rerender(ctx); // 收场重拉：行本体以新顺序收回列表（ghost 由目标按需收尾）
-    if (restoreScroll) {
-      // 新旧 <ul> 同 id；nextTick 后新元素已就位。后续数据重拉在同一 <ul> 内 patch，
-      // 不会再重置 scrollTop；高度变化交给 clamp 与 `.69` 的贴底逻辑。
-      void nextTick(() => {
-        const el = document.getElementById(scopeId);
-        if (!el) return;
-        el.scrollTop = clampListScrollTop(scrollTopBefore, el.scrollHeight, el.clientHeight);
-      });
+    // PATCH002.89（详情板 .82 同款）：ghost 留到新数据就位；不换 <ul>、不碰 scrollTop。
+    // 旧行内联 transform 保持落点预览，交接时由目标在同一任务撤 ghost + 重建行。
+    ctx.li.remove(); // 被拖行本体已重挂卡片层，收场由目标数据收回列表
+    const committed = ctx.fromIdx !== ctx.toIdx ? ctx.t.commit(ctx) : undefined;
+    if (committed) {
+      // 等 reorder 落库后再重拉：数据回来才可能命中 ctx.expectedIds（治顺序回弹）
+      void Promise.resolve(committed).then(
+        () => ctx.t.rerender(ctx),
+        (err) => {
+          console.error("重排失败", err);
+          ctx.expectedIds = undefined; // 失败时库序未变，不设顺序门槛
+          ctx.t.rerender(ctx);
+        },
+      );
+    } else {
+      ctx.t.rerender(ctx); // 未换位：只交接 ghost，不提交
     }
   };
 

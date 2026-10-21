@@ -166,8 +166,8 @@ async function refreshArchive(): Promise<void> {
 }
 
 /** 清单变更统一出口：重拉清单/归档/徽章三源 + 三板互斥（开详情板时归档收）。
- * 拖拽期冻结防线挂组件层（TodoList/BubblesView 列表 watch deferDuringDrag 早退），
- * 此处不设守卫——收场 rerender 即重拉（forceRemount 已修 vnode 断链，时序安全） */
+ * 拖拽期冻结防线挂组件层（TodoList/BubblesView 列表 watch deferDuringDrag 早退）；
+ * 收场重拉的顺序由 useDragReorder 等 reorder + TodoList 的 expectedIds 交接保证。 */
 function onListChanged(): void {
   void refresh();
   void refreshArchive();
@@ -228,10 +228,15 @@ async function refreshWindowPrefs(): Promise<void> {
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
 const items = ref<TodoView[]>([]);
 
-/** 拉取清单排序视图（todo_list 返回 TodoView：条目 + 龄期档位，PL010 起） */
+/** 拉取清单排序视图（todo_list 返回 TodoView：条目 + 龄期档位，PL010 起）。
+ * PATCH002.89：请求代际守卫——并发重拉只应用最新一次响应，旧序后到不能覆盖新序。 */
+let refreshSeq = 0;
 async function refresh(): Promise<void> {
+  const seq = ++refreshSeq;
   try {
-    items.value = await invoke<TodoView[]>("todo_list");
+    const list = await invoke<TodoView[]>("todo_list");
+    if (seq !== refreshSeq) return;
+    items.value = list;
   } catch (err) {
     console.error("todo_list 拉取失败", err);
   }

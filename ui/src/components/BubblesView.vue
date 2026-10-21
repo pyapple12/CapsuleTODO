@@ -10,7 +10,8 @@ import { syncVeils } from "../composables/useVeils";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { useScrollKit } from "../composables/useScrollKit";
-import { installDragHooks, isSuppressed } from "../composables/useDragReorder";
+import { installDragHooks, isSuppressed, type DragCtx } from "../composables/useDragReorder";
+import { expectedOrderMatches } from "../composables/dragHandoff";
 import { useAutoHideError } from "../composables/useAutoHideError";
 
 // ===== 气泡页（PL012.2 换装实验场形态 V0.017–V0.020 + V0.028 对调语义）：
@@ -57,6 +58,22 @@ let bubbleListenDisposed = false;
 const clearBtn = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
+// —— PATCH002.89 拖拽收场交接（详情板 .82 同款）——
+// ghost 留到重拉数据就位；只接受命中 expectedIds 的序，旧响应 / 旧序不能把行打回原位。
+const HANDOFF_TIMEOUT_MS = 500;
+const rowEpoch = ref(0);
+const dragRemounting = ref(false);
+interface BubbleHandoff {
+  ghost: HTMLElement;
+  expectedIds: number[] | null;
+  atBottom: boolean;
+  /** 交接前的视口偏移（同轮 nextTick 只兜底“被夹回 0”，不做跨帧恢复） */
+  scrollTop: number;
+}
+let pendingHandoff: BubbleHandoff | null = null;
+let handoffFallback: number | undefined;
+let refreshSeq = 0;
+
 /** 满 maxBubbles 警告显隐：超过阈值（非达到）才警告——design bubbles.js 同款语义；
  * 阈值由设置板步进（已持久化，PL014.2 落库）即时生效。满额裁决收敛前端本地
  * （FIX004.23：Rust 侧 snapshot.remind 死值已删，契约只剩 items） */
@@ -69,9 +86,24 @@ const hasWarning = computed(() => items.value.length > props.maxBubbles);
  * 页内用户操作路径照旧 emit（App 无其他途径感知页内操作）
  */
 async function refresh(notify: boolean = true): Promise<void> {
+  const seq = ++refreshSeq;
   try {
     const snapshot = await invoke<BubbleSnapshot>("bubble_list");
-    items.value = snapshot.items;
+    if (seq !== refreshSeq) return; // 旧响应后到：丢弃，不许覆盖新序
+    if (pendingHandoff) {
+      // 收场交接：数据必须命中目标 id 序；不命中就等下一拍/兜底，不先渲染旧序
+      if (
+        !expectedOrderMatches(
+          snapshot.items.map((it) => it.id),
+          pendingHandoff.expectedIds,
+        )
+      ) {
+        return;
+      }
+      finishHandoff(snapshot.items);
+    } else {
+      items.value = snapshot.items;
+    }
     if (notify) emit("changed");
   } catch (err) {
     console.error("bubble_list 拉取失败", err);
@@ -91,6 +123,75 @@ const scrollKit = useScrollKit(listEl, {
 });
 const mountScrollKit = scrollKit.mount;
 const unmountScrollKit = scrollKit.unmount;
+const setPinned = scrollKit.setPinned;
+
+/** 当前气泡滚动容器 */
+function listContainer(): HTMLElement | null {
+  return document.getElementById("bubble-list");
+}
+
+/** 收场时是否贴底（ghost 仍占高，此刻测得的底部是有效贴底态） */
+function isAtBottom(): boolean {
+  const el = listContainer();
+  return el ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : false;
+}
+
+/** 同一任务交接：撤 ghost + 行重建 + 赋新快照；只让浏览器 paint 最终列表 */
+function finishHandoff(list: BubbleItem[]): void {
+  const pending = pendingHandoff;
+  if (!pending) {
+    items.value = list;
+    return;
+  }
+  pendingHandoff = null;
+  if (handoffFallback !== undefined) {
+    window.clearTimeout(handoffFallback);
+    handoffFallback = undefined;
+  }
+  pending.ghost.remove();
+  dragRemounting.value = true;
+  rowEpoch.value += 1;
+  items.value = list;
+  void nextTick(() => {
+    const el = listContainer();
+    if (el) {
+      if (pending.atBottom) {
+        el.scrollTop = el.scrollHeight;
+      } else if (el.scrollTop < 1 && pending.scrollTop >= 1) {
+        // 同轮 nextTick 兜底：keyed 全量替换若把 scrollTop 夹到 0，在新 DOM 就位后补回
+        el.scrollTop = Math.min(pending.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
+      }
+    }
+    syncVeils(); // 行全量换 key 后同步帘态（拖拽交接不走常规滚动/增删路径）
+    setPinned(pending.atBottom);
+    dragRemounting.value = false;
+  });
+}
+
+/** 收到拖拽收场：登记 ghost/目标序并重拉；数据命中目标序才交接 */
+function beginBubbleHandoff(ctx?: DragCtx): void {
+  const ghost = ctx?.ghost;
+  if (!ghost) {
+    void refresh();
+    return;
+  }
+  if (pendingHandoff) {
+    pendingHandoff.ghost.remove();
+    if (handoffFallback !== undefined) window.clearTimeout(handoffFallback);
+  }
+  pendingHandoff = {
+    ghost,
+    expectedIds: ctx?.expectedIds ?? null,
+    atBottom: isAtBottom(),
+    scrollTop: listContainer()?.scrollTop ?? 0,
+  };
+  setPinned(false); // 交接期间别让 RO 按 ghost/旧行中间高度贴底
+  handoffFallback = window.setTimeout(() => {
+    handoffFallback = undefined;
+    finishHandoff(items.value); // 兜底：显示当前真实数据，不永久留 ghost
+  }, HANDOFF_TIMEOUT_MS);
+  void refresh();
+}
 
 let rebuildObserver: MutationObserver | null = null;
 
@@ -298,16 +399,13 @@ function rowEl(id: number): HTMLElement {
 // FIX010.13：原 defineExpose({ refresh, cancelClearConfirm }) 已删——App 不持本
 // 组件模板 ref（数据自拉 + changed 事件上抛），零外部调用方
 
-// 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 收场重拉）
-const listKey = ref(0); // 强制重建计数：拖拽收场 vnode↔DOM 断链修复（同 TodoList）
+// 拖拽钩子安装（气泡路：cancelPendingClick 掐双击复制定时器；rerender 走 ghost 交接）
+const listKey = ref(0); // 仅“清空失败”强制重建用；拖拽收场不再换 <ul>
 installDragHooks({
   cancelPendingClick: () => clearTimeout(clickTimer),
   markSuppress: () => {},
   rerenderTodos: () => {}, // 清单路 rerender 由 TodoList 注册
-  rerenderBubbles: () => void refresh(),
-  forceRemount: () => {
-    listKey.value += 1;
-  },
+  rerenderBubbles: (ctx) => beginBubbleHandoff(ctx),
 });
 
 // 收口总线注册（A2）已随 useDelConfirmGroup 内聚（FIX005.24），本组件无显式注册
@@ -356,6 +454,10 @@ onUnmounted(() => {
   // 落库必须完成——切页取消会让"确认"被吞（数据残留 + 退场动画已播 = 状态诡异）。
   // 收尾回调仅 invoke + refresh，无报错路径（IAB 实测 errs=0），卸载后执行静默无害
   [copiedTimer, confirmTimer, clearWidthTimer, clickTimer].forEach((t) => window.clearTimeout(t));
+  if (handoffFallback !== undefined) window.clearTimeout(handoffFallback);
+  refreshSeq += 1; // 在飞 bubble_list 响应到点即丢弃
+  pendingHandoff?.ghost.remove();
+  pendingHandoff = null;
   unlistenBubbleChanged?.();
   rebuildObserver?.disconnect();
   unmountScrollKit();
@@ -405,8 +507,9 @@ onUnmounted(() => {
       name="todo"
       id="bubble-list"
       class="group board-read glass-scroll"
-      :class="{ 'has-warning': hasWarning }"
+      :class="{ 'has-warning': hasWarning, 'drag-remounting': dragRemounting }"
       :key="listKey"
+      :css="!dragRemounting"
       :duration="320"
       @before-leave="pinLeaveHeight"
       @after-leave="onAfterLeave"
@@ -422,7 +525,7 @@ onUnmounted(() => {
       </li>
       <li
         v-for="item in items"
-        :key="item.id"
+        :key="`${rowEpoch}-${item.id}`"
         class="bubble-row"
         :data-row-id="item.id"
         @click="onRowClick(item, $event)"
