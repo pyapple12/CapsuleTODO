@@ -12,6 +12,7 @@ pub mod fullscreen;
 pub mod glass_backdrop;
 pub mod hotkey;
 pub mod html_paste;
+pub mod image_fetch;
 pub mod paths;
 pub mod settings;
 pub mod single_instance;
@@ -277,6 +278,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::note_open_image,
             commands::todo::note_copy_selection,
             commands::todo::note_paste_html,
+            commands::todo::note_fetch_pending_images,
             commands::bubble::bubble_capture,
             commands::bubble::bubble_list,
             commands::bubble::bubble_get_image_path,

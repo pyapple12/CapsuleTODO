@@ -198,7 +198,7 @@ pub fn todo_reorder_core(ids: &[i64], ctx: &AppContext) -> Result<(), CommandErr
 // —— PL027 详情块命令（一段一行一块 + 图块混排；业务在存储层，本层只做取数/广播/把关）——
 
 /// 块视图（跨 IPC）：图块带**绝对路径**（前端 `convertFileSrc` 直用）；大图预览优先
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteBlockView {
     /// 块唯一标识（本地新块在保存前为 0）
     pub id: i64,
@@ -229,6 +229,43 @@ pub enum NotePasteOutcome {
     Image { blocks: Vec<NoteBlockView> },
     /// 剪贴板无图片（前端回落文本粘贴）
     NoImage,
+}
+
+/// 远端图后台任务（PATCH002.76）：block_id = 占位文本块 id；url 已规范化
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingImageJob {
+    /// 占位文本块 id
+    pub block_id: i64,
+    /// 规范化后的 http(s) URL
+    pub url: String,
+}
+
+/// HTML 粘贴结果（PATCH002.76）：outcome 立即回前端；pending 由前端随后启动后台下载
+#[derive(Debug, serde::Serialize)]
+pub struct PasteHtmlResult {
+    /// 粘贴结果（占位块已入库）
+    pub outcome: NotePasteOutcome,
+    /// 待后台下载的远端图任务
+    pub pending: Vec<PendingImageJob>,
+}
+
+/// 后台图片就绪事件（PATCH002.76）：前端按 id/url 校验后把占位替换为图块
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteImageReady {
+    todo_id: i64,
+    block: NoteBlockView,
+    url: String,
+}
+
+/// 后台图片失败事件（PATCH002.76）：前端把“下载中…”占位替换为 URL 文本
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteImageFailed {
+    todo_id: i64,
+    block_id: i64,
+    url: String,
 }
 
 /// 块 → 视图（解析绝对路径 + 预览优先）
@@ -649,25 +686,26 @@ pub async fn note_paste_html(
     after: String,
     html: String,
     app: tauri::AppHandle,
-) -> Result<NotePasteOutcome, CommandError> {
+) -> Result<PasteHtmlResult, CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
     let task_app = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let ctx = task_app.state::<AppContext>();
         note_paste_html_core(todo_id, block_id, &before, &after, &html, &images_dir, &ctx)
     })
     .await
     .map_err(|err| CommandError::Storage(format!("HTML 粘贴任务失败：{err}")))??;
-    if matches!(outcome, NotePasteOutcome::Image { .. }) {
+    if matches!(result.outcome, NotePasteOutcome::Image { .. }) {
         emit_todo_changed(&window, &app);
     }
-    Ok(outcome)
+    Ok(result)
 }
 
 /// 粘贴核心（**不读剪贴板、不联网 → 可直测**）：HTML → 片段序列 → 多段插入。
-/// `data:` 图直解入库；其他 scheme（http(s) 等）本轮**降级为文本链接**（下载链路见
-/// x.progress.md PATCH002.25 备注）；段落内残留换行按行再切（块不变量：文本段无换行）。
+/// `data:` 图直解入库；http(s) 图先落 `🖼 下载中…` 占位 + 返回 pending 任务，
+/// 由前端随后调 `note_fetch_pending_images` 后台下载（PATCH002.76）；其他 scheme /
+/// 相对路径降级文本。段落内残留换行按行再切（块不变量：文本段无换行）。
 /// 恒回 `Image { blocks }`（前端一律整体替换本地块）；片段全空 → `NoImage` 交前端回落文本粘贴
 pub fn note_paste_html_core(
     todo_id: i64,
@@ -677,7 +715,7 @@ pub fn note_paste_html_core(
     html: &str,
     images_dir: &std::path::Path,
     ctx: &AppContext,
-) -> Result<NotePasteOutcome, CommandError> {
+) -> Result<PasteHtmlResult, CommandError> {
     let mut parts: Vec<crate::storage::NotePastePart> = Vec::new();
     for part in crate::html_paste::parse(html) {
         match part {
@@ -689,38 +727,223 @@ pub fn note_paste_html_core(
                     }
                 }
             }
-            crate::html_paste::HtmlPart::Image(src) => match decode_data_url(&src) {
-                Some((bytes, orig_name))
+            crate::html_paste::HtmlPart::Image(src) => {
+                if let Some((bytes, orig_name)) = decode_data_url(&src) {
                     if bytes.len() <= PASTE_HTML_MAX_ONE
-                        && crate::clipboard_image::validate_image_bytes(&bytes).is_ok() =>
-                {
-                    parts.push(crate::storage::NotePastePart::Image { bytes, orig_name });
+                        && crate::clipboard_image::validate_image_bytes(&bytes).is_ok()
+                    {
+                        parts.push(crate::storage::NotePastePart::Image { bytes, orig_name });
+                    } else {
+                        // data: 超限 / 解码失败 / 非法字节（SVG、截断 PNG…）→ 短占位
+                        // （**判定而非传播**：PATCH002.46 前这里用 `?` 把单段失败升格整条）
+                        parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
+                            &src,
+                        )));
+                    }
+                    continue;
                 }
-                // 非 data: / 超限 / 解码失败 / 非法字节（SVG、截断 PNG…）→ 降级文本
-                // （**判定而非传播**：PATCH002.46 前这里用 `?` 把单段失败升格为整条失败，
-                // 与本节注释相反——网页含 SVG 即整条粘贴全丢）
-                _ => parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
-                    &src,
-                ))),
-            },
+                match crate::image_fetch::normalize_url(&src) {
+                    Some(url) => parts.push(crate::storage::NotePastePart::PendingImage { url }),
+                    // 其他 scheme / 相对路径 / 非法 URL → 原样文本链接
+                    None => parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
+                        &src,
+                    ))),
+                }
+            }
         }
     }
     if parts.is_empty() {
-        return Ok(NotePasteOutcome::NoImage);
+        return Ok(PasteHtmlResult {
+            outcome: NotePasteOutcome::NoImage,
+            pending: Vec::new(),
+        });
     }
     let stamp = crate::util::local_stamp();
     let storage = ctx.lock_storage()?;
-    if storage.note_blocks(todo_id)?.len() + parts.len() + 2 > MAX_NOTE_BLOCKS {
+    // +3：before / after / 空文本兜底（含远端占位升级后口径）各留一格
+    if storage.note_blocks(todo_id)?.len() + parts.len() + 3 > MAX_NOTE_BLOCKS {
         return Err(CommandError::Todo(TodoError::TooManyBlocks.to_string()));
     }
-    let blocks =
+    let (blocks, part_ids) =
         storage.insert_note_parts(images_dir, todo_id, block_id, before, after, &parts, &stamp)?;
-    Ok(NotePasteOutcome::Image {
-        blocks: blocks
-            .into_iter()
-            .map(|b| to_block_view(b, images_dir))
-            .collect(),
+    let pending = parts
+        .iter()
+        .zip(part_ids)
+        .filter_map(|(part, block_id)| match part {
+            crate::storage::NotePastePart::PendingImage { url } => Some(PendingImageJob {
+                block_id,
+                url: url.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    Ok(PasteHtmlResult {
+        outcome: NotePasteOutcome::Image {
+            blocks: blocks
+                .into_iter()
+                .map(|b| to_block_view(b, images_dir))
+                .collect(),
+        },
+        pending,
     })
+}
+
+/// 启动远端图后台下载（PATCH002.76）：**立即返回**，不阻塞粘贴请求。
+/// 前端在应用完占位块后调用；每张成功/失败各发一个事件，失败不影响其他段。
+#[tauri::command]
+pub async fn note_fetch_pending_images(
+    todo_id: i64,
+    jobs: Vec<PendingImageJob>,
+    app: tauri::AppHandle,
+) -> Result<(), CommandError> {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let images_dir = crate::paths::images_dir()
+        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+    // 只接规范化 http(s)；上限沿块数上限（防异常前端载荷）
+    let jobs: Vec<PendingImageJob> = jobs
+        .into_iter()
+        .filter_map(|mut job| {
+            let normalized = crate::image_fetch::normalize_url(&job.url)?;
+            job.url = normalized;
+            Some(job)
+        })
+        .take(MAX_NOTE_BLOCKS)
+        .collect();
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let task_app = app.clone();
+    // 后台任务脱离命令生命周期；JoinHandle 丢弃不取消任务
+    std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+        run_pending_image_jobs(task_app, todo_id, jobs, images_dir);
+    }));
+    Ok(())
+}
+
+/// 后台任务主体：并发取图（模块内限 4/10s/10MB/20s/50MB）→ 逐张条件更新 → 发事件。
+/// **失败一律降级**：能更新库就把占位换成 URL；库锁失败也发失败事件，让前端先降级、
+/// 下一次保存再落库（不把“下载中…”永久留在板上）。
+fn run_pending_image_jobs(
+    app: tauri::AppHandle,
+    todo_id: i64,
+    jobs: Vec<PendingImageJob>,
+    images_dir: std::path::PathBuf,
+) {
+    let urls: Vec<String> = jobs.iter().map(|job| job.url.clone()).collect();
+    let fetched = crate::image_fetch::fetch_all(&urls);
+    let stamp = crate::util::local_stamp();
+    let ctx = app.state::<AppContext>();
+
+    for (job, result) in jobs.into_iter().zip(fetched) {
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                degrade_pending_image(
+                    &app,
+                    ctx.inner(),
+                    todo_id,
+                    &job,
+                    &format!("下载失败：{err}"),
+                );
+                continue;
+            }
+        };
+        if bytes.len() > crate::image_fetch::MAX_IMAGE_BYTES {
+            degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载图片超过单张上限");
+            continue;
+        }
+        let Some(ext) = crate::clipboard_image::image_extension(&bytes) else {
+            degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容不是受支持图片");
+            continue;
+        };
+        // 预览在 storage 锁外生成（PATCH002.76：锁内只落盘，别堵 300ms 自动保存）
+        let preview = crate::clipboard_image::generate_preview(&bytes);
+        let orig_name = format!("pasted.{ext}");
+        let outcome = match ctx.lock_storage() {
+            Ok(storage) => storage.complete_pending_note_image(
+                &images_dir,
+                todo_id,
+                job.block_id,
+                &job.url,
+                &bytes,
+                Some(orig_name.as_str()),
+                preview.as_deref(),
+                &stamp,
+            ),
+            Err(err) => {
+                crate::diag::warn_diag(&format!("图片后台任务取库锁失败（{}）：{err}", job.url));
+                // 库锁失败：先让前端降级，下一次保存再落库
+                emit_note_image_failed(&app, todo_id, job.block_id, &job.url);
+                continue;
+            }
+        };
+        match outcome {
+            Ok(Some(block)) => {
+                let view = to_block_view(block, &images_dir);
+                if let Err(err) = app.emit(
+                    "note-image-ready",
+                    NoteImageReady {
+                        todo_id,
+                        block: view,
+                        url: job.url.clone(),
+                    },
+                ) {
+                    crate::diag::warn_diag(&format!("note-image-ready 广播失败：{err}"));
+                }
+            }
+            Ok(None) => {
+                // 用户已编辑/删除占位 → 不覆盖；刚落下的文件由清扫回收
+            }
+            Err(err) => {
+                crate::diag::warn_diag(&format!("图片后台落库失败（{}）：{err}", job.url));
+                degrade_pending_image(&app, ctx.inner(), todo_id, &job, "图片后台落库失败");
+            }
+        }
+    }
+}
+
+/// 失败降级：占位文本 → URL（条件更新，用户已改则不动），并通知前端。
+fn degrade_pending_image(
+    app: &tauri::AppHandle,
+    ctx: &AppContext,
+    todo_id: i64,
+    job: &PendingImageJob,
+    reason: &str,
+) {
+    crate::diag::warn_diag(&format!("HTML 粘贴图片降级（{}）：{reason}", job.url));
+    let updated = ctx
+        .lock_storage()
+        .ok()
+        .and_then(|storage| {
+            storage
+                .fail_pending_note_image(todo_id, job.block_id, &job.url)
+                .ok()
+        })
+        .unwrap_or(false);
+    // updated = false 可能是用户已编辑/已删除；前端会按本地文本是否为占位自判
+    if !updated {
+        crate::diag::warn_diag(&format!(
+            "图片占位未降级（用户已编辑/删除或库不可用）：{}",
+            job.url
+        ));
+    }
+    emit_note_image_failed(app, todo_id, job.block_id, &job.url);
+}
+
+/// 失败事件（前端把“下载中…”占位替换为 URL 文本）
+fn emit_note_image_failed(app: &tauri::AppHandle, todo_id: i64, block_id: i64, url: &str) {
+    if let Err(err) = app.emit(
+        "note-image-failed",
+        NoteImageFailed {
+            todo_id,
+            block_id,
+            url: url.to_string(),
+        },
+    ) {
+        crate::diag::warn_diag(&format!("note-image-failed 广播失败：{err}"));
+    }
 }
 
 /// 图片段无法入块时的降级文案（PATCH002.46）：`data:` 载荷是 base64 巨串，落成文本块会变成
@@ -1036,7 +1259,7 @@ mod tests {
         );
         let out = note_paste_html_core(item.id, saved[0].id, "", "", &html, &dir, &ctx)
             .expect("含 SVG 也不得整条失败");
-        let NotePasteOutcome::Image { blocks } = out else {
+        let NotePasteOutcome::Image { blocks } = out.outcome else {
             panic!("必须命中图");
         };
         let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
@@ -1050,6 +1273,39 @@ mod tests {
             blocks.iter().any(|b| b.image_path.is_some()),
             "正常 PNG 仍要入块"
         );
+    }
+
+    #[test]
+    fn paste_html_returns_pending_jobs_without_network() {
+        // PATCH002.76：http(s) 图只落占位 + pending，不在粘贴命令里联网
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved =
+            note_blocks_save_core(item.id, &[input(0, NoteBlockKind::Text, "")], &dir, &ctx)
+                .expect("保存必须成功");
+        let html = "<p>前</p><img src=\"https://example.com/a.png?x=1&amp;y=2\"><p>后</p>";
+        let out = note_paste_html_core(item.id, saved[0].id, "", "", html, &dir, &ctx)
+            .expect("占位粘贴必须成功");
+        let PasteHtmlResult { outcome, pending } = out;
+        assert_eq!(pending.len(), 1, "一张 http 图对应一个后台任务");
+        assert_eq!(
+            pending[0].url, "https://example.com/a.png?x=1&y=2",
+            "src 实体要解、URL 要规范化"
+        );
+        let NotePasteOutcome::Image { blocks } = outcome else {
+            panic!("必须命中图占位");
+        };
+        assert!(
+            blocks.iter().any(|b| {
+                b.id == pending[0].block_id
+                    && b.kind == NoteBlockKind::Text
+                    && b.text == crate::storage::PENDING_NOTE_IMAGE_TEXT
+            }),
+            "pending.block_id 必须指向下载中占位块"
+        );
+        assert!(blocks.iter().any(|b| b.text == "前"));
+        assert!(blocks.iter().any(|b| b.text == "后"));
     }
 
     #[test]

@@ -43,6 +43,22 @@ export interface NoteBlock {
  * no_image = 剪贴板无图（前端回落文本粘贴） */
 export type NotePasteOutcome = { status: "image"; blocks: NoteBlock[] } | { status: "no_image" };
 
+/** 远端图后台任务（镜像 PendingImageJob，PATCH002.76）：blockId = 占位文本块 id */
+export interface PendingImageJob {
+  /** 占位文本块 id */
+  blockId: number;
+  /** 规范化后的 http(s) URL */
+  url: string;
+}
+
+/** HTML 粘贴结果（镜像 PasteHtmlResult，PATCH002.76）：先应用 outcome，再启动 pending 后台 */
+export interface PasteHtmlResult {
+  /** 粘贴结果（占位块已入库） */
+  outcome: NotePasteOutcome;
+  /** 待后台下载的远端图任务 */
+  pending: PendingImageJob[];
+}
+
 /** 清单视图条目（镜像 TodoView = TodoItem 扁平 + 龄期档位） */
 export type TodoView = TodoItem & {
   /** 龄期提醒档位（无/黄/红） */

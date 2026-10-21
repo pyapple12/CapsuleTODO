@@ -6,3 +6,11 @@ body {
   background: transparent;
   font-family: system-ui, sans-serif;
 }
+
+/* PATCH002.86：焦点环全局退役——点按钮获焦后按任意键，Chromium 会把元素提升为
+   `:focus-visible` 并画 UA 默认 `outline: auto`（暗底上呈黑框）。本应用有意放弃
+   UA 键盘焦点指示，后续做无障碍时在此统一补。输入框/开关的自定义焦点反馈不受影响。 */
+:focus,
+:focus-visible {
+  outline: none;
+}

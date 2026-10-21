@@ -132,7 +132,7 @@
     - **候选 B 只溶被切掉的部分**：带起点 = 行顶 + 行高 × 可见比例（半截行按比例渐隐，不整行消失）
     - **候选 C 阈值门控**：仅当该行可见比例 < 30% 时才推到行顶
     - **候选 D 只跟"到底"走**：滚停不再动带（与 A 近似）
-    - 定案后落 **PATCH002.50**（方案与代码事实见 z.plan 附录 PATCH003——编号已并入 PATCH002）
+    - 定案后落 **PATCH002.50**（方案与代码事实见 z.plan 附录 PATCH002 的 `.50`–`.52`）
 
 12. **图片气泡开板瞬间的"空板面"（用户描述为"黑纱褪去"）**（2026-10-18 用户 live 记录，待定案；关联 PATCH002.51）：
 
@@ -156,7 +156,7 @@
     - **候选 A（倾向）拆基类**：`.note-scroll` 只留通用项（`width` / `box-sizing` / `border-radius: inherit` / `overflow-x: hidden`），把 `height` 与 `overflow-y` **下放到各模式**（`.note-blocks { height:100%; overflow-y:auto }` / `.bubble-shell { max-height:100%; overflow-y:auto }` / `.image-shell { height:100%; align-items:center }`），padding 只落一处
     - **候选 B 气泡模式独占容器**（`.bubble-frame`）：不再复用 `.note-scroll` 的几何（彻底解耦，多一层 DOM）
     - **候选 C 只把 padding 值分开**：治标（基类耦合仍在）
-    - 定案后落 **PATCH002.52**（方案见 z.plan 附录 PATCH003——编号已并入 PATCH002）
+    - 定案后落 **PATCH002.52**（方案见 z.plan 附录 PATCH002 的 `.50`–`.52`）
 
 14. **跨块选区：覆盖层只挂"需要的块"（性能优化，待做）**（2026-10-18 记录，待触发；本轮已回退该优化）：
 

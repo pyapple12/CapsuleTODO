@@ -140,13 +140,13 @@ fn attr_src(tag: &str) -> Option<String> {
             let quote = rest.chars().next()?;
             let body = &rest[1..];
             let end = body.find(quote)?;
-            Some(body[..end].trim().to_string())
+            Some(unescape(body[..end].trim()).replace(['\n', '\r'], ""))
         }
         _ => {
             let end = rest
                 .find(|c: char| c.is_whitespace() || c == '>')
                 .unwrap_or(rest.len());
-            Some(rest[..end].trim().to_string())
+            Some(unescape(rest[..end].trim()).replace(['\n', '\r'], ""))
         }
     }
 }
@@ -201,6 +201,24 @@ mod tests {
                 HtmlPart::Image("data:image/png;base64,AA==".to_string()),
                 HtmlPart::Image("data:image/jpeg;base64,BB".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn unescapes_entities_in_img_src() {
+        let html = "<img src=\"https://a/b.png?x=1&amp;y=2\">";
+        assert_eq!(
+            parse(html),
+            vec![HtmlPart::Image("https://a/b.png?x=1&y=2".to_string())]
+        );
+    }
+
+    #[test]
+    fn strips_newlines_from_img_src() {
+        let html = "<img src=\"https://a/b\n.png\">";
+        assert_eq!(
+            parse(html),
+            vec![HtmlPart::Image("https://a/b.png".to_string())]
         );
     }
 

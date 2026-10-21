@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { BubbleItem, NoteBlock, NotePasteOutcome, TodoItem } from "../../types";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  BubbleItem,
+  NoteBlock,
+  NotePasteOutcome,
+  PasteHtmlResult,
+  TodoItem,
+} from "../../types";
 import { UI_TEXT_MAX_LEN } from "../../types";
+/** 远端图下载占位文案（PATCH002.76）：与 Rust `storage::PENDING_NOTE_IMAGE_TEXT`
+ * **同源，改一处必须同步**。后台成功/失败事件都按这个文本判断本地是否仍是占位。 */
+const PENDING_IMAGE_TEXT = "🖼 下载中…";
 import {
   normalizeBlocks as normalizeBlankBlocks,
   type LocalBlock,
@@ -901,27 +911,36 @@ async function pasteHtmlAt(
   const before = target.text.slice(0, Math.min(start, target.text.length));
   const after = target.text.slice(Math.min(end, target.text.length));
   try {
-    const outcome = await invoke<NotePasteOutcome>("note_paste_html", {
+    const result = await invoke<PasteHtmlResult>("note_paste_html", {
       todoId: todo.id,
       blockId: target.id,
       before,
       after,
       html,
     });
-    if (props.todo?.id !== todo.id) return;
-    if (outcome.status !== "image") {
+    const sameTodo = props.todo?.id === todo.id;
+    const outcome = result.outcome;
+    if (outcome.status === "image" && sameTodo) {
+      if (push) pushUndo();
+      blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
+      savedSignature = signature(blocks.value);
+      brokenKeys.value = [];
+      void nextTick(() => autosizeAll());
+      emit("changed");
+    } else if (outcome.status !== "image" && sameTodo) {
       // 片段全空（剪贴板 HTML 里没有可入块的内容）→ 回落纯文本，不吞这次粘贴
       // （PATCH002.72：`push` 透传——回落分支未入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);
       pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
       return;
     }
-    if (push) pushUndo();
-    blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
-    savedSignature = signature(blocks.value);
-    brokenKeys.value = [];
-    void nextTick(() => autosizeAll());
-    emit("changed");
+    // PATCH002.76：占位块已入库；即使此刻已切源也启动后台，事件按 todoId 自判
+    if (result.pending.length > 0) {
+      void invoke("note_fetch_pending_images", {
+        todoId: todo.id,
+        jobs: result.pending,
+      }).catch((err) => console.error("图片后台下载启动失败", err));
+    }
   } catch (err) {
     console.error("粘贴图文失败", err);
   }
@@ -2170,7 +2189,61 @@ window.addEventListener("mousemove", onDocMouseMove, true);
 window.addEventListener("mouseup", onDocMouseUp, true);
 window.addEventListener("resize", onViewportResize);
 
+/** 后台图片就绪（PATCH002.76）：本地仍是占位 → 原位换图块（保 `_key`），再归一化/排保存。
+ * 用户已改过/块已删/已切源 → 忽略；库已是最终态，重开即见。 */
+function applyNoteImageReady(payload: { todoId: number; block: NoteBlock; url: string }): void {
+  if (!isOpen.value || props.todo?.id !== payload.todoId) return;
+  const index = blocks.value.findIndex((block) => block.id === payload.block.id);
+  if (index < 0) return;
+  const current = blocks.value[index];
+  if (current.kind !== "Text" || current.text !== PENDING_IMAGE_TEXT) return;
+  // 该块若在跨块选区内，先复位，避免选区端点指向已变图的块
+  if (selRange.value && index >= selRange.value.from.index && index <= selRange.value.to.index) {
+    selection.reset();
+  }
+  blocks.value[index] = {
+    ...current,
+    kind: "Image",
+    text: "",
+    image_path: payload.block.image_path,
+  };
+  blocks.value = normalizeBlocks(blocks.value);
+  void nextTick(() => autosizeAll());
+  // 库已更新；再排一次保存，防切源/迟到保存把旧占位写回（Rust 侧还有 source_url 守卫）
+  scheduleSave();
+}
+
+/** 后台图片失败（PATCH002.76）：本地仍是占位 → 换成 URL 文本；用户已改过则不动。 */
+function applyNoteImageFailed(payload: { todoId: number; blockId: number; url: string }): void {
+  if (!isOpen.value || props.todo?.id !== payload.todoId) return;
+  const index = blocks.value.findIndex((block) => block.id === payload.blockId);
+  if (index < 0) return;
+  const current = blocks.value[index];
+  if (current.kind !== "Text" || current.text !== PENDING_IMAGE_TEXT) return;
+  blocks.value[index] = { ...current, text: payload.url };
+  scheduleSave();
+}
+
+let unlistenNoteImageReady: UnlistenFn | undefined;
+let unlistenNoteImageFailed: UnlistenFn | undefined;
+onMounted(async () => {
+  try {
+    unlistenNoteImageReady = await listen<{ todoId: number; block: NoteBlock; url: string }>(
+      "note-image-ready",
+      (event) => applyNoteImageReady(event.payload),
+    );
+    unlistenNoteImageFailed = await listen<{ todoId: number; blockId: number; url: string }>(
+      "note-image-failed",
+      (event) => applyNoteImageFailed(event.payload),
+    );
+  } catch (err) {
+    console.error("详情图片后台事件监听注册失败", err);
+  }
+});
+
 onBeforeUnmount(() => {
+  unlistenNoteImageReady?.();
+  unlistenNoteImageFailed?.();
   void flushPending();
   kit?.boardRead.destroy(); // 卸载即卸套件（FIX013.5 显式清理）
   kit?.glassBar.destroy();

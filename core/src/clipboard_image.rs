@@ -14,15 +14,6 @@ pub const MAX_SOURCE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 /// 认可的图像文件扩展名（CF_HDROP 文件分支；表驱动 + 小写比对，PL024.8b）
 const IMAGE_FILE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
-/// 受支持的图像格式集合（validate_image_bytes 嗅探白名单，与扩展名表同源）
-const SUPPORTED_FORMATS: &[image::ImageFormat] = &[
-    image::ImageFormat::Png,
-    image::ImageFormat::Jpeg,
-    image::ImageFormat::Gif,
-    image::ImageFormat::WebP,
-    image::ImageFormat::Bmp,
-];
-
 /// 捕获到的剪贴板图片（PL025）：bytes = 原字节（截图 = PNG；文件图 = 原格式原字节），
 /// file_name = 文件来源文件名（截图分支 None——决定占位文案与复制回分支）
 pub struct CapturedImage {
@@ -32,13 +23,24 @@ pub struct CapturedImage {
     pub file_name: Option<String>,
 }
 
+/// 受支持格式的扩展名（PATCH002.76：后台下载图按真实字节定名，避免 JPEG 存成 `.png`）
+pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    match image::guess_format(bytes) {
+        Ok(image::ImageFormat::Png) => Some("png"),
+        Ok(image::ImageFormat::Jpeg) => Some("jpg"),
+        Ok(image::ImageFormat::Gif) => Some("gif"),
+        Ok(image::ImageFormat::WebP) => Some("webp"),
+        Ok(image::ImageFormat::Bmp) => Some("bmp"),
+        _ => None,
+    }
+}
+
 /// 图片字节格式校验（PL025 取代 PNG 魔数校验）：image crate 嗅探受支持格式，不认即
 /// UnsupportedFormat；**无大小上限**（落盘无 DB 上限；文件读盘闸口见 source_file_within_limit）
 pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), BubbleError> {
-    match image::guess_format(bytes) {
-        Ok(fmt) if SUPPORTED_FORMATS.contains(&fmt) => Ok(()),
-        _ => Err(BubbleError::UnsupportedFormat),
-    }
+    image_extension(bytes)
+        .map(|_| ())
+        .ok_or(BubbleError::UnsupportedFormat)
 }
 
 /// 大图降采样预览（PL025）：宽 > 2000px 或字节 > 2MB → 长边 ≤ 1600 的 PNG 预览字节；
@@ -1001,6 +1003,14 @@ mod tests {
             validate_image_bytes(b"definitely not an image"),
             Err(BubbleError::UnsupportedFormat)
         ));
+    }
+
+    #[test]
+    fn image_extension_maps_supported_formats() {
+        assert_eq!(image_extension(&fixture_png()), Some("png"));
+        assert_eq!(image_extension(&fixture_bmp()), Some("bmp"));
+        assert_eq!(image_extension(&fixture_jpeg()), Some("jpg"));
+        assert_eq!(image_extension(b"definitely not an image"), None);
     }
 
     #[test]
