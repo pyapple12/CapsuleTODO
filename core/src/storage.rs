@@ -1,10 +1,14 @@
-//! SQLite 存储层：todos/bubbles/whiteboard 三表增删改查（全参数化绑定，禁 SQL 拼接），
-//! 含气泡去重裁决（add_bubble 重复文本返回 Duplicate 不入库，PL015.5）。
+//! SQLite 存储层：**四表** `todos` / `bubbles` / `whiteboard` / `note_blocks`
+//! 增删改查（全参数化绑定，禁 SQL 拼接），含气泡去重裁决（add_bubble 重复文本返回
+//! Duplicate 不入库，PL015.5）。
 //! 单一事实源 = db（PL002 定案）：操作即落库，list 排序 = 未完成在前按 sort_order
 //! 升序（拖拽序），id 兜底。
-//! PL010 扩容：todos 三列迁移（created_at/done_at/note，幂等 ALTER）+ 时间源注入
-//! （NowFn 默认系统时钟，测试注入固定值零真实等待）+ rename/set_note。
+//! 迁移链：todos 补齐 created_at/done_at/sort_order（`todos.note` 已由
+//! `note_blocks` 块模型取代并退役）；bubbles 补齐 sort_order/kind/image_file/
+//! image_hash/image_source；`note_blocks` 补齐 source_url/deleted_at 与查询索引。
+//! 时间源注入（NowFn 默认系统时钟，测试注入固定值零真实等待）。
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -62,6 +66,9 @@ pub enum StorageError {
     /// 重排 id 集合与现存集合不一致（长度不符 / 幽灵 id / 重复 id——防丢行，拒绝执行）
     #[error("重排 id 集合不合法：{0}")]
     ReorderMismatch(String),
+    /// 图片相对路径非法（空串 / 目录穿越 / 绝对路径——禁止据此删除文件）
+    #[error("图片相对路径非法：{0}")]
+    InvalidImagePath(String),
 }
 
 /// 时间源（注入可测：默认系统时钟 epoch 毫秒；测试注入固定值）
@@ -143,6 +150,56 @@ fn folder_of(rel: &str) -> String {
         .unwrap_or_else(|| rel.to_string())
 }
 
+/// FIX014.16：原图内层名与固定预览名 `preview.png` 冲突时改用 `original.png`。
+/// 预览文件仍固定写 `preview.png`，`image_file` 始终指向真正的原图。
+fn image_inner_name(orig_name: Option<&str>, stamp: &str, seq: &str) -> String {
+    let name = match orig_name {
+        Some(name) => sanitize_file_name(name),
+        None => format!("snap_{stamp}_{seq}.png"),
+    };
+    if name.eq_ignore_ascii_case("preview.png") {
+        "original.png".to_string()
+    } else {
+        name
+    }
+}
+
+/// FIX014.15：图片落盘失败补偿——只删本次新建的文件夹，best-effort 不覆盖主错误。
+fn cleanup_image_folder(dir: &Path) {
+    if !dir.exists() {
+        return;
+    }
+    if let Err(err) = std::fs::remove_dir_all(dir) {
+        crate::diag::warn_diag(&format!("图片失败补偿删除目录失败：{err}"));
+    }
+}
+
+/// FIX014.17：文件夹名只允许单个正常路径段（禁止空串、`.`、`..`、分隔符、盘符）。
+pub(crate) fn is_safe_image_folder(name: &str, prefix: &str) -> bool {
+    !name.is_empty()
+        && name.starts_with(prefix)
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+}
+
+/// FIX014.17：详情 `image_file` 必须是安全的 `note_* / 文件名` 两段路径。
+fn safe_note_folder(rel: &str) -> Option<&str> {
+    let (folder, file) = rel.split_once('/')?;
+    if file.is_empty()
+        || file == "."
+        || file == ".."
+        || file.contains('/')
+        || file.contains('\\')
+        || file.contains(':')
+    {
+        return None;
+    }
+    is_safe_image_folder(folder, "note_").then_some(folder)
+}
+
 /// 多段粘贴的一段（PATCH002.25）：文本段或图段（图段自带字节与来源名，落盘由存储层负责）
 #[derive(Debug)]
 pub enum NotePastePart {
@@ -222,8 +279,12 @@ impl Storage {
         Ok(storage)
     }
 
-    /// 建表（幂等：CREATE TABLE IF NOT EXISTS）+ 迁移（PL010/PL013：todos 五列、
-    /// bubbles 一列幂等补齐，见 migrate/migrate_sort_order）
+    /// 建表（幂等：CREATE TABLE IF NOT EXISTS）+ 迁移：
+    /// - `todos`：补齐 created_at/done_at/sort_order（note 列已退役）；
+    /// - `bubbles`：补齐 sort_order/kind/image_file/image_hash/image_source；
+    /// - `note_blocks`：补齐 source_url/deleted_at 与 todo/order、image_file 索引。
+    ///
+    /// 新库与旧库都汇合到同一套 `migrate*` 函数。
     pub fn init(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS todos (
@@ -288,6 +349,7 @@ impl Storage {
         self.migrate_note_to_blocks()?;
         self.migrate_note_source_url()?;
         self.migrate_note_soft_delete()?;
+        self.migrate_note_indexes()?;
         self.drop_note_column()?;
         Ok(())
     }
@@ -503,6 +565,18 @@ impl Storage {
         Ok(())
     }
 
+    /// FIX014.13：`note_blocks` 查询索引（幂等）——列表按 todo/order、删图与清扫按
+    /// image_file。小数据量无感，块/图片增长后避免反复全表扫描。
+    fn migrate_note_indexes(&self) -> Result<(), StorageError> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_note_blocks_todo_order
+                 ON note_blocks(todo_id, sort_order);
+             CREATE INDEX IF NOT EXISTS idx_note_blocks_image_file
+                 ON note_blocks(image_file);",
+        )?;
+        Ok(())
+    }
+
     /// PL027 退役 note 列（迁移后调用；列存在才删，幂等）
     pub fn drop_note_column(&self) -> Result<(), StorageError> {
         if self.column_set("todos")?.contains("note") {
@@ -605,17 +679,33 @@ impl Storage {
     /// 删除条目；零行删除返回 NotFound。PL027：**连带删除该条目的详情块行**（其图片
     /// 文件由调用方经 `sweep_orphan_note_images` 释放——此时引用已归零）
     pub fn remove(&self, id: i64) -> Result<(), StorageError> {
-        self.conn.execute(
-            "DELETE FROM note_blocks WHERE todo_id = ?1",
-            rusqlite::params![id],
-        )?;
-        let changed = self
-            .conn
-            .execute("DELETE FROM todos WHERE id = ?1", rusqlite::params![id])?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id));
+        // FIX014.11：块删除与条目删除必须同事务——第二步失败时不得留下“块没了、条目还在”。
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            self.conn.execute(
+                "DELETE FROM note_blocks WHERE todo_id = ?1",
+                rusqlite::params![id],
+            )?;
+            let changed = self
+                .conn
+                .execute("DELETE FROM todos WHERE id = ?1", rusqlite::params![id])?;
+            if changed == 0 {
+                return Err(StorageError::NotFound(id));
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("删除条目事务回滚失败：{rollback}"));
+                }
+                Err(err)
+            }
         }
-        Ok(())
     }
 
     /// 清单排序视图：未完成在前按 sort_order 升序（拖拽序）、已完成在后按 sort_order
@@ -651,19 +741,35 @@ impl Storage {
     /// todo::ARCHIVE_RETENTION_MS 计算——存储层不持保留期策略。
     pub fn purge_expired_done(&self, cutoff: i64) -> Result<usize, StorageError> {
         // PL027：连带删除待回收条目的详情块行（先删块再删条目——子查询须在条目还在时求值）；
-        // 其图片文件由调用方经 sweep_orphan_note_images 释放（此时引用已归零）
-        self.conn.execute(
-            "DELETE FROM note_blocks WHERE todo_id IN (
-                 SELECT id FROM todos WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1
-             )",
-            rusqlite::params![cutoff],
-        )?;
-        let changed = self.conn.execute(
-            "DELETE FROM todos
-             WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1",
-            rusqlite::params![cutoff],
-        )?;
-        Ok(changed)
+        // 其图片文件由调用方经 sweep_orphan_note_images 释放（此时引用已归零）。
+        // FIX014.11：两次 DELETE 必须同事务，失败不得留下“块删了、条目还在”的半态。
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<usize, StorageError> {
+            self.conn.execute(
+                "DELETE FROM note_blocks WHERE todo_id IN (
+                     SELECT id FROM todos WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1
+                 )",
+                rusqlite::params![cutoff],
+            )?;
+            let changed = self.conn.execute(
+                "DELETE FROM todos
+                 WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1",
+                rusqlite::params![cutoff],
+            )?;
+            Ok(changed)
+        })();
+        match result {
+            Ok(changed) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(changed)
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("归档回收事务回滚失败：{rollback}"));
+                }
+                Err(err)
+            }
+        }
     }
 
     // —— PL027 详情块（note_blocks：一段一行一块 + 图块混排，域内引用计数）——
@@ -720,6 +826,11 @@ impl Storage {
     /// 释放详情图引用（PL027 域内引用计数）：该文件**已无任何块引用**才递归删其
     /// `note_{…}` 文件夹；删除失败 best-effort 落日志不阻断（文件残留代价小于阻断用户操作）
     fn release_note_image(&self, images_dir: &Path, rel: &str) -> Result<(), StorageError> {
+        // FIX014.17：DB 路径异常时绝不 join/remove——空串会指向 images 根，
+        // `../` 会跳出 images 目录。校验失败保留文件、向上报可读错误。
+        let Some(folder) = safe_note_folder(rel) else {
+            return Err(StorageError::InvalidImagePath(rel.to_string()));
+        };
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM note_blocks WHERE image_file = ?1",
             [rel],
@@ -728,7 +839,7 @@ impl Storage {
         if count > 0 {
             return Ok(());
         }
-        let dir = images_dir.join(folder_of(rel));
+        let dir = images_dir.join(folder);
         if let Err(err) = std::fs::remove_dir_all(&dir) {
             crate::diag::warn_diag(&format!(
                 "详情图文件夹删除失败（best-effort 不阻断）：{err}"
@@ -792,6 +903,15 @@ impl Storage {
                 return Ok(0);
             }
         };
+        // FIX014.13：一次 DISTINCT 查询构造已引用文件夹集合，替代每个文件夹一次 COUNT/LIKE。
+        let referenced: HashSet<String> = self
+            .conn
+            .prepare("SELECT DISTINCT image_file FROM note_blocks WHERE image_file IS NOT NULL")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|rel| folder_of(&rel))
+            .collect();
         let mut removed = 0usize;
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -799,12 +919,7 @@ impl Storage {
             if !name.starts_with("note_") || !entry.path().is_dir() {
                 continue;
             }
-            let referenced: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE image_file LIKE ?1",
-                [format!("{name}/%")],
-                |row| row.get(0),
-            )?;
-            if referenced > 0 {
+            if referenced.contains(name) {
                 continue;
             }
             if let Err(err) = std::fs::remove_dir_all(entry.path()) {
@@ -855,11 +970,33 @@ impl Storage {
         todo_id: i64,
         blocks: &[NoteBlock],
     ) -> Result<Vec<NoteBlock>, StorageError> {
+        // FIX014.12：正 id 重复会让同一行被多次更新，最终块数与内容可能静默丢失；
+        // id=0 是新块占位，允许重复，不参与去重。
+        let mut seen_ids = HashSet::new();
+        for block in blocks {
+            if block.id > 0 && !seen_ids.insert(block.id) {
+                return Err(StorageError::ReorderMismatch(format!(
+                    "详情块 id 重复：{}",
+                    block.id
+                )));
+            }
+        }
         let old_paths = self.note_image_paths(todo_id)?;
         let keep_ids: Vec<i64> = blocks.iter().map(|b| b.id).filter(|id| *id > 0).collect();
         let deleted_at = (self.now)();
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(), StorageError> {
+            // FIX014.12：迟到保存可能携带已删除条目 id；note_blocks 无外键，必须在此
+            // 显式拒绝，否则会写入永远不可见的孤儿块。
+            let todo_exists: Option<i64> = self
+                .conn
+                .query_row("SELECT id FROM todos WHERE id = ?1", [todo_id], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            if todo_exists.is_none() {
+                return Err(StorageError::NotFound(todo_id));
+            }
             let existing: Vec<(i64, String)> = self
                 .conn
                 .prepare("SELECT id, kind FROM note_blocks WHERE todo_id = ?1")?
@@ -1158,10 +1295,7 @@ impl Storage {
         }
         let folder = next_seq_folder(images_dir, "note", stamp);
         let seq = folder.rsplit('_').next().unwrap_or("1");
-        let inner = match orig_name {
-            Some(name) => sanitize_file_name(name),
-            None => format!("snap_{stamp}_{seq}.png"),
-        };
+        let inner = image_inner_name(orig_name, stamp, seq);
         let dir = images_dir.join(&folder);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(&inner), bytes)?;
@@ -1195,14 +1329,31 @@ impl Storage {
         // ⓪ 目标块必须先存在（PATCH002.46）：幻影块 id=0 / 跨条目陈旧 id 此前都在**落盘
         // 之后**才失败 → 留下孤儿夹（PATCH002.41）；校验前移到任何文件写入之前
         self.require_note_block(todo_id, block_id)?;
-        // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）
+        // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）。
+        // FIX014.14：本批第一张图尚未入 DB，后续同图查库查不到——必须用批内
+        // hash→rel 表复用，否则同一段 HTML 里的重复图片会落两份文件。
         let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
+        let mut batch_images: HashMap<String, (String, String)> = HashMap::new();
         let written = (|| -> Result<(), StorageError> {
             for part in parts {
                 match part {
-                    NotePastePart::Image { bytes, orig_name } => images.push(Some(
-                        self.write_note_image(images_dir, bytes, orig_name.as_deref(), stamp)?,
-                    )),
+                    NotePastePart::Image { bytes, orig_name } => {
+                        let hash = fnv1a_hex(bytes);
+                        let pair = match batch_images.get(&hash) {
+                            Some(pair) => pair.clone(),
+                            None => {
+                                let pair = self.write_note_image(
+                                    images_dir,
+                                    bytes,
+                                    orig_name.as_deref(),
+                                    stamp,
+                                )?;
+                                batch_images.insert(hash, pair.clone());
+                                pair
+                            }
+                        };
+                        images.push(Some(pair));
+                    }
                     NotePastePart::Text(_) | NotePastePart::PendingImage { .. } => {
                         images.push(None)
                     }
@@ -1481,48 +1632,41 @@ impl Storage {
         Ok(changed)
     }
 
-    /// 删除单个详情块（PL027 图块删除/合并残留）：连带释放该图块文件引用；零行 NotFound
-    pub fn remove_note_block(&self, images_dir: &Path, id: i64) -> Result<(), StorageError> {
-        let rel: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT image_file FROM note_blocks WHERE id = ?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let changed = self
-            .conn
-            .execute("DELETE FROM note_blocks WHERE id = ?1", [id])?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id));
-        }
-        if let Some(rel) = rel {
-            self.release_note_image(images_dir, &rel)?;
-        }
-        Ok(())
-    }
-
     /// 详情块重排（图块拖拽落点提交）：id 集合须与该 todo 现存块完全一致（长度/幽灵/重复），
     /// 通过则按序 UPDATE sort_order（沿 reorder_todos 先例）。
     /// **不自行补块**（PATCH002.56 口径改定 2026-10-19）：末块不变量由**前端在保存点**唯一负责
     pub fn reorder_note_blocks(&self, todo_id: i64, ids: &[i64]) -> Result<(), StorageError> {
-        let mut existing: Vec<i64> = self
-            .conn
-            .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1 AND deleted_at IS NULL")?
-            .query_map([todo_id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        existing.sort_unstable();
-        Self::validate_reorder_ids(ids, &existing, "详情块集")?;
-        for (i, id) in ids.iter().enumerate() {
-            self.conn.execute(
-                "UPDATE note_blocks SET sort_order = ?2
-                 WHERE id = ?1 AND deleted_at IS NULL",
-                rusqlite::params![id, i as i64],
-            )?;
+        // FIX014.11：集合校验与全部 UPDATE 同事务——中途失败不得留下部分新序。
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            let mut existing: Vec<i64> = self
+                .conn
+                .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1 AND deleted_at IS NULL")?
+                .query_map([todo_id], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            existing.sort_unstable();
+            Self::validate_reorder_ids(ids, &existing, "详情块集")?;
+            for (i, id) in ids.iter().enumerate() {
+                self.conn.execute(
+                    "UPDATE note_blocks SET sort_order = ?2
+                     WHERE id = ?1 AND deleted_at IS NULL",
+                    rusqlite::params![id, i as i64],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("详情块重排事务回滚失败：{rollback}"));
+                }
+                Err(err)
+            }
         }
-        Ok(())
     }
 
     /// 气泡行映射（get/list 共用，FIX008.9 收敛双份闭包；镜像 todo row_to_item 形态）。
@@ -1594,10 +1738,8 @@ impl Storage {
         };
         let folder = next_seq_folder(images_dir, "bubble", stamp);
         let seq = folder.rsplit('_').next().unwrap_or("1");
-        let inner = match orig_name {
-            Some(name) => sanitize_file_name(name),
-            None => format!("snap_{stamp}_{seq}.png"),
-        };
+        let inner = image_inner_name(orig_name, stamp, seq);
+        let dir = images_dir.join(&folder);
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<BubbleAddOutcome, StorageError> {
             self.conn.execute(
@@ -1607,7 +1749,6 @@ impl Storage {
                 rusqlite::params![text, hash, source],
             )?;
             let id = self.conn.last_insert_rowid();
-            let dir = images_dir.join(&folder);
             std::fs::create_dir_all(&dir)?;
             std::fs::write(dir.join(&inner), bytes)?;
             // 大图预览（失败降级不阻断——详情退回原图）
@@ -1628,17 +1769,27 @@ impl Storage {
             }))
         })();
         match result {
-            Ok(outcome) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(outcome)
-            }
+            Ok(outcome) => match self.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(outcome),
+                Err(err) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Self::cleanup_failed_image_folder(&dir);
+                    Err(err.into())
+                }
+            },
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("图片入库事务回滚失败：{rollback}"));
                 }
+                Self::cleanup_failed_image_folder(&dir);
                 Err(err)
             }
         }
+    }
+
+    /// FIX014.15：失败补偿包一层，保留“只删本次文件夹”的语义并统一日志出口。
+    fn cleanup_failed_image_folder(dir: &Path) {
+        cleanup_image_folder(dir);
     }
 
     /// 读图片气泡的落盘相对文件名 + 来源（详情/复制回取数源，PL025）：不存在 NotFound
@@ -1820,6 +1971,29 @@ mod tests {
     }
 
     #[test]
+    fn note_blocks_indexes_are_created_idempotently() {
+        // FIX014.13：迁移补两条索引；重复 init 不报错。
+        let st = storage();
+        st.init().expect("重复建表必须幂等");
+        let indexes: Vec<String> = st
+            .conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'note_blocks'",
+            )
+            .expect("查询索引必须成功")
+            .query_map([], |row| row.get(0))
+            .expect("读取索引必须成功")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集索引必须成功");
+        assert!(indexes
+            .iter()
+            .any(|name| name == "idx_note_blocks_todo_order"));
+        assert!(indexes
+            .iter()
+            .any(|name| name == "idx_note_blocks_image_file"));
+    }
+
+    #[test]
     fn add_and_list_roundtrip() {
         let st = storage();
         let a = st.add("任务一").expect("写入必须成功");
@@ -1856,6 +2030,98 @@ mod tests {
         assert!(matches!(st.toggle(9), Err(StorageError::NotFound(9))));
         assert!(matches!(st.get(9), Err(StorageError::NotFound(9))));
         assert!(matches!(st.remove(9), Err(StorageError::NotFound(9))));
+    }
+
+    #[test]
+    fn remove_rolls_back_blocks_when_todo_delete_fails() {
+        // FIX014.11：第二条 DELETE 失败不得留下“块没了、条目还在”。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        st.set_note_blocks(&dir, item.id, &[nb_text(0, "笔记")])
+            .expect("写块必须成功");
+        st.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_todo_delete
+                 BEFORE DELETE ON todos
+                 WHEN OLD.id = 1
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected delete failure');
+                 END;",
+            )
+            .expect("造触发器必须成功");
+        assert!(st.remove(item.id).is_err(), "注入失败必须返回错误");
+        assert_eq!(
+            st.note_blocks(item.id).expect("读块必须成功").len(),
+            1,
+            "第一条 DELETE 必须回滚"
+        );
+        assert!(st.get(item.id).is_ok(), "条目必须保留");
+    }
+
+    #[test]
+    fn purge_expired_rolls_back_blocks_when_todo_delete_fails() {
+        // FIX014.11：归档回收的两次 DELETE 也必须整体原子。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("归档任务").expect("写入必须成功");
+        st.set_note_blocks(&dir, item.id, &[nb_text(0, "笔记")])
+            .expect("写块必须成功");
+        st.toggle(item.id).expect("归档必须成功");
+        st.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_expired_delete
+                 BEFORE DELETE ON todos
+                 WHEN OLD.id = 1
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected purge failure');
+                 END;",
+            )
+            .expect("造触发器必须成功");
+        assert!(
+            st.purge_expired_done(i64::MAX).is_err(),
+            "注入失败必须返回错误"
+        );
+        assert_eq!(
+            st.note_blocks(item.id).expect("读块必须成功").len(),
+            1,
+            "块删除必须回滚"
+        );
+        assert!(st.get(item.id).is_ok(), "归档条目必须保留");
+    }
+
+    #[test]
+    fn reorder_note_blocks_rolls_back_partial_updates() {
+        // FIX014.11：中途 UPDATE 失败不得留下部分新序。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "甲"), nb_text(0, "乙")])
+            .expect("写块必须成功");
+        let first_id = saved[0].id;
+        st.conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_sort_update
+                 BEFORE UPDATE OF sort_order ON note_blocks
+                 WHEN OLD.id = {first_id}
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected reorder failure');
+                 END;"
+            ))
+            .expect("造触发器必须成功");
+        assert!(
+            st.reorder_note_blocks(item.id, &[saved[1].id, first_id])
+                .is_err(),
+            "注入失败必须返回错误"
+        );
+        let texts: Vec<String> = st
+            .note_blocks(item.id)
+            .expect("读块必须成功")
+            .into_iter()
+            .map(|b| b.text)
+            .collect();
+        assert_eq!(texts, vec!["甲", "乙"], "排序必须整体回滚");
     }
 
     #[test]
@@ -2052,6 +2318,55 @@ mod tests {
             std::fs::read(dir.join(&rel_b)).expect("回读必须成功"),
             other
         );
+    }
+
+    #[test]
+    fn image_bubble_failure_cleans_created_folder() {
+        // FIX014.15：UPDATE image_file 失败时 DB 回滚，刚创建的 bubble_* 夹也要补偿删除。
+        let st = storage();
+        let dir = temp_images_dir();
+        st.conn
+            .execute_batch(
+                "CREATE TRIGGER fail_bubble_image_update
+                 BEFORE UPDATE OF image_file ON bubbles
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected bubble update failure');
+                 END;",
+            )
+            .expect("造触发器必须成功");
+        let err = st
+            .add_image_bubble(&dir, "🖼️ 图片", &png_bytes(), Some("a.png"), "261022000000")
+            .expect_err("注入失败必须返回错误");
+        assert!(matches!(err, StorageError::Sqlite(_)));
+        assert!(st.list_bubbles().expect("读取必须成功").is_empty());
+        let folders = std::fs::read_dir(&dir)
+            .expect("目录可读")
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("bubble_"))
+            .count();
+        assert_eq!(folders, 0, "回滚后不得残留 bubble_* 夹");
+    }
+
+    #[test]
+    fn image_bubble_preview_named_file_keeps_original() {
+        // FIX014.16：气泡图片原名 preview.png 时同样把原图改名。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st
+            .add_image_bubble(
+                &dir,
+                "🖼️ 图片 preview.png",
+                &png_bytes(),
+                Some("preview.png"),
+                "261022000000",
+            )
+            .expect("写入必须成功")
+            .added_item();
+        let (rel, _) = st
+            .get_bubble_image_file(item.id)
+            .expect("读取必须成功")
+            .expect("应有文件");
+        assert!(rel.ends_with("original.png"), "原图不得被预览覆盖");
     }
 
     #[test]
@@ -2796,6 +3111,39 @@ mod tests {
         assert_eq!(updated[2].text, "第三行");
     }
 
+    #[test]
+    fn set_note_blocks_missing_todo_is_not_found() {
+        // FIX014.12：迟到保存不得给不存在的 todo 写孤儿块。
+        let st = storage();
+        let dir = temp_images_dir();
+        let err = st
+            .set_note_blocks(&dir, 999, &[nb_text(0, "孤儿")])
+            .expect_err("不存在的 todo 必须拒绝");
+        assert!(matches!(err, StorageError::NotFound(999)));
+        assert!(st.note_blocks(999).expect("读块必须成功").is_empty());
+    }
+
+    #[test]
+    fn set_note_blocks_rejects_duplicate_positive_ids() {
+        // FIX014.12：重复正 id 会 last-wins、导致块集缩短；入口显式拒绝。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "甲"), nb_text(0, "乙")])
+            .expect("写块必须成功");
+        let duplicate = vec![saved[0].clone(), saved[0].clone()];
+        let err = st
+            .set_note_blocks(&dir, item.id, &duplicate)
+            .expect_err("重复 id 必须拒绝");
+        assert!(matches!(err, StorageError::ReorderMismatch(_)));
+        assert_eq!(
+            st.note_blocks(item.id).expect("读块必须成功").len(),
+            2,
+            "拒绝后原块集不得改变"
+        );
+    }
+
     /// PATCH002.72 C7：**旧 id 的行已被删除 ⇒ 按新块插入**（撤销"粘贴替换选区"要把被删的行写回；
     /// 原实现报 `NotFound` ⇒ 整次保存失败 ⇒ 撤销内容永远落不了库 ✗）
     #[test]
@@ -2873,6 +3221,88 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("note_"))
             .count();
         assert_eq!(folders, 1, "盘上只落一份文件");
+    }
+
+    #[test]
+    fn paste_parts_reuses_same_image_within_one_batch() {
+        // FIX014.14：同一批两张同图，第二张必须命中批内 hash 缓存，不能落第二份。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let parts = vec![
+            NotePastePart::Image {
+                bytes: png_bytes(),
+                orig_name: None,
+            },
+            NotePastePart::Image {
+                bytes: png_bytes(),
+                orig_name: None,
+            },
+        ];
+        let (blocks, _ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261022000000")
+            .expect("同批插入必须成功");
+        let image_paths: Vec<&str> = blocks
+            .iter()
+            .filter(|b| b.kind == NoteBlockKind::Image)
+            .filter_map(|b| b.image_file.as_deref())
+            .collect();
+        assert_eq!(image_paths.len(), 2);
+        assert_eq!(image_paths[0], image_paths[1], "同批同图必须复用路径");
+        assert_eq!(note_folder_count(&dir), 1, "盘上只能有一个 note_ 文件夹");
+    }
+
+    #[test]
+    fn preview_named_original_does_not_overwrite_image() {
+        // FIX014.16：原名 preview.png 时原图改 original.png，预览仍独立。
+        let st = storage();
+        let dir = temp_images_dir();
+        let bytes = png_bytes();
+        let preview = b"preview-bytes";
+        let (_, rel) = st
+            .write_note_image_prepared(
+                &dir,
+                &bytes,
+                Some("preview.png"),
+                "261022000000",
+                Some(preview),
+            )
+            .expect("写图必须成功");
+        assert!(rel.ends_with("original.png"), "原图必须改名");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        assert_eq!(
+            std::fs::read(dir.join(&rel)).expect("读原图必须成功"),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(folder.join("preview.png")).expect("读预览必须成功"),
+            preview
+        );
+    }
+
+    #[test]
+    fn release_note_image_rejects_unsafe_paths() {
+        // FIX014.17：空串 / 目录穿越不得 join 到 images 根或外部。
+        let st = storage();
+        let dir = temp_images_dir();
+        let sentinel = dir.join("sentinel");
+        std::fs::create_dir_all(&sentinel).expect("哨兵目录必须可建");
+        assert!(matches!(
+            st.release_note_image(&dir, ""),
+            Err(StorageError::InvalidImagePath(_))
+        ));
+        assert!(matches!(
+            st.release_note_image(&dir, "../sentinel"),
+            Err(StorageError::InvalidImagePath(_))
+        ));
+        assert!(sentinel.is_dir(), "非法路径不得删除哨兵");
+        assert!(is_safe_image_folder("bubble_261022_1", "bubble_"));
+        assert!(!is_safe_image_folder("", "bubble_"));
+        assert!(!is_safe_image_folder("../bubble_1", "bubble_"));
+        assert!(!is_safe_image_folder("note_1", "bubble_"));
     }
 
     #[test]
@@ -3390,19 +3820,27 @@ mod tests {
                 .count(),
             2
         );
-        // 删一个图块：文件仍在（还有引用）
-        st.remove_note_block(&dir, first_img_id)
-            .expect("删块必须成功");
-        assert!(folder.is_dir(), "仍有引用 → 文件保留");
-        // 删最后一个：文件夹消失
-        let last = st
+        // 删一个图块（软删除）：文件仍在（还有引用）
+        let remaining = st
             .note_blocks(item.id)
             .expect("读块必须成功")
             .into_iter()
-            .find(|b| b.kind == NoteBlockKind::Image)
-            .expect("还剩一个图块");
-        st.remove_note_block(&dir, last.id)
-            .expect("删最后一块必须成功");
+            .filter(|b| b.id != first_img_id)
+            .collect::<Vec<_>>();
+        st.set_note_blocks(&dir, item.id, &remaining)
+            .expect("软删除图块必须成功");
+        assert!(folder.is_dir(), "仍有引用 → 文件保留");
+        // 删最后一个并关板收口：文件夹消失
+        let text_only = st
+            .note_blocks(item.id)
+            .expect("读块必须成功")
+            .into_iter()
+            .filter(|b| b.kind == NoteBlockKind::Text)
+            .collect::<Vec<_>>();
+        st.set_note_blocks(&dir, item.id, &text_only)
+            .expect("删最后图块必须成功");
+        st.purge_deleted_note_blocks(&dir, Some(item.id))
+            .expect("软删除收口必须成功");
         assert!(!folder.is_dir(), "引用归零 → 文件夹删除");
     }
 

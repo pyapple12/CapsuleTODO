@@ -414,8 +414,13 @@ pub fn bubble_clear_core(
     Ok(removed)
 }
 
-/// 递归删气泡图片文件夹（best-effort：失败落日志不阻断删行；不存在忽略）
+/// 递归删气泡图片文件夹（best-effort：失败落日志不阻断删行；不存在忽略）。
+/// FIX014.17：只接受单个 `bubble_*` 文件夹名，空串 / `..` / 路径分隔符一律拒绝。
 fn remove_image_folder(images_dir: &std::path::Path, folder: &str) {
+    if !crate::storage::is_safe_image_folder(folder, "bubble_") {
+        crate::diag::warn_diag(&format!("图片文件夹路径非法，跳过删除：{folder:?}"));
+        return;
+    }
     let path = images_dir.join(folder);
     if path.is_dir() {
         if let Err(err) = std::fs::remove_dir_all(&path) {

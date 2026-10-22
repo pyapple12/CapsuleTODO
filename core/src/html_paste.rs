@@ -14,9 +14,10 @@ pub enum HtmlPart {
     Image(String),
 }
 
-/// 块级分隔标签：出现即视为段落边界（与浏览器"复制网页"的段落切分口径近似）
-const BLOCK_TAGS: [&str; 12] = [
-    "<br",
+/// 块级分隔标签：出现即视为段落边界（与浏览器"复制网页"的段落切分口径近似）。
+/// `<br` 不在此表：自闭合 `<br/>` / `<br />` 由 `replace_br_tags` 统一吃掉，避免
+/// 只替换 `<br` 后把 `/>` 残留成文本。
+const BLOCK_TAGS: [&str; 11] = [
     "</p",
     "</div",
     "</li",
@@ -30,10 +31,17 @@ const BLOCK_TAGS: [&str; 12] = [
     "</blockquote",
 ];
 
-/// 解析 HTML → 片段序列（`<img>` 单独成段；文本按块级标签与换行切段）
+/// HTML 解析前的字节上限（FIX014.20）：超出部分截断到 UTF-8 边界。
+/// 详情笔记本身另有 10,000 字符上限；这里防超大标记把解析拖成 O(N²)。
+const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+
+/// 解析 HTML → 片段序列（`<img>` 单独成段；文本按块级标签与换行切段）。
+/// FIX014.20：先跳过注释 / script / style，再做标签扫描；超长输入先截断。
 pub fn parse(html: &str) -> Vec<HtmlPart> {
+    let limited = truncate_utf8(html, MAX_HTML_BYTES);
+    let cleaned = strip_non_content(limited);
     let mut parts: Vec<HtmlPart> = Vec::new();
-    let mut rest = html;
+    let mut rest = cleaned.as_str();
     loop {
         // 找下一个 <img …>：之前的文本先切段，再产出图块
         let Some(start) = find_ci(rest, "<img") else {
@@ -42,7 +50,7 @@ pub fn parse(html: &str) -> Vec<HtmlPart> {
         };
         push_text(&mut parts, &rest[..start]);
         let after = &rest[start..];
-        let Some(end) = after.find('>') else {
+        let Some(end) = find_tag_end(after) else {
             push_text(&mut parts, after);
             break;
         };
@@ -52,6 +60,109 @@ pub fn parse(html: &str) -> Vec<HtmlPart> {
         rest = &after[end + 1..];
     }
     parts
+}
+
+/// 截到 UTF-8 字符边界；超长 HTML 只解析前缀。
+fn truncate_utf8(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// 查找标签结束 `>`（FIX014.20：跳过引号内的 `>`，避免 `title="a > b"` 提前截断）。
+fn find_tag_end(tag: &str) -> Option<usize> {
+    let bytes = tag.as_bytes();
+    let mut quote: Option<u8> = None;
+    for (i, &byte) in bytes.iter().enumerate() {
+        match quote {
+            Some(q) if byte == q => quote = None,
+            Some(_) => {}
+            None if matches!(byte, b'"' | b'\'') => quote = Some(byte),
+            None if byte == b'>' => return Some(i),
+            None => {}
+        }
+    }
+    None
+}
+
+/// 去掉注释、`<script>` / `<style>` 整段内容（FIX014.20：脚本里的 `<img>` 不得成图，
+/// 样式/脚本正文不得进入笔记）。未闭合时丢弃剩余内容，避免把脚本正文当文本。
+fn strip_non_content(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        let comment = find_ci(rest, "<!--");
+        let script = find_ci(rest, "<script");
+        let style = find_ci(rest, "<style");
+        let (start, kind) = match (comment, script, style) {
+            (Some(c), Some(s), Some(y)) => {
+                let (at, kind) = if c <= s && c <= y {
+                    (c, "comment")
+                } else if s <= y {
+                    (s, "script")
+                } else {
+                    (y, "style")
+                };
+                (at, kind)
+            }
+            (Some(c), Some(s), None) => {
+                if c <= s {
+                    (c, "comment")
+                } else {
+                    (s, "script")
+                }
+            }
+            (Some(c), None, Some(y)) => {
+                if c <= y {
+                    (c, "comment")
+                } else {
+                    (y, "style")
+                }
+            }
+            (None, Some(s), Some(y)) => {
+                if s <= y {
+                    (s, "script")
+                } else {
+                    (y, "style")
+                }
+            }
+            (Some(at), None, None) => (at, "comment"),
+            (None, Some(at), None) => (at, "script"),
+            (None, None, Some(at)) => (at, "style"),
+            (None, None, None) => {
+                out.push_str(rest);
+                break;
+            }
+        };
+        out.push_str(&rest[..start]);
+        match kind {
+            "comment" => {
+                let after = &rest[start + 4..];
+                let Some(end) = after.find("-->") else {
+                    break;
+                };
+                rest = &after[end + 3..];
+            }
+            "script" => {
+                let Some(end) = find_ci(&rest[start..], "</script") else {
+                    break;
+                };
+                rest = &rest[start + end + "</script".len()..];
+            }
+            _ => {
+                let Some(end) = find_ci(&rest[start..], "</style") else {
+                    break;
+                };
+                rest = &rest[start + end + "</style".len()..];
+            }
+        }
+    }
+    out
 }
 
 /// 文本段 → 去标签 + 解实体 + 按块级标签与换行切段（trim 后非空的才产出）
@@ -65,9 +176,10 @@ fn push_text(parts: &mut Vec<HtmlPart>, chunk: &str) {
     }
 }
 
-/// 按块级标签与换行切段（标签本身换成换行，随后再 strip）
+/// 按块级标签与换行切段（标签本身换成换行，随后再 strip）。
+/// FIX014.20：`<br>` / `<br/>` / `<br />` 整体替换成换行，不再留下 `/>` 文本。
 fn split_blocks(chunk: &str) -> Vec<String> {
-    let mut normalized = chunk.to_string();
+    let mut normalized = replace_br_tags(chunk);
     for tag in BLOCK_TAGS {
         normalized = replace_ci(&normalized, tag, "\n");
     }
@@ -79,40 +191,65 @@ fn split_blocks(chunk: &str) -> Vec<String> {
         .collect()
 }
 
-/// 去标签（`<…>` 整体丢弃；`<!--…-->` 一并丢弃）
+/// 把 `<br ...>` 变体整体替换为换行；属性/大小写/自闭合斜杠都吃掉。
+fn replace_br_tags(chunk: &str) -> String {
+    let mut out = String::with_capacity(chunk.len());
+    let mut rest = chunk;
+    while let Some(at) = find_ci(rest, "<br") {
+        let after = &rest[at..];
+        let next = after.as_bytes().get(3).copied();
+        let is_br = next.is_some_and(|b| b.is_ascii_whitespace() || b == b'/' || b == b'>');
+        if !is_br {
+            out.push_str(&rest[..at + 3]);
+            rest = &after[3..];
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        let Some(end) = find_tag_end(after) else {
+            // 未闭合 `<br`：保持原样，交给后续 strip_tags 兜底
+            out.push_str(after);
+            return out;
+        };
+        out.push('\n');
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 去标签（`<…>` 整体丢弃；`<!--…-->` 一并丢弃）。
+/// FIX014.20：标签结束由 `find_tag_end` 引号感知扫描，不再把 `title="a > b"` 的 `>`
+/// 当成标签结束。
 pub fn strip_tags(chunk: &str) -> String {
     let mut out = String::with_capacity(chunk.len());
-    let mut depth = 0usize;
-    let bytes = chunk.as_bytes();
     let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if chunk[i..].starts_with("<!--") {
-                match chunk[i..].find("-->") {
-                    Some(at) => {
-                        i += at + 3;
-                        continue;
-                    }
-                    None => break,
+    while i < chunk.len() {
+        if chunk[i..].starts_with("<!--") {
+            match chunk[i..].find("-->") {
+                Some(at) => {
+                    i += at + 3;
+                    continue;
                 }
+                None => break,
             }
-            depth += 1;
+        }
+        if chunk.as_bytes()[i] == b'<' {
+            let Some(end) = find_tag_end(&chunk[i..]) else {
+                break;
+            };
+            i += end + 1;
+            continue;
+        }
+        // split_blocks 把块级开标签替换成换行后，会留下其闭合 `>`；旧实现同样忽略
+        // 顶层 `>`。保留该口径，避免 `</p>` 的尾巴变成正文。
+        if chunk.as_bytes()[i] == b'>' {
             i += 1;
             continue;
         }
-        if bytes[i] == b'>' {
-            depth = depth.saturating_sub(1);
-            i += 1;
-            continue;
-        }
-        if depth == 0 {
-            // 非 ASCII 边界安全：按字符推进
-            let ch = chunk[i..].chars().next().unwrap_or(' ');
-            out.push(ch);
-            i += ch.len_utf8();
-        } else {
-            i += 1;
-        }
+        // 非 ASCII 边界安全：按字符推进
+        let ch = chunk[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -197,24 +334,30 @@ fn attr_src(tag: &str) -> Option<String> {
     None
 }
 
-/// 大小写无关查找
+/// 大小写无关查找（FIX014.20：字节级比较，不再每次整段 `to_ascii_lowercase`）。
+/// needle 只用于 HTML 标签/属性名（ASCII）；非 ASCII 文本按原字节比较。
 fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    if needle.is_empty() {
+        return Some(0);
+    }
     haystack
-        .to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// 大小写无关替换（全量）
+/// 大小写无关替换（全量；FIX014.20：复用 `find_ci`，不复制整段小写字符串）。
 fn replace_ci(haystack: &str, needle: &str, with: &str) -> String {
-    let lower = haystack.to_ascii_lowercase();
-    let needle_lower = needle.to_ascii_lowercase();
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
     let mut out = String::with_capacity(haystack.len());
     let mut from = 0usize;
-    while let Some(at) = lower[from..].find(&needle_lower) {
-        let at = from + at;
-        out.push_str(&haystack[from..at]);
+    while let Some(at) = find_ci(&haystack[from..], needle) {
+        out.push_str(&haystack[from..from + at]);
         out.push_str(with);
-        from = at + needle.len();
+        from += at + needle.len();
     }
     out.push_str(&haystack[from..]);
     out
@@ -277,6 +420,52 @@ mod tests {
     #[test]
     fn strip_tags_handles_comments_and_attributes() {
         assert_eq!(strip_tags("x<!-- 注释 -->y<b class=\"z\">B</b>"), "xyB");
+    }
+
+    #[test]
+    fn strip_tags_ignores_gt_inside_quoted_attributes() {
+        assert_eq!(
+            strip_tags("<span title=\"a > b\">正文</span>"),
+            "正文",
+            "引号内 > 不得提前结束标签"
+        );
+    }
+
+    #[test]
+    fn split_blocks_consumes_all_br_variants() {
+        assert_eq!(
+            parse("甲<br>乙<br/>丙<br />丁"),
+            vec![
+                HtmlPart::Text("甲".to_string()),
+                HtmlPart::Text("乙".to_string()),
+                HtmlPart::Text("丙".to_string()),
+                HtmlPart::Text("丁".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_skips_script_style_and_comments() {
+        let html = "<p>前</p><script>var s = \"<img src='https://evil/x.png'>\";</script>\
+                    <style>.x{content:\"<img src='https://evil/y.png'>\"}</style>\
+                    <!-- <img src='https://evil/z.png'> --><p>后</p>";
+        assert_eq!(
+            parse(html),
+            vec![
+                HtmlPart::Text("前".to_string()),
+                HtmlPart::Text("后".to_string()),
+            ],
+            "脚本/样式/注释里的 img 不得成图，正文也不得混入"
+        );
+    }
+
+    #[test]
+    fn parse_truncates_oversized_html_at_utf8_boundary() {
+        // 只验证截断后不 panic、仍能解析文本；上限是防御性边界。
+        let html = format!("<p>{}</p>", "a".repeat(MAX_HTML_BYTES));
+        let parts = parse(&html);
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(parts[0], HtmlPart::Text(_)));
     }
 
     #[test]
