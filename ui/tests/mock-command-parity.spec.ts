@@ -2,6 +2,23 @@ import { describe, expect, it } from "vitest";
 
 import { hasMockCommand } from "../src/dev/mock-invoke";
 
+/** FIX014.27：直接读取真机注册块，避免“手写常量 + mock”两边一起漂移。 */
+const libSource = Object.values(
+  import.meta.glob("../../core/src/lib.rs", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }),
+)[0] as string | undefined;
+
+/** 从 generate_handler! 块提取命令名（只匹配该块，避免误收同文件其它调用）。 */
+function commandsFromLib(source: string): string[] {
+  const handler = source.match(/generate_handler!\[([\s\S]*?)\]\)/)?.[1] ?? "";
+  return [...handler.matchAll(/commands::[a-zA-Z0-9_]+::([a-zA-Z0-9_]+)/g)].map(
+    (match) => match[1],
+  );
+}
+
 /** 与 core/src/lib.rs 的 generate_handler! 注册块同步（新增命令时同时补此表与 mock）。 */
 const REGISTERED_COMMANDS = [
   "todo_add",
@@ -47,10 +64,16 @@ const REGISTERED_COMMANDS = [
   "tray_preview_resize",
   "tray_menu_action",
   "main_hide_to_tray",
-  "debug_log",
 ] as const;
 
 describe("mock 命令覆盖（FIX014.27）", () => {
+  it("静态表与 lib.rs generate_handler 完全一致", () => {
+    expect(libSource).toBeTypeOf("string");
+    const actual = commandsFromLib(libSource ?? "");
+    expect(actual.length).toBeGreaterThan(0);
+    expect([...actual].sort()).toEqual([...REGISTERED_COMMANDS].sort());
+  });
+
   it("真机注册的每个命令都有 DEV mock 路由", () => {
     const missing = REGISTERED_COMMANDS.filter((name) => !hasMockCommand(name));
     expect(missing).toEqual([]);

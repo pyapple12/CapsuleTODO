@@ -1,0 +1,15 @@
+{
+  "app": {
+    "security": {
+      "capabilities": [
+        "default",
+        "main-drag",
+        {
+          "identifier": "dev-diag",
+          "windows": ["main"],
+          "permissions": ["dev-diag:default"]
+        }
+      ]
+    }
+  }
+}

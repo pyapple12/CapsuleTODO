@@ -536,9 +536,15 @@ mod win {
         let has_png = png_fmt != 0 && unsafe { IsClipboardFormatAvailable(png_fmt) } != 0;
         // 短临界区：只拷原始字节/取文件路径，编码与读盘挪到 CloseClipboard 之后。
         // FIX014.25：PNG 格式声明存在 ≠ PNG 取数成功；失败必须继续回退 DIB/HDROP。
-        let png = if has_png { copy_format(png_fmt) } else { None };
+        let png = if has_png {
+            // FIX014.45：PNG 格式存在不代表字节可用（空/截断/错标）；坏字节必须
+            // 继续回退 CF_DIB / CF_HDROP，不能提前返回一个必然校验失败的载荷。
+            copy_format(png_fmt).filter(|bytes| super::image_extension(bytes) == Some("png"))
+        } else {
+            None
+        };
         if has_png && png.is_none() {
-            crate::diag::warn_diag("剪贴板图片读取：PNG 取数失败，回退 CF_DIB/文件");
+            crate::diag::warn_diag("剪贴板图片读取：PNG 取数失败或字节非法，回退 CF_DIB/文件");
         }
         let dib = if png.is_none() {
             copy_format(CF_DIB)

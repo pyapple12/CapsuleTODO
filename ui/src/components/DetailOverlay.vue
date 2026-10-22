@@ -25,6 +25,7 @@ import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
 import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
 import { bindOverlayState, syncVeils } from "../composables/useVeils";
+import { DIAG, debugLog, dragDiag as diagLog, undoLog } from "../dev/diagnostics";
 
 // ===== 详情板（PL010.5 todo 模式；bubble 模式 PL012 填充；**PL027 详情改块序列**）：
 // 一段一行一块 + 图块混排——Enter 光标处拆块 / Backspace@块首（上一块文字→合并、
@@ -250,13 +251,6 @@ function idsOf(list: LocalBlock[]): string {
   return list.map((b) => `${b.kind === "Image" ? "I" : "T"}${b.id}`).join(",");
 }
 
-/** 撤销栈登记（**临时诊断专用**）：记录每次入栈时的代际 id 序列 */
-function undoLog(line: string): void {
-  void invoke("debug_log", { line })
-    .then(() => undefined)
-    .catch((err) => console.error("诊断上报失败", err));
-}
-
 /** 排入防抖保存（无变更/未开板直接跳过）。**捕获** {todoId, list} 再排定（PATCH002.47）：
  * 切源会整体换数组 → 捕获引用即"那一条目的那一份"（同条目内 v-model 原地改仍取到最新文本） */
 function scheduleSave(): void {
@@ -269,7 +263,7 @@ function scheduleSave(): void {
   const list = blocks.value;
   saveTimer = window.setTimeout(() => {
     // 临时诊断（.72 排查）：哪个保存入口
-    undoLog(`save:caller=debounce inFlight=${pasteInFlight} len=${list.length}`);
+    if (DIAG) undoLog(`save:caller=debounce inFlight=${pasteInFlight} len=${list.length}`);
     void saveBlocksFor(todoId, list);
   }, 300);
 }
@@ -291,9 +285,11 @@ async function saveBlocksForCore(
   // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块 + **签名指纹**
   // （PATCH002.72：指纹用于比对"这次要保存的是不是刚才那一代"）
   const preLast = list[list.length - 1];
-  void invoke("debug_log", {
-    line: `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"} sig=${sig.length}/${sigFingerprint(sig)}`,
-  }).catch((err) => console.error("诊断上报失败", err));
+  if (DIAG) {
+    debugLog(
+      `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"} sig=${sig.length}/${sigFingerprint(sig)}`,
+    );
+  }
   const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
@@ -312,15 +308,17 @@ async function saveBlocksForCore(
     // 临时诊断（抖动定位，测完即删）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
     // （PATCH002.72：与 `pre-save` 行配对读——两行指纹相同 = 服务端没改块集 ✓）
     const savedLast = saved[saved.length - 1];
-    void invoke("debug_log", {
-      line: `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"} sig=${savedSignature.length}/${sigFingerprint(savedSignature)}`,
-    }).catch((err) => console.error("诊断上报失败", err));
+    if (DIAG) {
+      debugLog(
+        `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"} sig=${savedSignature.length}/${sigFingerprint(savedSignature)}`,
+      );
+    }
     emit("changed");
     return true;
   } catch (err) {
     // 临时诊断（.72 排查）：保存失败原先只落 console ⇒ 日志里完全隐身 ✗（本次就靠它才能定位）
     console.error("详情保存失败", err);
-    undoLog(`save:fail todo=${todoId} len=${payload.length} err=${String(err)}`);
+    if (DIAG) undoLog(`save:fail todo=${todoId} len=${payload.length} err=${String(err)}`);
     return false;
   }
 }
@@ -357,7 +355,7 @@ async function loadBlocks(todoId: number, ghost: HTMLElement | null = null): Pro
     // paint，因此不会出现"新列表 + ghost"或"矮一截"的中间帧
     ghost?.remove();
     blocks.value = normalizeBlocks(serverList);
-    dragDiag("loadBlocks:done"); // 临时诊断（抖动定位，测完即删）：重拉赋值后的本地列表
+    if (DIAG) dragDiagDetailed("loadBlocks:done"); // 临时诊断（抖动定位，测完即删）：重拉赋值后的本地列表
     savedTodoId = todoId;
     // PATCH002.56 修正：**基准必须反映服务端真实状态**（归一化**之前**的列表）——
     // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
@@ -370,7 +368,7 @@ async function loadBlocks(todoId: number, ghost: HTMLElement | null = null): Pro
     undoStack.length = 0;
     undoSeq += 1; // 在飞的删块动效收场按代际放弃（沿 .44 口径）
     // 临时诊断（.72 排查）：清栈前多深（>0 说明旧代快照确实存在过 ✓）+ 本次载入的代际
-    undoLog(`undo:clear depth=${undoDepth} arr=${idsOf(blocks.value)}`);
+    if (DIAG) undoLog(`undo:clear depth=${undoDepth} arr=${idsOf(blocks.value)}`);
     brokenKeys.value = [];
     lastTextKey = ""; // PATCH002.77：载入即换代，旧的"最近聚焦块"不再代表当前文档
     selection.reset(); // 换源/重拉即复位选区状态机（含 imageKey / 原生残留）
@@ -401,11 +399,11 @@ function onBlockInput(index: number, e: Event): void {
   // PATCH002.73：替换/组字的那一下输入**不清栈**（刚压的快照要活到撤销时 ✓）；
   // 其余输入照旧"打字即清结构性栈" ✓
   if (keepUndoComposing) {
-    undoLog("undo:keep consume reason=ime");
+    if (DIAG) undoLog("undo:keep consume reason=ime");
   } else if (keepUndoOnce) {
     keepUndoOnce = false;
     if (editInFlight > 0) editInFlight -= 1; // 字符已写入 ⇒ 关闭结构性编辑窗口 ✓
-    undoLog(`undo:keep consume reason=input editInFlight=${editInFlight}`);
+    if (DIAG) undoLog(`undo:keep consume reason=input editInFlight=${editInFlight}`);
   } else {
     dropUndo();
   }
@@ -489,6 +487,10 @@ async function deleteBlockRun(
 ): Promise<void> {
   pushUndo();
   const seq = undoSeq; // 收场前复核代际（见函数头"可回退"）
+  // FIX014.40：把删除动效绑定到“按下时的条目 + 块数组”。动效期间可能关板/切源，
+  // settle 若再读 props.todo 会落到空/新条目，删除就永远不落库。
+  const todoId = props.todo?.id ?? savedTodoId;
+  const list = blocks.value;
   if (selectedKey.value === block._key) selection.clearImage();
   const rowEl: HTMLElement | null =
     overlay.value?.querySelector<HTMLElement>(`[data-row-id="${index + 1}"]`) ?? null;
@@ -500,24 +502,25 @@ async function deleteBlockRun(
   /** 收场：摘数据 + 交还光标 + 落库；**代际不符（用户已撤销）则放弃并还原行观感** */
   const settle = async (): Promise<void> => {
     if (undoSeq !== seq) {
-      leavingKey.value = "";
+      if (leavingKey.value === block._key) leavingKey.value = "";
       anim?.cancel(); // 撤掉 forwards 填充
       clearCollapse(rowEl);
       return;
     }
-    leavingKey.value = "";
-    const at = blocks.value.findIndex((b) => b._key === block._key);
+    if (leavingKey.value === block._key) leavingKey.value = "";
+    const at = list.findIndex((b) => b._key === block._key);
     if (at < 0) return;
-    blocks.value.splice(at, 1);
-    // PATCH002.37（甲案）：邻居是**文本**块才交还光标；是图块则维持现状（不强推焦点）
-    if (caretTo) {
-      const neighbor = caretTo === "prev" ? blocks.value[at - 1] : blocks.value[at];
+    list.splice(at, 1);
+    // PATCH002.37（甲案）：邻居是**文本**块才交还光标；是图块则维持现状（不强推焦点）。
+    // FIX014.40：只在当前板仍展示这份列表时动焦点，切源后不得把焦点推到新板。
+    if (blocks.value === list && caretTo) {
+      const neighbor = caretTo === "prev" ? list[at - 1] : list[at];
       if (neighbor?.kind === "Text") {
         focusBlock(neighbor._key, caretTo === "prev" ? neighbor.text.length : 0);
       }
     }
-    scheduleSave();
-    await saveBlocks();
+    // 落旧条目而不是当前 props：关板后 props.todo 已空，saveBlocks() 会直接返回。
+    if (todoId != null) await saveBlocksFor(todoId, list, true);
   };
   leavingKey.value = block._key; // 语义标记（淡出视觉由动画 / 内联样式负责）
   if (rowEl && typeof rowEl.animate === "function") {
@@ -573,10 +576,10 @@ function splitBlockFromEnter(index: number, el: HTMLTextAreaElement): void {
     pushUndo();
     const at = removeSelectedRange(false);
     if (at) splitBlock(at.index, at.offset, false);
-    undoLog(`enter:sel afterSplit=${blocks.value.length}`);
+    if (DIAG) undoLog(`enter:sel afterSplit=${blocks.value.length}`);
     return;
   }
-  undoLog(`enter:plain index=${index} start=${el.selectionStart ?? 0}`);
+  if (DIAG) undoLog(`enter:plain index=${index} start=${el.selectionStart ?? 0}`);
   splitBlock(index, el.selectionStart ?? 0);
 }
 
@@ -802,11 +805,12 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     const r = selRange.value;
     const a = selAnchor.value;
     const f = selFocus.value;
-    undoLog(
-      `paste:enter sel=${r ? `${r.from.index}:${r.from.offset}->${r.to.index}:${r.to.offset}` : "null"}` +
-        ` anchor=${a ? `${a.index}:${a.offset}` : "null"} focus=${f ? `${f.index}:${f.offset}` : "null"}` +
-        ` native=${el.selectionStart}-${el.selectionEnd} lines=${plainClip.split("\n").length}`,
-    );
+    if (DIAG)
+      undoLog(
+        `paste:enter sel=${r ? `${r.from.index}:${r.from.offset}->${r.to.index}:${r.to.offset}` : "null"}` +
+          ` anchor=${a ? `${a.index}:${a.offset}` : "null"} focus=${f ? `${f.index}:${f.offset}` : "null"}` +
+          ` native=${el.selectionStart}-${el.selectionEnd} lines=${plainClip.split("\n").length}`,
+      );
   }
   // PATCH002.70（A）：**自绘选区存在时，粘贴 = 整体替换选区**。
   // 根因：Ctrl+A 是板级自绘选区（`preventDefault` 掉原生全选），而粘贴只看**焦点文本域的
@@ -836,6 +840,8 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
       // 否则服务端返回"未删的旧块 + 插入"（实证 len=6 ⇒ 旧内容跑到粘贴内容之后 ✗）
       if (html0.includes("<img") || hasImage) {
         if (!(await saveBlocks(true))) return;
+        // FIX014.41：保存 await 期间可能已切源；此时不能把旧选区粘贴到新条目。
+        if (props.todo?.id !== todoId) return;
       }
       if (html0.includes("<img")) {
         pasteOk = await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
@@ -848,9 +854,10 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     } finally {
       pasteInFlight -= 1;
       // 临时诊断（.72 排查）：替换分支收尾时的模型规模与去向
-      undoLog(
-        `paste:end inFlight=${pasteInFlight} len=${blocks.value.length} sameTodo=${props.todo?.id === todoId}`,
-      );
+      if (DIAG)
+        undoLog(
+          `paste:end inFlight=${pasteInFlight} len=${blocks.value.length} sameTodo=${props.todo?.id === todoId}`,
+        );
       if (!pasteOk) {
         // 失败恢复：本地回原文；数据库里可能已落“删除后的空态”，用强制保存写回原文。
         // 已切源时只写回旧条目，不覆盖新条目当前显示。不加 UI 提示（014.9 定案：静默恢复）。
@@ -903,7 +910,8 @@ async function ensureBlocksReady(): Promise<boolean> {
   }
   if (blocks.value.some((b) => b.id <= 0)) {
     // 临时诊断（.72 排查）：哪个保存入口
-    undoLog(`save:caller=ensureReady inFlight=${pasteInFlight} len=${blocks.value.length}`);
+    if (DIAG)
+      undoLog(`save:caller=ensureReady inFlight=${pasteInFlight} len=${blocks.value.length}`);
     await saveBlocks(true); // 本地独有的块必须先拿到 id
   }
   return true;
@@ -927,6 +935,11 @@ async function pasteImageAt(
     console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
     return false;
   }
+  // FIX014.41：ensure 也可能 await（按需 loadBlocks）；期间切源则放弃本次粘贴。
+  if (props.todo?.id !== todo.id) {
+    console.error("粘贴中止：条目已切换");
+    return false;
+  }
   const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
   if (!target || target.id <= 0) {
     console.error("粘贴中止：目标块定位失败", { key });
@@ -941,21 +954,24 @@ async function pasteImageAt(
       before,
       after,
     });
-    // 后端已成功；即使此刻已切源，本次粘贴也应视为成功（最终态由切源收尾写回旧条目）
-    if (props.todo?.id !== todo.id) return true;
+    const sameTodo = props.todo?.id === todo.id;
     if (outcome.status === "image") {
+      // 后端已落旧条目；即使此刻已切源，本次插图也应视为成功。
+      if (!sameTodo) return true;
       if (push) pushUndo(); // 结构性操作入栈（仅真插图入栈；文本回落由 pasteTextLines 按同一 push 决定）
       blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
       savedSignature = signature(blocks.value);
       brokenKeys.value = [];
       void nextTick(() => autosizeAll());
       emit("changed");
-    } else {
-      // 剪贴板无图（或非图片文件）→ 回落文本粘贴（含多行拆块），不吞粘贴
-      // （PATCH002.72：`push` 透传——本函数在回落分支**未**入栈，由 pasteTextLines 按同一开关决定）
-      const at = blocks.value.findIndex((b) => b._key === key);
-      pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
+      return true;
     }
+    // 剪贴板无图（或非图片文件）→ 回落文本粘贴（含多行拆块），不吞粘贴。
+    // FIX014.41：已切源时后端没有插入任何内容，必须返回 false 让调用方恢复旧快照。
+    if (!sameTodo) return false;
+    // （PATCH002.72：`push` 透传——本函数在回落分支**未**入栈，由 pasteTextLines 按同一开关决定）
+    const at = blocks.value.findIndex((b) => b._key === key);
+    pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
     return true;
   } catch (err) {
     console.error("插入图片失败", err);
@@ -982,6 +998,11 @@ async function pasteHtmlAt(
     console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
     return false;
   }
+  // FIX014.41：ensure 也可能 await（按需 loadBlocks）；期间切源则放弃本次粘贴。
+  if (props.todo?.id !== todo.id) {
+    console.error("粘贴中止：条目已切换");
+    return false;
+  }
   const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
   if (!target || target.id <= 0) {
     console.error("粘贴中止：目标块定位失败", { key });
@@ -1006,7 +1027,9 @@ async function pasteHtmlAt(
       brokenKeys.value = [];
       void nextTick(() => autosizeAll());
       emit("changed");
-    } else if (outcome.status !== "image" && sameTodo) {
+    } else if (outcome.status !== "image") {
+      // FIX014.41：已切源且后端未插入 → 必须返回 false，让选区替换调用方恢复快照。
+      if (!sameTodo) return false;
       // 片段全空（剪贴板 HTML 里没有可入块的内容）→ 回落纯文本，不吞这次粘贴
       // （PATCH002.72：`push` 透传——回落分支未入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);
@@ -1139,11 +1162,11 @@ function focusedBlockKey(): string | undefined {
 function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
   const out = normalizeBlankBlocks(list, { preferredKey: focusedBlockKey(), makeKey: localKey });
   // 临时诊断（抖动定位，测完即删）：归一化**改变块数**时记一笔（`keep` = 留下的是哪一块）
-  if (out.length !== list.length) {
+  if (DIAG && out.length !== list.length) {
     const last = list[list.length - 1];
-    void invoke("debug_log", {
-      line: `normalize ${list.length}->${out.length} inLast=${last ? `${last.kind}#${last.id}` : "none"} keep=${out[0] ? `${out[0].kind}#${out[0].id}` : "none"}`,
-    }).catch((err) => console.error("诊断上报失败", err));
+    debugLog(
+      `normalize ${list.length}->${out.length} inLast=${last ? `${last.kind}#${last.id}` : "none"} keep=${out[0] ? `${out[0].kind}#${out[0].id}` : "none"}`,
+    );
   }
   return out;
 }
@@ -1154,9 +1177,10 @@ function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
 async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<void> {
   clearTimeout(saveTimer);
   // 临时诊断（.72 排查）：哪个保存入口
-  undoLog(
-    `save:caller=normalizeAndFlush inFlight=${pasteInFlight} len=${(list ?? blocks.value).length}`,
-  );
+  if (DIAG)
+    undoLog(
+      `save:caller=normalizeAndFlush inFlight=${pasteInFlight} len=${(list ?? blocks.value).length}`,
+    );
   const target = list ?? blocks.value;
   if (todoId != null && todoId !== props.todo?.id) {
     const snapshot = normalizeBlocks(target);
@@ -1168,9 +1192,11 @@ async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<
     blocks.value = next;
     // 临时诊断（.75 排查）：赋值**后一拍**看焦点是否仍在块区（保 `_key` ⇒ `focus=blk-N` ✓；
     // 若为 `focus=none` ⇒ 焦点仍被销毁 ✗）
-    void nextTick(() =>
-      undoLog(`normalize:apply len=${blocks.value.length} focus=${focusedBlockKey() ?? "none"}`),
-    );
+    void nextTick(() => {
+      if (DIAG) {
+        undoLog(`normalize:apply len=${blocks.value.length} focus=${focusedBlockKey() ?? "none"}`);
+      }
+    });
   }
   await saveBlocks();
 }
@@ -1245,7 +1271,7 @@ function onBlocksCompositionStart(): void {
 /** 组字结束（PATCH002.73）：**延迟一拍**再清豁免 —— 部分浏览器 `compositionend` 早于最后一次
  * `input` ⇒ 立即清会把刚压的快照清掉 ✗（回到"撤销成空白" ✓） */
 function onBlocksCompositionEnd(): void {
-  undoLog("undo:keep compositionend");
+  if (DIAG) undoLog("undo:keep compositionend");
   window.setTimeout(() => {
     clearKeepUndo("compositionend");
     scheduleSave(); // 窗口关闭后把组字结果落库 ✓
@@ -1261,7 +1287,7 @@ function onBlocksFocusOut(e: FocusEvent): void {
   // 此刻归一化落库 = 把"删完、还没插"的空中间态写进库（实证：`sig=36` 的空块被保存 ✗）
   if (pasteInFlight > 0 || editInFlight > 0) return;
   // 临时诊断（抖动定位，测完即删）：焦点离开块区 → 会走保存点归一化
-  dragDiag("focusout:normalizeAndFlush");
+  if (DIAG) dragDiagDetailed("focusout:normalizeAndFlush");
   // PATCH002.84：失焦 flush 入链——拖图按下时的 force save 必须先于 reorder 收场
   void noteWrite.run(() => normalizeAndFlush());
 }
@@ -1297,7 +1323,7 @@ function armKeepUndo(reason: "char" | "ime"): void {
   keepUndoOnce = true;
   if (reason === "ime") keepUndoComposing = true;
   editInFlight += 1; // 打开结构性编辑窗口（删→写之间不许落库、不许清豁免 ✓）
-  undoLog(`undo:keep set reason=${reason} editInFlight=${editInFlight}`);
+  if (DIAG) undoLog(`undo:keep set reason=${reason} editInFlight=${editInFlight}`);
   if (reason === "char") {
     // 兜底：万一那一下没产生 input（键被别处拦了 / 焦点丢了），下一拍自清 ✓
     window.setTimeout(() => clearKeepUndo("timeout"), 0);
@@ -1313,7 +1339,7 @@ function clearKeepUndo(reason: string): void {
   keepUndoOnce = false;
   keepUndoComposing = false;
   if (editInFlight > 0) editInFlight -= 1; // 关闭窗口
-  if (had) undoLog(`undo:keep clear reason=${reason} editInFlight=${editInFlight}`);
+  if (had) if (DIAG) undoLog(`undo:keep clear reason=${reason} editInFlight=${editInFlight}`);
 }
 /** 撤销代际（PATCH002.44）：删块动效是"**延迟收场**"，收场前复核本代际——用户已撤销则放弃
  * 收场（否则 180ms 后的摘除会覆盖用户的回退 = "动效期间按 Ctrl+Z 无效"） */
@@ -1332,7 +1358,7 @@ function pushUndo(): void {
   undoStack.push({ blocks: blocks.value.map((b) => ({ ...b })), caret });
   if (undoStack.length > UNDO_LIMIT) undoStack.shift();
   // 临时诊断（.72 排查）：这次压进去的是**哪一代**
-  undoLog(`undo:push depth=${undoStack.length} ids=${idsOf(blocks.value)}`);
+  if (DIAG) undoLog(`undo:push depth=${undoStack.length} ids=${idsOf(blocks.value)}`);
 }
 
 /** 打字即清空结构性栈（原生接管；见段首语义） */
@@ -1358,7 +1384,10 @@ function undoStructural(): void {
   blocks.value = wasComposing
     ? snapshot.map((b) => ({ ...b, _key: localKey() })) // 组字在飞 ⇒ 全量重建（脱开输入法持有的元素 ✓）
     : snapshot.map((b) => ({ ...b }));
-  undoLog(`undo:pop depth=${undoStack.length} before=${beforeIds} restored=${idsOf(blocks.value)}`);
+  if (DIAG)
+    undoLog(
+      `undo:pop depth=${undoStack.length} before=${beforeIds} restored=${idsOf(blocks.value)}`,
+    );
   void nextTick(() => {
     autosizeAll();
     // PATCH002.72：焦点若停在**已被 Vue 移除**的文本域上（快照换掉了该块），之后打的字只进
@@ -1453,11 +1482,11 @@ function selectAllBlocks(): void {
       if (el) {
         el.focus({ preventScroll: true });
         el.setSelectionRange(0, el.value.length);
-        dragDiag(`ctrlA:single len=${el.value.length}`);
+        if (DIAG) dragDiagDetailed(`ctrlA:single len=${el.value.length}`);
       }
     } else {
       selection.selectImage(only._key); // 单图块：走图块选中态（Ctrl+C 可复制）
-      dragDiag("ctrlA:single image");
+      if (DIAG) dragDiagDetailed("ctrlA:single image");
     }
     return;
   }
@@ -1470,7 +1499,7 @@ function selectAllBlocks(): void {
     const firstText = blocks.value.find((b) => b.kind === "Text");
     if (firstText) {
       focusBlock(firstText._key, 0);
-      dragDiag(`ctrlA:focus idx=${blocks.value.indexOf(firstText)}`);
+      if (DIAG) dragDiagDetailed(`ctrlA:focus idx=${blocks.value.indexOf(firstText)}`);
     }
   }
 }
@@ -1596,7 +1625,7 @@ function promoteNativeSelectionAnchor(): SelPoint | null {
   if (!Number.isInteger(index) || index < 0) return null;
   const point: SelPoint = { index, offset: el.selectionDirection === "backward" ? end : start };
   selection.setAnchor(point);
-  dragDiag(`shift:promote idx=${index} off=${point.offset}`);
+  if (DIAG) dragDiagDetailed(`shift:promote idx=${index} off=${point.offset}`);
   return point;
 }
 
@@ -1794,7 +1823,7 @@ function endStuckSelection(): void {
  * **只掐 DnD，不动选区机制**（`.45` 单块内原生选择照旧；图块调序走 pointer 事件不受影响）。 */
 function onBoardDragStart(e: DragEvent): void {
   e.preventDefault();
-  dragDiag("dnd:blocked"); // 临时诊断（随 PATCH002 整批收官清）
+  if (DIAG) dragDiagDetailed("dnd:blocked"); // 临时诊断（随 PATCH002 整批收官清）
 }
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
@@ -1819,21 +1848,21 @@ async function reloadAfterDrag(todoId: number, ghost: HTMLElement | null = null)
     el.scrollTop = el.scrollHeight;
   }
   kit?.boardRead.setPinned(wasAtBottom); // 过渡结束恢复套件贴底态
-  dragDiag("drag:settled");
+  if (DIAG) dragDiagDetailed("drag:settled");
 }
 
-/** 临时诊断（抖动定位，测完即删）：滚动几何 + 列表末尾块（`last` 的 kind#id）——用于判断
- * "库里多出的块"从哪来、前端是否仍以图块结尾；经 `debug_log` 送 Rust stdout */
-function dragDiag(tag: string): void {
+/** 临时诊断（抖动定位，测完即删）：滚动几何 + 列表末尾块（`last` 的 kind#id）——
+ * 经 dev-only 插件送 Rust stdout；调用点统一 `if (DIAG)` 门控。 */
+const dragDiagDetailed = (tag: string): void => {
   const el = scrollEl.value;
   const rows = el ? [...el.querySelectorAll<HTMLElement>(".note-block")] : [];
   const geo = el ? `${el.scrollTop.toFixed(1)}/${el.scrollHeight}/${el.clientHeight}` : "no-el";
   const last = blocks.value[blocks.value.length - 1];
   const lastKind = last ? `${last.kind}#${last.id}` : "none";
-  void invoke("debug_log", {
-    line: `${tag} st/sh/ch=${geo} domRows=${rows.length} arrLen=${blocks.value.length} last=${lastKind}`,
-  }).catch((err) => console.error("诊断上报失败", err));
-}
+  diagLog(
+    `${tag} st/sh/ch=${geo} domRows=${rows.length} arrLen=${blocks.value.length} last=${lastKind}`,
+  );
+};
 
 installNoteDragHooks({
   onDown: () => {
@@ -1849,19 +1878,21 @@ installNoteDragHooks({
   commit: (slots) => {
     const todo = props.todo;
     if (todo == null) return;
-    dragDiag(`drag:commit slots=${slots.join(",")}`);
+    if (DIAG) dragDiagDetailed(`drag:commit slots=${slots.join(",")}`);
     // 临时诊断（退回定位，测完即删）：提交那一刻 DOM 里**每一行**的 class+rowId
     // —— 用于找出"DOM 比数组多出来的那一行"是什么（ghost 残留 / 重复行 / 别的）
     const domEl = scrollEl.value;
     const rows = domEl ? [...domEl.querySelectorAll<HTMLElement>(".note-block")] : [];
-    void invoke("debug_log", {
-      line: `commit-dom n=${rows.length} ${rows
-        .map(
-          (r) =>
-            `${r.className.replace(/\bnote-block\b/, "").trim() || "-"}#${r.dataset.rowId ?? "?"}`,
-        )
-        .join(" ")}`,
-    }).catch((err) => console.error("诊断上报失败", err));
+    if (DIAG) {
+      debugLog(
+        `commit-dom n=${rows.length} ${rows
+          .map(
+            (r) =>
+              `${r.className.replace(/\bnote-block\b/, "").trim() || "-"}#${r.dataset.rowId ?? "?"}`,
+          )
+          .join(" ")}`,
+      );
+    }
     const bySlot = new Map(blocks.value.map((b, i) => [i + 1, b]));
     const ordered = slots.map((slot) => bySlot.get(slot)).filter((b): b is LocalBlock => b != null);
     if (ordered.length !== blocks.value.length) {
@@ -1870,20 +1901,20 @@ installNoteDragHooks({
     }
     // PATCH002.82：**不本地改 blocks**——否则会先渲染“图片 + ghost”的一帧；
     // 顺序由重拉（toLocal 全量换 key）带回，落库照旧
-    dragDiag(`commit:ordered ids=${ordered.map((b) => b.id).join(",")}`);
+    if (DIAG) dragDiagDetailed(`commit:ordered ids=${ordered.map((b) => b.id).join(",")}`);
     // PATCH002.84 / S2：先等在飞保存（含已发出的防抖 / 失焦保存）收场，再取回填后的
     // id 重排；reorder 完成前 rerender 不重拉。失败由写链隔离，仍继续重拉。
     dragCommit = noteWrite.run(async () => {
       await Promise.all([...noteSavesInFlight]);
       const ids = ordered.map((b) => b.id);
       await invoke("note_reorder", { todoId: todo.id, ids });
-      dragDiag(`drag:reorder-done ids=${ids.join(",")}`);
+      if (DIAG) dragDiagDetailed(`drag:reorder-done ids=${ids.join(",")}`);
     });
   },
   rerender: (ctx) => {
     const todo = props.todo;
     // PATCH002.57 打点（测完即删）：进入重拉前的 DOM/数组对齐快照（候选 1 的判决点）
-    dragDiag("drag:rerender-entry");
+    if (DIAG) dragDiagDetailed("drag:rerender-entry");
     // PATCH002.82：ghost 由重拉流程收尾（列表高度保持到新列表就位）
     if (!todo) {
       ctx?.ghost.remove();
@@ -1894,7 +1925,7 @@ installNoteDragHooks({
     // PATCH002.84 / S2：等 reorder 完成后才重拉（治“load 抢读旧序”的首次回弹）
     void (async () => {
       await pending;
-      dragDiag("drag:chain-reload");
+      if (DIAG) dragDiagDetailed("drag:chain-reload");
       await noteWrite.run(() => reloadAfterDrag(todo.id, ghost));
     })();
   },
@@ -1999,7 +2030,7 @@ function syncKit(): void {
     boardRead: useBoardRead(scrollEl.value, {
       gate: () => isOpen.value,
       layout: true,
-      onDiag: dragDiag,
+      ...(DIAG ? { diag: diagLog } : {}),
     }),
     // 气泡模式：滑杆在玻璃内部但本板有内外板 → 轨道按**内层容器的 inset** 定上下（用户定案）；
     // 清单（todo）模式的视觉逻辑已正确（见 y.problems #10），故**不传 inset**、保持原样
@@ -2225,7 +2256,7 @@ async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }
   const todoId = prev ? prev.todoId : (props.todo?.id ?? null);
   const list = prev ? prev.list : blocks.value;
   if (todoId != null && savedTodoId === todoId && signature(list) !== savedSignature) {
-    undoLog(`save:caller=flush inFlight=${pasteInFlight} len=${list.length}`);
+    if (DIAG) undoLog(`save:caller=flush inFlight=${pasteInFlight} len=${list.length}`);
     jobs.push(normalizeAndFlush(todoId, list));
   }
   await Promise.all(jobs);

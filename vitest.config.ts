@@ -7,6 +7,10 @@ import vue from "@vitejs/plugin-vue";
  */
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    // FIX014.38：测试构建固定关闭诊断，避免 `__DIAG__` 未注入时报错。
+    __DIAG__: "false",
+  },
   test: {
     environment: "jsdom",
     include: ["ui/tests/**/*.spec.ts"],

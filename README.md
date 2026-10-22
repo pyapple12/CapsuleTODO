@@ -52,7 +52,7 @@
 ```bash
 npm install         # 首次
 cargo test          # Rust 核心全量测试（不依赖 UI）
-npm run tauri dev   # 开发运行（静态前端内嵌——改前端后先 npm run build）
+npm run tauri:dev   # 开发运行（build:diag + dev-diag feature；改前端后先 npm run build）
 npm run build       # 前端构建（含 vue-tsc 类型检查）
 ```
 
@@ -165,7 +165,7 @@ Grab `CapsuleTODO_v0.2.2_win_x64.zip` from [Releases](../../releases), unzip any
 ```bash
 npm install         # once
 cargo test          # Rust core: full test suite, no UI required
-npm run tauri dev   # dev run (static frontend bundle — rebuild via npm run build after UI edits)
+npm run tauri:dev   # dev run (build:diag + dev-diag feature — rebuild via npm run build after UI edits)
 npm run build       # frontend build incl. vue-tsc type check
 ```
 

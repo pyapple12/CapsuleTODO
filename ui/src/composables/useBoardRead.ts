@@ -5,6 +5,8 @@
 // 贴顶（scrollTop ≤ 2）收到 0px、滚过阈值回落 14px（与 at-bottom 同规） =====
 import { getCurrentInstance, onUnmounted } from "vue";
 
+declare const __DIAG__: boolean;
+
 /** 整板阅读实例（注册表条目：useVeils 帘联动按 el id 匹配） */
 export interface BoardReadEntry {
   el: HTMLElement;
@@ -19,7 +21,7 @@ export interface BoardReadOptions {
   /** 门控（详情板 textarea：仅打开时亮三角）——返回 false 三角全隐 */
   gate?: () => boolean;
   /** 临时诊断出口（PATCH002.69 排查；不传即无副作用） */
-  onDiag?: (line: string) => void;
+  diag?: (line: string) => void;
   /** 走 offsetParent 布局盒（揭示缩放动画宿主内的容器：详情板/归档板） */
   layout?: boolean;
   /** 三角宿主（默认 #board；归档板传玻璃板——方案 B 三角随板缩放生长） */
@@ -155,9 +157,11 @@ export function useBoardRead(
     if (pinOverride) return; // 调用方已显式声明 ⇒ 本批变更加完前不接受滚动事件改写
     const next = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
     if (next !== pinned) {
-      opts.onDiag?.(
-        `pin:flip ${pinned ? 1 : 0}->${next ? 1 : 0} st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight} ch=${el.clientHeight}`,
-      );
+      if (__DIAG__) {
+        opts.diag?.(
+          `pin:flip ${pinned ? 1 : 0}->${next ? 1 : 0} st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight} ch=${el.clientHeight}`,
+        );
+      }
     }
     pinned = next;
   };
@@ -194,7 +198,9 @@ export function useBoardRead(
     if (!el.clientHeight || !sh) return;
     // 只在**真的要补**时打点（否则每次尺寸变化都记一条，日志噪声大）
     if (pinned && el.scrollTop + el.clientHeight < sh - 1) {
-      opts.onDiag?.(`ro:fix st=${el.scrollTop.toFixed(1)} sh=${sh} ch=${el.clientHeight}`);
+      if (__DIAG__) {
+        opts.diag?.(`ro:fix st=${el.scrollTop.toFixed(1)} sh=${sh} ch=${el.clientHeight}`);
+      }
       el.scrollTop = sh;
     }
     pinOverride = false; // 本批增长已结算 ⇒ 交回滚动判定
@@ -230,9 +236,11 @@ export function useBoardRead(
   /** PATCH002.69：供调用方**显式声明**"此刻是否贴底"——拖拽/结构变更路径（`.57` / `.44`）
    * 在内容变化前就知道答案，比滚动事件可靠（内容"先矮后长"时滚动时序会判错 ✗） */
   const setPinned = (value: boolean): void => {
-    opts.onDiag?.(
-      `pin:set ${value ? 1 : 0} (was ${pinned ? 1 : 0}) st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight}`,
-    );
+    if (__DIAG__) {
+      opts.diag?.(
+        `pin:set ${value ? 1 : 0} (was ${pinned ? 1 : 0}) st=${el.scrollTop.toFixed(1)} sh=${el.scrollHeight}`,
+      );
+    }
     pinned = value;
     pinOverride = true;
     if (pinOverrideTimer) window.clearTimeout(pinOverrideTimer);

@@ -328,6 +328,7 @@ const handlers: Record<string, CommandHandler> = {
   note_copy_selection: () => null,
   note_fetch_pending_images: () => null,
   debug_log: () => null,
+  "plugin:dev-diag|debug_log": () => null,
   set_board_backdrop: () => null,
   settings_suspend_bubble_hotkey: () => null,
   settings_resume_bubble_hotkey: () => null,

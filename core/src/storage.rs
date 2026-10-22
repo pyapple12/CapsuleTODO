@@ -328,6 +328,20 @@ impl Storage {
         Ok(cols)
     }
 
+    /// FIX014.42：统一提交当前事务。COMMIT 失败时 SQLite 可能仍保留打开的事务，
+    /// 必须尝试 ROLLBACK，否则后续 `BEGIN` 会持续失败；回滚失败只落日志，原错误上抛。
+    fn commit_transaction(&self, label: &str) -> Result<(), StorageError> {
+        match self.conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("{label}事务提交失败且回滚失败：{rollback}"));
+                }
+                Err(StorageError::Sqlite(err))
+            }
+        }
+    }
+
     /// PL010 数据迁移：todos 补 created_at/done_at 两列（幂等——先探列再 ALTER；
     /// **PL027 起 note 列不再新建**：其语义已由 note_blocks 块模型取代，见
     /// `migrate_note_to_blocks` + `drop_note_column`）。存量回填语义：created_at/done_at
@@ -529,13 +543,7 @@ impl Storage {
             Ok(())
         })();
         match result {
-            Ok(()) => {
-                if let Err(err) = self.conn.execute_batch("COMMIT") {
-                    let _ = self.conn.execute_batch("ROLLBACK");
-                    return Err(err.into());
-                }
-                Ok(())
-            }
+            Ok(()) => self.commit_transaction("详情笔记迁移"),
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("详情笔记迁移回滚失败：{rollback}"));
@@ -696,7 +704,7 @@ impl Storage {
         })();
         match result {
             Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("删除条目")?;
                 Ok(())
             }
             Err(err) => {
@@ -760,7 +768,7 @@ impl Storage {
         })();
         match result {
             Ok(changed) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("归档回收")?;
                 Ok(changed)
             }
             Err(err) => {
@@ -874,7 +882,7 @@ impl Storage {
         );
         let deleted = match result {
             Ok(count) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("软删除块清理")?;
                 count
             }
             Err(err) => {
@@ -997,6 +1005,27 @@ impl Storage {
             if todo_exists.is_none() {
                 return Err(StorageError::NotFound(todo_id));
             }
+            // FIX014.46：仅校验 todo 存在还不够——跨条目的陈旧文本 id 会命中后续
+            // “已删除行” INSERT 兜底，把别条内容静默复制过来。owner=None 仍保留兜底
+            // （撤销已硬删除的文本行需要它）；owner 指向其它 todo 则整体拒绝。
+            for block in blocks {
+                if block.id > 0 {
+                    let owner: Option<i64> = self
+                        .conn
+                        .query_row(
+                            "SELECT todo_id FROM note_blocks WHERE id = ?1",
+                            [block.id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if owner.is_some_and(|owner| owner != todo_id) {
+                        return Err(StorageError::ReorderMismatch(format!(
+                            "详情块 id 属于其他条目：{}",
+                            block.id
+                        )));
+                    }
+                }
+            }
             let existing: Vec<(i64, String)> = self
                 .conn
                 .prepare("SELECT id, kind FROM note_blocks WHERE todo_id = ?1")?
@@ -1101,7 +1130,7 @@ impl Storage {
             Ok(())
         })();
         match result {
-            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Ok(()) => self.commit_transaction("详情块写入")?,
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("详情块写入事务回滚失败：{rollback}"));
@@ -1245,7 +1274,7 @@ impl Storage {
             Ok(())
         })();
         match result {
-            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Ok(()) => self.commit_transaction("插图写入")?,
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("插图事务回滚失败：{rollback}"));
@@ -1522,7 +1551,7 @@ impl Storage {
         })();
         let part_ids = match result {
             Ok(part_ids) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("多段粘贴")?;
                 part_ids
             }
             Err(err) => {
@@ -1657,7 +1686,7 @@ impl Storage {
         })();
         match result {
             Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("详情块重排")?;
                 Ok(())
             }
             Err(err) => {
@@ -1769,12 +1798,11 @@ impl Storage {
             }))
         })();
         match result {
-            Ok(outcome) => match self.conn.execute_batch("COMMIT") {
+            Ok(outcome) => match self.commit_transaction("图片气泡入库") {
                 Ok(()) => Ok(outcome),
                 Err(err) => {
-                    let _ = self.conn.execute_batch("ROLLBACK");
                     Self::cleanup_failed_image_folder(&dir);
-                    Err(err.into())
+                    Err(err)
                 }
             },
             Err(err) => {
@@ -1876,7 +1904,7 @@ impl Storage {
         })();
         match result {
             Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
+                self.commit_transaction("重排")?;
                 Ok(())
             }
             Err(err) => {
@@ -3141,6 +3169,31 @@ mod tests {
             st.note_blocks(item.id).expect("读块必须成功").len(),
             2,
             "拒绝后原块集不得改变"
+        );
+    }
+
+    #[test]
+    fn set_note_blocks_rejects_positive_id_from_other_todo() {
+        // FIX014.46：跨条目的陈旧文本 id 不得被“已删除行”兜底复制成当前条目的新块。
+        let st = storage();
+        let dir = temp_images_dir();
+        let first = st.add("甲").expect("写入必须成功");
+        let second = st.add("乙").expect("写入必须成功");
+        let first_blocks = st
+            .set_note_blocks(&dir, first.id, &[nb_text(0, "甲块")])
+            .expect("第一条写块必须成功");
+        let err = st
+            .set_note_blocks(&dir, second.id, &[nb_text(first_blocks[0].id, "乙块")])
+            .expect_err("跨条目 id 必须拒绝");
+        assert!(matches!(err, StorageError::ReorderMismatch(_)));
+        assert!(
+            st.note_blocks(second.id).expect("读块必须成功").is_empty(),
+            "拒绝后第二条不得写入任何块"
+        );
+        assert_eq!(
+            st.note_blocks(first.id).expect("读块必须成功").len(),
+            1,
+            "第一条原块不得受影响"
         );
     }
 

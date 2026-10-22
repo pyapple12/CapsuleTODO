@@ -27,6 +27,14 @@ const TODO: TodoItem = {
   done_at: null,
   has_note: true,
 };
+const TODO2: TodoItem = {
+  id: 2,
+  text: "另一条详情",
+  done: false,
+  created_at: null,
+  done_at: null,
+  has_note: true,
+};
 
 const TEXT_BLOCKS: NoteBlock[] = [
   { id: 11, kind: "Text", text: "abc", image_path: null },
@@ -135,5 +143,98 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     finishDelete();
     await flushPromises();
     expect(wrapper.findAll(".note-block-image")).toHaveLength(1);
+  });
+
+  it("删除动效中关板，settle 仍按旧条目落库", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+
+    let finishDelete!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    vi.spyOn(Element.prototype, "animate").mockImplementation(
+      () =>
+        ({
+          finished,
+          cancel: vi.fn(),
+          finish: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as Animation,
+    );
+
+    await wrapper.find(".note-block-image .note-block-del").trigger("click");
+    await flushPromises();
+
+    // 动画尚未结束就关板：props.todo 清空；settle 仍必须用捕获的旧条目保存。
+    await wrapper.setProps({ todo: null, bubble: null, anchor: null });
+    await flushPromises();
+    finishDelete();
+    await flushPromises();
+
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(
+      saved.some((blocks) => blocks.length === 2 && blocks.every((b) => b.kind === "Text")),
+    ).toBe(true);
+  });
+
+  it("选区替换保存 await 后切源，不向新条目粘贴", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    let saveCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") {
+        return args?.todoId === TODO2.id
+          ? [{ id: 31, kind: "Text", text: "新条目", image_path: null }]
+          : TEXT_BLOCKS;
+      }
+      if (cmd === "note_blocks_save") {
+        saveCount += 1;
+        if (saveCount === 1) await saveGate;
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        return input.map((block, index) => ({ ...block, id: block.id || 200 + index }));
+      }
+      if (cmd === "note_paste_html") {
+        return { outcome: { status: "no_image" }, pending: [] };
+      }
+      return undefined;
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true }));
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/html", "text/plain"],
+        getData: (type: string) =>
+          type === "text/html" ? '<img src="data:image/png;base64,AA==">' : "x",
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    // 保存尚未返回时切源；旧条目的粘贴必须中止，不能落到 TODO2。
+    await wrapper.setProps({ todo: TODO2, bubble: null, anchor: null });
+    await flushPromises();
+    releaseSave();
+    await flushPromises();
+
+    const saveArgs = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => args as { todoId: number });
+    expect(saveArgs.every((args) => args.todoId === TODO.id)).toBe(true);
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(false);
   });
 });

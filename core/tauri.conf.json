@@ -4,12 +4,13 @@
   "identifier": "com.pyapple12.capsule-todo",
   "build": {
     "frontendDist": "../dist",
-    "beforeDevCommand": "npm run build",
+    "beforeDevCommand": "npm run build:diag",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'",
+      "capabilities": ["default", "main-drag"],
       "assetProtocol": {
         "enable": true
       }

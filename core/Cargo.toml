@@ -3,6 +3,10 @@ name = "capsule-todo"
 version = "0.2.3"
 edition = "2021"
 description = "CapsuleTODO——玻璃质感的桌面 Todo 看板"
+
+[features]
+dev-diag = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -7,6 +7,8 @@ pub mod bubble;
 pub mod capture;
 pub mod clipboard_image;
 pub mod commands;
+#[cfg(all(feature = "dev-diag", debug_assertions))]
+pub mod dev_diag;
 pub mod diag;
 pub mod fullscreen;
 pub mod glass_backdrop;
@@ -262,7 +264,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
     let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // 剪贴板（PL004）：仅 Rust 侧读写，不经 ACL
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppContext {
@@ -302,8 +304,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::settings::settings_set_max_bubbles,
             commands::settings::settings_get_bubble_hotkey,
             commands::settings::settings_set_bubble_hotkey,
-    commands::settings::settings_suspend_bubble_hotkey,
-    commands::settings::settings_resume_bubble_hotkey,
+            commands::settings::settings_suspend_bubble_hotkey,
+            commands::settings::settings_resume_bubble_hotkey,
             commands::settings::settings_get_always_on_top,
             commands::settings::settings_set_always_on_top,
             commands::settings::settings_get_snap_to_edge,
@@ -313,8 +315,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::tray_preview::tray_preview_resize,
             commands::tray_menu::tray_menu_action,
             commands::tray_menu::main_hide_to_tray,
-            commands::debug_log, // 临时诊断（PATCH002.57 打点，测完即删）
-        ])
+        ]);
+    // FIX014.38：仅 dev-diag + debug 构建注册诊断插件；release 不编译、不注册。
+    #[cfg(all(feature = "dev-diag", debug_assertions))]
+    let builder = builder.plugin(crate::dev_diag::plugin());
+    builder
         .setup(|app| {
             // PL025：把图片目录注册进 asset 协议 scope（详情直读落盘图片；运行时注册
             // 免静态 glob 无法同时命中 dev/release 两种程序目录）
@@ -342,11 +347,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 窗口框架整定（SYSTEMBACKDROP 实验）：深色模式声明（背板基调对齐主题）
             // + 激活边框隐藏（Win11 活动描边显形修复）。PL026：调用点零 cfg——
             // 平台分叉收在 glass_backdrop（非 Windows 空桩）
-            let dark = window
+            // FIX014.43：冷启动同样按持久化的应用主题解析；只看系统主题会让
+            // “手动暗色 + 系统浅色”先写浅色 DWM 档，直到开板/切主题才校正。
+            let system_dark = window
                 .theme()
                 .map(|t| t == tauri::Theme::Dark)
                 .unwrap_or(true);
-            glass_backdrop::apply_frame_style(&window, dark);
+            glass_backdrop::apply_frame_style(
+                &window,
+                glass_backdrop::is_dark(saved.theme, system_dark),
+            );
             // 系统圆角（与两个托盘窗同款调用）：DWM 切掉卡片 CSS 圆角外的
             // 窗口直角区。主窗关 DWM 投影（shadow:false）后失去隐式圆角，
             // 须显式补上，否则两个上角露出窗口方角

@@ -152,13 +152,22 @@ fn strip_non_content(html: &str) -> String {
                 let Some(end) = find_ci(&rest[start..], "</script") else {
                     break;
                 };
-                rest = &rest[start + end + "</script".len()..];
+                let tail = &rest[start + end..];
+                // FIX014.44：连闭合标签的 `>` 一起吃掉；否则会留下 `>` 污染正文。
+                let Some(close) = find_tag_end(tail) else {
+                    break;
+                };
+                rest = &tail[close + 1..];
             }
             _ => {
                 let Some(end) = find_ci(&rest[start..], "</style") else {
                     break;
                 };
-                rest = &rest[start + end + "</style".len()..];
+                let tail = &rest[start + end..];
+                let Some(close) = find_tag_end(tail) else {
+                    break;
+                };
+                rest = &tail[close + 1..];
             }
         }
     }
@@ -179,10 +188,8 @@ fn push_text(parts: &mut Vec<HtmlPart>, chunk: &str) {
 /// 按块级标签与换行切段（标签本身换成换行，随后再 strip）。
 /// FIX014.20：`<br>` / `<br/>` / `<br />` 整体替换成换行，不再留下 `/>` 文本。
 fn split_blocks(chunk: &str) -> Vec<String> {
-    let mut normalized = replace_br_tags(chunk);
-    for tag in BLOCK_TAGS {
-        normalized = replace_ci(&normalized, tag, "\n");
-    }
+    // FIX014.44：闭合块标签连 `>` 一起换行，`strip_tags` 才能保留正文里的裸 `>`。
+    let normalized = replace_block_tags(&replace_br_tags(chunk));
     normalized
         .replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -217,6 +224,38 @@ fn replace_br_tags(chunk: &str) -> String {
     out
 }
 
+/// 把块级闭合标签（含其 `>`）整体替换为换行。FIX014.44：此前只替换 `</p` 前缀，
+/// 残留的 `>` 逼得 `strip_tags` 跳过所有顶层 `>`，会误删正文里的比较符。
+fn replace_block_tags(chunk: &str) -> String {
+    let mut out = String::with_capacity(chunk.len());
+    let mut rest = chunk;
+    loop {
+        let mut earliest: Option<usize> = None;
+        for tag in BLOCK_TAGS {
+            if let Some(at) = find_ci(rest, tag) {
+                earliest = match earliest {
+                    Some(current) if current <= at => Some(current),
+                    _ => Some(at),
+                };
+            }
+        }
+        let Some(at) = earliest else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let Some(end) = find_tag_end(after) else {
+            // 未闭合：保持原样，交给后续 strip_tags 兜底。
+            out.push_str(after);
+            break;
+        };
+        out.push('\n');
+        rest = &after[end + 1..];
+    }
+    out
+}
+
 /// 去标签（`<…>` 整体丢弃；`<!--…-->` 一并丢弃）。
 /// FIX014.20：标签结束由 `find_tag_end` 引号感知扫描，不再把 `title="a > b"` 的 `>`
 /// 当成标签结束。
@@ -238,12 +277,6 @@ pub fn strip_tags(chunk: &str) -> String {
                 break;
             };
             i += end + 1;
-            continue;
-        }
-        // split_blocks 把块级开标签替换成换行后，会留下其闭合 `>`；旧实现同样忽略
-        // 顶层 `>`。保留该口径，避免 `</p>` 的尾巴变成正文。
-        if chunk.as_bytes()[i] == b'>' {
-            i += 1;
             continue;
         }
         // 非 ASCII 边界安全：按字符推进
@@ -347,22 +380,6 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// 大小写无关替换（全量；FIX014.20：复用 `find_ci`，不复制整段小写字符串）。
-fn replace_ci(haystack: &str, needle: &str, with: &str) -> String {
-    if needle.is_empty() {
-        return haystack.to_string();
-    }
-    let mut out = String::with_capacity(haystack.len());
-    let mut from = 0usize;
-    while let Some(at) = find_ci(&haystack[from..], needle) {
-        out.push_str(&haystack[from..from + at]);
-        out.push_str(with);
-        from += at + needle.len();
-    }
-    out.push_str(&haystack[from..]);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +445,21 @@ mod tests {
             strip_tags("<span title=\"a > b\">正文</span>"),
             "正文",
             "引号内 > 不得提前结束标签"
+        );
+    }
+
+    #[test]
+    fn strip_tags_preserves_bare_gt_in_text() {
+        // FIX014.44：正文比较符不得被当成闭合标签尾巴丢掉。
+        assert_eq!(strip_tags("1 > 0"), "1 > 0");
+        assert_eq!(strip_tags("<b>1 > 0</b>"), "1 > 0");
+    }
+
+    #[test]
+    fn parse_preserves_bare_gt_in_text() {
+        assert_eq!(
+            parse("<p>1 > 0</p>"),
+            vec![HtmlPart::Text("1 > 0".to_string())]
         );
     }
 
