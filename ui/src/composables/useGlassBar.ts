@@ -56,7 +56,8 @@ export function useGlassBar(
   const sync = (): void => {
     // PATCH002.19：挂载 / 换页 / 开板收口等"内容已落定但还没滚过"那一拍也要复核罩死
     // （此前只在滚动/输入/子节点变更时跑 → 首屏与开板第一眼恒不生效）
-    syncMaskDeadHook();
+    // FIX014.34：只复核**本滑杆所在列表**；详情/白板没有对应目标，自动 no-op。
+    syncMaskDeadHook(scroller.id);
     const sr = scroller.getBoundingClientRect();
     const hr = anchor.getBoundingClientRect();
     if (!sr.height) {
@@ -150,13 +151,13 @@ export function useGlassBar(
 }
 
 /** 罩死同步钩子（useMaskDead 注册；本文件先声明避免循环 import——design 同款松耦合） */
-let maskDeadHook: (() => void) | null = null;
+let maskDeadHook: ((listId: string) => void) | null = null;
 
 /** 注册罩死同步钩子（由 useMaskDead 模块调用一次） */
-export function registerMaskDeadHook(fn: () => void): void {
+export function registerMaskDeadHook(fn: (listId: string) => void): void {
   maskDeadHook = fn;
 }
 
-function syncMaskDeadHook(): void {
-  maskDeadHook?.();
+function syncMaskDeadHook(listId: string): void {
+  maskDeadHook?.(listId);
 }

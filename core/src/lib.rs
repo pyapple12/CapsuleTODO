@@ -446,6 +446,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                             ..
                         } => {
                             let app = tray.app_handle();
+                            // FIX014.39：先取消 hover（未显示也取消 Armed；已显示立即 hide），
+                            // 再执行主窗显隐，避免单击与 hover 同时生效。
+                            crate::tray::on_tray_left_click(app);
                             if let Some(w) = app.get_webview_window("main") {
                                 match w.is_visible() {
                                     Ok(true) => {
@@ -469,8 +472,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 crate::diag::warn_diag("托盘左键切换失败：主窗不存在（异常态）");
                             }
                         }
-                        // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程
-                        //（Leave 不作显隐依据——慢速移出可能丢失，守候光标轮询全覆盖）
+                        // hover 预览：Enter 武装（延迟 0.5s 出现），显隐全在守候线程；
+                        // Leave 只作 FIX014.39 的 ClickConsumed 快路径（慢移丢失仍由
+                        // 守候光标轮询兜底），不作预览显隐依据
                         // 右键按下：锁死预览窗 + 弹自绘菜单窗（收编进 tray 模块）
                         TrayIconEvent::Click {
                             button: MouseButton::Right,
@@ -502,6 +506,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     s.height as i32,
                                 );
                             }
+                        }
+                        TrayIconEvent::Leave { .. } => {
+                            crate::tray::on_tray_leave(tray.app_handle());
                         }
                         _ => {}
                     })

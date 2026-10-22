@@ -27,6 +27,13 @@ const DRAG_EDGE_MARGIN = 12;
 /** 自动滚动全速：每帧像素数（约 600px/s） */
 const AUTO_SCROLL_SPEED = 10;
 
+/** FIX014.33：三个列表的真实离场类（`.leaving` 只用于归档删除按钮等局部元素）。
+ * TransitionGroup 的 `name="todo"` 产出 `.todo-leave-active`，详情块用
+ * `.note-block-leaving`；漏判会让塌缩中的行进入长按起拖。 */
+function isLeavingRow(el: Element): boolean {
+  return el.matches(".leaving, .todo-leave-active, .note-block-leaving");
+}
+
 /** 拖拽上下文（重挂模型的在飞状态体） */
 export interface DragCtx {
   t: DragTarget;
@@ -116,6 +123,8 @@ export interface DragTarget {
   ghostClass: string;
   /** 按下钩子：取消各自待办定时器 + 排除自有语义控件；返回 false 不起拖 */
   onDown: (row: HTMLElement, e: MouseEvent) => boolean;
+  /** 真正长按进入拖拽时调用（FIX014.34：详情图块的落库从 mousedown 移到这里） */
+  onEngage?: (ctx: DragCtx) => void;
   /** 落点提交：toIdx = 目标槽位（invoke reorder 落库）；可返回 Promise 供收场等待 */
   commit: (ctx: DragCtx) => Promise<unknown> | void;
   /** 收场重绘（无论是否换位都重拉——行本体以（可能新）顺序收回列表） */
@@ -249,8 +258,11 @@ export const DRAG_TARGETS: DragTarget[] = [
       // PATCH002.77：Shift+点击 = 跨块扩选——不起拖、也不许清掉刚提升的选区锚点
       if (e.shiftKey) return false;
       if (!(e.target as HTMLElement).closest(".note-block-image")) return false;
-      noteHooks.onDown?.(); // 起拖前 flush 未决保存（保证块 id 已回填）
+      noteHooks.onDown?.(); // 轻量：只清选区；全量保存延到 onEngage（FIX014.34）
       return true;
+    },
+    onEngage() {
+      noteHooks.onEngage?.();
     },
     commit(ctx) {
       const ul = document.getElementById("detail-note");
@@ -268,24 +280,27 @@ export const DRAG_TARGETS: DragTarget[] = [
   },
 ];
 
-/** 详情块拖拽钩子（组件层注入：起拖 flush / 落点提交 / 收场重绘；机制本体零差异） */
+/** 详情块拖拽钩子（组件层注入：按下清选 / 起拖保存 / 落点提交 / 收场重绘；机制本体零差异） */
 const noteHooks: {
   onDown?: () => void;
+  onEngage?: () => void;
   commit?: (slots: number[]) => void;
   rerender?: (ctx?: DragCtx) => void;
 } = {};
 
 /**
  * 安装详情块拖拽钩子（DetailOverlay 挂载时调用一次）
- * @param hooks onDown（起拖前 flush 保存）/ commit（槽位序 → 真实块序落库）/
- *   rerender（收场重拉块列表）
+ * @param hooks onDown（按下轻量清选）/ onEngage（真正长按起拖时 flush 保存）/
+ *   commit（槽位序 → 真实块序落库）/ rerender（收场重拉块列表）
  */
 export function installNoteDragHooks(hooks: {
   onDown: () => void;
+  onEngage: () => void;
   commit: (slots: number[]) => void;
   rerender: (ctx?: DragCtx) => void;
 }): void {
   noteHooks.onDown = hooks.onDown;
+  noteHooks.onEngage = hooks.onEngage;
   noteHooks.commit = hooks.commit;
   noteHooks.rerender = hooks.rerender;
 }
@@ -344,7 +359,7 @@ export function useDragReorder(): void {
       if (rowMaskDead(row)) return; // 侵入溶解带 ≥38%：整卡罩死，点/拖全失效
       if (t.onDown(row, e) === false) return;
       const li = row.closest(t.itemSel) as HTMLElement | null;
-      if (!li || li.classList.contains("leaving")) return; // 塌缩中不可拖
+      if (!li || isLeavingRow(li)) return; // 塌缩中不可拖（FIX014.33）
       const cardEl = document.getElementById("board") as HTMLElement;
       dragCtx = {
         t,
@@ -383,8 +398,15 @@ export function useDragReorder(): void {
 
   /** 长按到点：行浮起进入拖拽（重挂卡片层 + 让位快照，全套起拖动作） */
   function engageDrag(ctx: DragCtx): void {
+    // FIX014.33：按住期间行也可能开始离场（或已被移除）；到点复核一次，绝不重挂
+    // 一个正在塌缩的节点。
+    if (!ctx.li.isConnected || isLeavingRow(ctx.li)) {
+      dragCtx = null;
+      return;
+    }
     ctx.engaged = true;
     detailTimers.cancelPendingClick(); // 起拖即掐待办点击（design 的 setDetail(false) 语义由父级在 onRowClick 抑制实现）
+    ctx.t.onEngage?.(ctx);
     ctx.li.classList.remove("entering");
     const selfRect = ctx.li.getBoundingClientRect();
     ctx.selfTop = selfRect.top;

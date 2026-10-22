@@ -60,20 +60,32 @@ export function rowMaskDead(row: HTMLElement): boolean {
   return rowInvadeRatio(row) >= MASK_FADE_RATIO;
 }
 
-/** 罩死类同步：双列表逐行翻转 .mask-dead（灰化+光标由 CSS 按类过渡）；整页隐藏跳过 */
-export function syncMaskDead(): void {
-  for (const t of MASK_DEAD_TARGETS) {
-    const list = document.getElementById(t.listId);
-    if (!list || list.hidden || list.closest("[hidden]")) continue;
-    for (const row of list.querySelectorAll<HTMLElement>(t.rowSel)) {
-      const ratio = rowInvadeRatio(row);
-      const li = row.closest(t.itemSel) as HTMLElement | null;
-      if (!li) continue;
-      const isDead = li.classList.contains("mask-dead");
-      if (!isDead && ratio >= MASK_FADE_RATIO) li.classList.add("mask-dead");
-      else if (isDead && ratio < MASK_FADE_HYST) li.classList.remove("mask-dead");
-    }
+/** 罩死类同步：指定列表逐行翻转 .mask-dead（灰化+光标由 CSS 按类过渡）；整页隐藏跳过。 */
+function syncMaskDeadTarget(t: MaskDeadTarget): void {
+  const list = document.getElementById(t.listId);
+  if (!list || list.hidden || list.closest("[hidden]")) return;
+  for (const row of list.querySelectorAll<HTMLElement>(t.rowSel)) {
+    const ratio = rowInvadeRatio(row);
+    const li = row.closest(t.itemSel) as HTMLElement | null;
+    if (!li) continue;
+    const isDead = li.classList.contains("mask-dead");
+    if (!isDead && ratio >= MASK_FADE_RATIO) li.classList.add("mask-dead");
+    else if (isDead && ratio < MASK_FADE_HYST) li.classList.remove("mask-dead");
   }
+}
+
+/**
+ * 罩死类同步（FIX014.34：按列表限定）。
+ * @param listId 目标列表 id（`todo-active` / `bubble-list` / `archive-list`）；
+ *   缺省 = 全部三列表（保留旧调用语义）。
+ */
+export function syncMaskDead(listId?: string): void {
+  if (listId) {
+    const target = MASK_DEAD_TARGETS.find((t) => t.listId === listId);
+    if (target) syncMaskDeadTarget(target);
+    return;
+  }
+  for (const t of MASK_DEAD_TARGETS) syncMaskDeadTarget(t);
 }
 
 // 注册进 useGlassBar 的滚动/内容重建挂点（与滑杆同频——design 松耦合同款）

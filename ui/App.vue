@@ -21,6 +21,7 @@ import { useDragReorder } from "./src/composables/useDragReorder";
 import { rollbackAllDelConfirms } from "./src/composables/delConfirmBus";
 import { syncGlassBars } from "./src/composables/useGlassBar";
 import { syncHints } from "./src/composables/useBoardRead";
+import { latestOnly } from "./src/composables/latestOnly";
 import { boardOpen } from "./src/composables/useVeils";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
@@ -65,12 +66,14 @@ const activeTab = ref<TabKey>("todos");
 
 // 页签徽章：气泡未读计数（PL008.4 接 mock/真实 bubble_list 长度；≥10 显示 9+）
 const bubbleCount = ref(0);
+const writeBadge = latestOnly<BubbleSnapshot>((snap) => {
+  bubbleCount.value = snap.items.length;
+});
 
 /** 拉取气泡徽章计数（复用 BubbleSnapshot 契约类型，items 长度即条目数，与页内同源） */
 async function refreshBadge(): Promise<void> {
   try {
-    const snap = await invoke<BubbleSnapshot>("bubble_list");
-    bubbleCount.value = snap.items.length;
+    await writeBadge(() => invoke<BubbleSnapshot>("bubble_list"));
   } catch (err) {
     console.error("bubble_list 徽章计数拉取失败", err);
   }
@@ -155,23 +158,51 @@ function onArchived(item: TodoItem): void {
 // 归档仅清单页生效），组件经 ref expose 的 toggle 由按钮内部自管 ——
 
 const archiveItems = ref<TodoItem[]>([]);
+const writeArchive = latestOnly<TodoItem[]>((list) => {
+  archiveItems.value = list;
+});
 
 /** 拉取归档视图（板开着时才可见，惰性拉取零浪费） */
 async function refreshArchive(): Promise<void> {
   try {
-    archiveItems.value = await invoke<TodoItem[]>("todo_archive_list");
+    await writeArchive(() => invoke<TodoItem[]>("todo_archive_list"));
   } catch (err) {
     console.error("todo_archive_list 拉取失败", err);
   }
+}
+
+// 清单/归档/徽章刷新合并窗（FIX014.34）：同一拍内多个 changed 只发一轮请求；
+// 60ms 足够吞掉详情保存/连续勾选的突发，又不影响用户感知。详情保存只影响清单
+// （has_note / 标题），不触发归档/徽章两条无关链路。
+let listRefreshTimer: number | undefined;
+let refreshFull = false;
+
+/** @param full true = 清单 + 归档 + 徽章；false = 只刷新清单 */
+function scheduleRefresh(full: boolean): void {
+  refreshFull ||= full;
+  if (listRefreshTimer != null) return;
+  listRefreshTimer = window.setTimeout(() => {
+    listRefreshTimer = undefined;
+    const runFull = refreshFull;
+    refreshFull = false;
+    void refresh();
+    if (runFull) {
+      void refreshArchive();
+      void refreshBadge();
+    }
+  }, 60);
 }
 
 /** 清单变更统一出口：重拉清单/归档/徽章三源 + 三板互斥（开详情板时归档收）。
  * 拖拽期冻结防线挂组件层（TodoList/BubblesView 列表 watch deferDuringDrag 早退）；
  * 收场重拉的顺序由 useDragReorder 等 reorder + TodoList 的 expectedIds 交接保证。 */
 function onListChanged(): void {
-  void refresh();
-  void refreshArchive();
-  void refreshBadge();
+  scheduleRefresh(true);
+}
+
+/** 详情内容变更：只刷新当前清单（has_note/标题），归档与气泡徽章不受影响。 */
+function onDetailChanged(): void {
+  scheduleRefresh(false);
 }
 
 /** 新增待办收口：统一刷新 + 清单滚动回顶（新行置顶定案的配套——无论滚动在哪，
@@ -227,16 +258,15 @@ async function refreshWindowPrefs(): Promise<void> {
 
 // 清单数据源：挂载拉取 + 动作后重拉（排序视图由 Rust 侧裁决，前端无轮询——无计时需求）
 const items = ref<TodoView[]>([]);
+const writeItems = latestOnly<TodoView[]>((list) => {
+  items.value = list;
+});
 
 /** 拉取清单排序视图（todo_list 返回 TodoView：条目 + 龄期档位，PL010 起）。
  * PATCH002.89：请求代际守卫——并发重拉只应用最新一次响应，旧序后到不能覆盖新序。 */
-let refreshSeq = 0;
 async function refresh(): Promise<void> {
-  const seq = ++refreshSeq;
   try {
-    const list = await invoke<TodoView[]>("todo_list");
-    if (seq !== refreshSeq) return;
-    items.value = list;
+    await writeItems(() => invoke<TodoView[]>("todo_list"));
   } catch (err) {
     console.error("todo_list 拉取失败", err);
   }
@@ -423,6 +453,7 @@ onUnmounted(() => {
   window.clearTimeout(dragSafetyTimer);
   window.clearTimeout(backdropOnTimer);
   window.clearTimeout(backdropOffTimer);
+  window.clearTimeout(listRefreshTimer);
   titleFXDestroy?.(); // FIX013.5：粒子/拖拽套件显式清理
   dragDestroy?.();
 });
@@ -482,7 +513,7 @@ onUnmounted(() => {
       :todo="detailTodo"
       :bubble="detailBubble"
       :anchor="detailAnchor"
-      @changed="onListChanged"
+      @changed="onDetailChanged"
       @close="closeDetail"
     />
   </main>

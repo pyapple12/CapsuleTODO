@@ -9,8 +9,9 @@
 //! Enter 武装（图标上持续停留 500ms 才显示，瞬间划过不打扰），离开两区域
 //! 400ms 隐藏；菜单开 = 锁死（Suppressed），收起后需新 Enter 重新武装。
 //! 预览 Shown 态的显隐只由守候线程执行（show/hide 唯一调用者），事件处理只写
-//! 状态——杜绝"线程被换掉后没人管窗"的孤儿窗竞态；右键收窗例外（FIX009.9
-//! 注记：on_tray_right_button 事件路径直调 hide，属事件侧的确定性收窗）。
+//! 状态——杜绝"线程被换掉后没人管窗"的孤儿窗竞态；右键/左键收窗例外
+//!（FIX009.9 / FIX014.39 注记：on_tray_right_button / on_tray_left_click 事件
+//! 路径直调 hide，属事件侧的确定性收窗）。
 //! **窗口调用（含查询）一律锁外**——Tauri 非主线程窗口调用同步等待主线程，
 //! 锁内调用 = 互挂死锁（实测两轮）。
 
@@ -58,7 +59,8 @@ const ANCHOR_MARGIN: i32 = 8;
 /// 守候相位（预览显隐状态机）：Idle 无事；Armed 已武装（Enter 已触发，图标上
 /// 持续停留满 500ms 才显示）；Shown 显示中（离开两区域 400ms 隐藏）；
 /// Suppressed 右键锁死（菜单活跃期，探测到菜单收起才解除，解除后需新 Enter
-/// 重新武装——收菜单时恰停在图标上不出窗）
+/// 重新武装——收菜单时恰停在图标上不出窗）；ClickConsumed 左键已消费（hover
+/// 暂停到光标离开图标，防单击与 hover 同时执行）
 /// （Debug 供测试 assert_eq 失败打印）
 #[derive(Debug, Clone, PartialEq)]
 enum Phase {
@@ -72,10 +74,12 @@ enum Phase {
         miss: u32,
     },
     Suppressed,
+    /// 左键已消费：hover 暂停，直到光标离开托盘图标。
+    ClickConsumed,
 }
 
-/// 守候单步的窗口动作（预览 Shown 态显隐的唯一调用者 = 守候线程；右键收窗为
-/// 事件侧确定性例外，见模块注记；Debug 供测试）
+/// 守候单步的窗口动作（预览 Shown 态显隐的唯一调用者 = 守候线程；右键/左键
+/// 收窗为事件侧确定性例外，见模块注记；Debug 供测试）
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum WatchAction {
     None,
@@ -234,6 +238,32 @@ fn step_watch(
             // 菜单开着保持锁死 / 菜单已收解除（需新 Enter 重新武装）
             (next, WatchAction::None)
         }
+        Phase::ClickConsumed => {
+            if menu_open {
+                // 右键菜单优先：左键消费态并入菜单锁死；菜单关闭后回 Idle
+                let action = if window_visible {
+                    WatchAction::Hide
+                } else {
+                    WatchAction::None
+                };
+                return (Phase::Suppressed, action);
+            }
+            if !in_tray {
+                // 光标离开图标：解除点击抑制，下一次 Enter 可重新武装
+                let action = if window_visible {
+                    WatchAction::Hide
+                } else {
+                    WatchAction::None
+                };
+                return (Phase::Idle, action);
+            }
+            // 光标仍停在图标上：绝不 Show；若 Show 晚到可见，下一拍收掉
+            if window_visible {
+                (Phase::ClickConsumed, WatchAction::Hide)
+            } else {
+                (Phase::ClickConsumed, WatchAction::None)
+            }
+        }
     }
 }
 
@@ -241,7 +271,8 @@ fn step_watch(
 /// Enter 仍会触发——此时武装 = 菜单旁弹出预览窗，即旧 bug）。相位分派（FIX006.18
 /// 连续性语义）：Shown（窗正显示，光标自预览窗移回图标）仅更新锚点保持显示——
 /// 重武装会"Armed∧可见→Hide"闪没 0.5s 重现；Idle/Suppressed 才转 Armed 重新
-/// 计时（持续停留 500ms 防划过误触）。
+/// 计时（持续停留 500ms 防划过误触）；ClickConsumed 保持不武装——左键消费后
+/// 光标未离开图标前不得重新弹出。
 /// x/y/w/h 为托盘图标矩形物理坐标（真实值随 DPI 缩放，FIX005.11 起全量入状态）
 pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32) {
     if menu_is_open(app) {
@@ -256,7 +287,39 @@ pub fn on_tray_enter(app: &tauri::AppHandle, rx: i32, ry: i32, rw: i32, rh: i32)
     match st.phase {
         // Shown 连续性：光标在两区域内移动，保持显示（锚点已更新）
         Phase::Shown { ref mut miss } => *miss = 0,
+
+        // 左键消费后，光标仍停在图标上不得重新武装；等 Leave 或守候线程
+        // 观测到 !in_tray 回 Idle 后，下一次 Enter 才恢复 hover。
+        Phase::ClickConsumed => {}
+
         _ => st.phase = Phase::Armed { since_ms: now_ms() },
+    }
+}
+
+/// 托盘 Leave（FIX014.39 快路径）：单击后光标离开图标立即解除 ClickConsumed；
+/// 不改变 Shown/Armed 的既有语义（预览显隐仍由守候线程的光标轮询兜底）。
+/// 菜单开着时不处理，避免打断 Suppressed 生命周期。
+pub fn on_tray_leave(app: &tauri::AppHandle) {
+    if menu_is_open(app) {
+        return;
+    }
+    let mut st = lock_watch();
+    if matches!(st.phase, Phase::ClickConsumed) {
+        st.phase = Phase::Idle;
+    }
+}
+
+/// 托盘左键（FIX014.39）：先消费当前 hover，再交给 lib.rs 执行主窗显隐。
+/// **窗口调用在锁外**；这是左键事件侧的确定性收窗例外（右键同款）。
+pub fn on_tray_left_click(app: &tauri::AppHandle) {
+    {
+        let mut st = lock_watch();
+        st.phase = Phase::ClickConsumed;
+    }
+    if let Some(pw) = app.get_webview_window("tray-preview") {
+        if let Err(err) = pw.hide() {
+            crate::diag::warn_diag(&format!("左键收预览窗失败：{err}"));
+        }
     }
 }
 
@@ -354,7 +417,7 @@ pub fn reanchor_to_tray(w: &tauri::WebviewWindow) {
 
 /// 预览守候线程（单一常驻，setup 启动；预览窗连续 5s 取不到即自灭退出）：100ms
 /// 步进驱动状态机，是预览 Shown 态 show/hide 的唯一调用者——事件处理只写状态
-/// （右键收窗例外见模块注记），杜绝多线程换代的孤儿窗。窗口查询与动作全在锁外
+/// （右键/左键收窗例外见模块注记），杜绝多线程换代的孤儿窗。窗口查询与动作全在锁外
 /// 执行（见循环内注释），锁内只做纯 FFI 与状态结算
 pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
     let handle = app.clone();
@@ -413,6 +476,18 @@ pub fn spawn_preview_watcher(app: &tauri::AppHandle) {
                 anchor_preview(&w, anchors.0, anchors.1, anchors.2);
                 if let Err(err) = w.show() {
                     crate::diag::warn_diag(&format!("预览窗显示失败：{err}"));
+                    continue;
+                }
+                // FIX014.39：Show 复核到 show 落地之间仍可能被左键点击竞入；
+                // 落地后再复核相位，已非 Shown 则立即收窗，避免点击后闪一下。
+                let still_shown_after = {
+                    let st = lock_watch();
+                    matches!(st.phase, Phase::Shown { .. })
+                };
+                if !still_shown_after {
+                    if let Err(err) = w.hide() {
+                        crate::diag::warn_diag(&format!("点击后收晚到预览窗失败：{err}"));
+                    }
                 }
             }
             WatchAction::Hide => {
@@ -527,6 +602,51 @@ fn cursor_in_window(w: &tauri::WebviewWindow) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 左键消费后_光标停留图标不显示() {
+        // FIX014.39：单击后 hover 不得在 500ms 后重新出现。
+        let phase = Phase::ClickConsumed;
+        assert_eq!(
+            step_watch(phase.clone(), 5000, true, false, false, false),
+            (phase, WatchAction::None)
+        );
+    }
+
+    #[test]
+    fn 左键消费后_晚到可见窗收掉() {
+        // FIX014.39：show 在点击之后落地时，下一拍必须收窗。
+        assert_eq!(
+            step_watch(Phase::ClickConsumed, 5000, true, false, false, true),
+            (Phase::ClickConsumed, WatchAction::Hide)
+        );
+    }
+
+    #[test]
+    fn 左键消费后_离开图标回空闲() {
+        // FIX014.39：离开后解除点击抑制（Leave / 轮询均可触发）。
+        assert_eq!(
+            step_watch(Phase::ClickConsumed, 5000, false, false, false, false),
+            (Phase::Idle, WatchAction::None)
+        );
+        assert_eq!(
+            step_watch(Phase::ClickConsumed, 5000, false, false, false, true),
+            (Phase::Idle, WatchAction::Hide)
+        );
+    }
+
+    #[test]
+    fn 左键消费后_菜单开转锁死() {
+        // FIX014.39：右键菜单优先，左键态并入 Suppressed。
+        assert_eq!(
+            step_watch(Phase::ClickConsumed, 5000, true, false, true, false),
+            (Phase::Suppressed, WatchAction::None)
+        );
+        assert_eq!(
+            step_watch(Phase::ClickConsumed, 5000, true, false, true, true),
+            (Phase::Suppressed, WatchAction::Hide)
+        );
+    }
 
     #[test]
     fn 空闲期_任何输入都不动作() {

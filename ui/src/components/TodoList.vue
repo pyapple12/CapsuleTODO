@@ -280,7 +280,7 @@ watchEffect(
   () => {
     void props.items.length; // 依赖收集（FIX009.3：必须先于早退——拖拽期重跑若
     // 零依赖登记即返回，effect 从此失活，收场 rerender 复核承诺落空）
-    syncMaskDead();
+    syncMaskDead("todo-active");
     if (deferDuringDrag()) return; // 冻结期跳过（拖拽收场 rerender 统一复核）
   },
   { flush: "post" }, // PATCH002.19：改 post——pre 跑在 DOM 更新前，首次装载恒扫空
@@ -361,7 +361,7 @@ function finishHandoff(list: TodoView[]): void {
         el.scrollTop = Math.min(pending.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
       }
     }
-    syncMaskDead(); // 行全量换 key 后重扫罩死态（滚动位置未变，scroll 事件不会补）
+    syncMaskDead("todo-active"); // 行全量换 key 后重扫罩死态（滚动位置未变，scroll 事件不会补）
     setPinned(pending.atBottom);
     dragRemounting.value = false;
   });

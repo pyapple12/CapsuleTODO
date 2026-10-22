@@ -1780,6 +1780,15 @@ function onDocMouseUp(): void {
   selection.up();
 }
 
+/** FIX014.32：跨块拖选手势在窗口外松手时 document 可能收不到 mouseup。
+ * 失焦 / 鼠标移出页面都按“松手”收尾；只处理进行中的手势，保留已建立的选区。 */
+function endStuckSelection(): void {
+  if (!isOpen.value) return;
+  if (selection.state.phase === "cross" || selection.state.phase === "pressed") {
+    selection.up();
+  }
+}
+
 /** 板内拦截原生 HTML5 拖拽（PATCH002.74）：从"仍在选中态的文字"起手时，浏览器会把它
  * 当成"拖动已选文本"——拖拽会话吞掉 mousemove ⇒ 自绘跨块圈选根本起不来（禁止光标）。
  * **只掐 DnD，不动选区机制**（`.45` 单块内原生选择照旧；图块调序走 pointer 事件不受影响）。 */
@@ -1828,10 +1837,13 @@ function dragDiag(tag: string): void {
 
 installNoteDragHooks({
   onDown: () => {
+    // 单击/双击也走这里：只做互斥清选，不取消未决防抖、不做全量保存
     clearSel(); // 互斥（PATCH002.17）：图块长按拖拽优先，起拖即清选区
+  },
+  onEngage: () => {
+    // FIX014.34：只有真正长按起拖才强制落库；commit 前必须收场，保证重排前
+    // 库与本地 id 集合一致。单击/双击图片不再触发 note_blocks_save。
     clearTimeout(saveTimer);
-    // PATCH002.56 + .84：起拖**强制**落库（`force` 绕开签名比对）并入 S2 写链——
-    // commit 前必须收场，保证重排前库与本地 id 集合一致
     void noteWrite.run(() => saveBlocks(true));
   },
   commit: (slots) => {
@@ -2308,6 +2320,8 @@ document.addEventListener("click", onDocClick);
 window.addEventListener("keydown", onWindowKeydown, true);
 window.addEventListener("mousemove", onDocMouseMove, true);
 window.addEventListener("mouseup", onDocMouseUp, true);
+window.addEventListener("blur", endStuckSelection);
+document.documentElement.addEventListener("mouseleave", endStuckSelection);
 window.addEventListener("resize", onViewportResize);
 
 /** 后台图片就绪（PATCH002.76）：本地仍是占位 → 原位换图块（保 `_key`），再归一化/排保存。
@@ -2376,6 +2390,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onWindowKeydown, true);
   window.removeEventListener("mousemove", onDocMouseMove, true);
   window.removeEventListener("mouseup", onDocMouseUp, true);
+  window.removeEventListener("blur", endStuckSelection);
+  document.documentElement.removeEventListener("mouseleave", endStuckSelection);
   window.removeEventListener("resize", onViewportResize);
 });
 </script>
