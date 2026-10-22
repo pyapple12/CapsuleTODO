@@ -39,7 +39,7 @@ pub struct BubbleItem {
     pub id: i64,
     /// 气泡文本（捕获的剪贴板内容，入库前已 trim；图片气泡 = 自动占位文案）
     pub text: String,
-    /// 气泡类型（列表载荷只带标记不带图——图片字节走 bubble_get_image 按需拉取，PL024）
+    /// 气泡类型（列表载荷只带标记不带图——图片由 `bubble_get_image_path` 按需取落地路径，PL024/PL025）
     pub kind: BubbleKind,
 }
 

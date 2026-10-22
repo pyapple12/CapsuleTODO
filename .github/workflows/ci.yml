@@ -48,6 +48,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
         working-directory: core
 
+      - name: cargo clippy（dev-diag）
+        run: cargo clippy --all-targets --features dev-diag -- -D warnings
+        working-directory: core
+
       - name: cargo test
         run: cargo test
         working-directory: core
@@ -65,3 +69,6 @@ jobs:
       # FIX014.38：诊断前端是独立 mode，必须单独构建一次，避免 __DIAG__ 分支只在本地验过。
       - name: 前端诊断构建
         run: npm run build:diag
+
+      - name: prettier 格式检查
+        run: npx prettier --check AGENTS.md README.md x.progress.md z.plan.md package.json vite.config.ts vitest.config.ts .github/workflows/ci.yml scripts/tauri.mjs "ui/**/*.{ts,vue,css}"

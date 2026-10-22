@@ -35,6 +35,48 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// FIX014.45：PNG 载荷可用性校验。仅看 `image_extension` 的 8 字节魔数会把
+/// “只有签名/截断 IHDR”的坏字节放行；这里再读一次头部尺寸，失败即回退 DIB/HDROP。
+fn png_payload_is_valid(bytes: &[u8]) -> bool {
+    if image_extension(bytes) != Some("png") {
+        return false;
+    }
+    if !png_has_iend(bytes) {
+        return false;
+    }
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok())
+        .is_some()
+}
+
+/// FIX014.50：按 PNG chunk 结构检查 IEND 是否存在且完整，拦住“签名 + 截断 IDAT”
+/// 这类 `into_dimensions` 仍能通过头部的坏载荷（不引入新依赖）。
+fn png_has_iend(bytes: &[u8]) -> bool {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if !bytes.starts_with(&SIGNATURE) {
+        return false;
+    }
+    let mut pos = SIGNATURE.len();
+    while pos + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+            as usize;
+        let kind = &bytes[pos + 4..pos + 8];
+        if kind == b"IEND" {
+            return len == 0 && pos + 12 <= bytes.len();
+        }
+        let Some(next) = pos.checked_add(12).and_then(|base| base.checked_add(len)) else {
+            return false;
+        };
+        if next <= pos || next > bytes.len() {
+            return false;
+        }
+        pos = next;
+    }
+    false
+}
+
 /// 图片字节格式校验（PL025 取代 PNG 魔数校验）：image crate 嗅探受支持格式，不认即
 /// UnsupportedFormat；**无大小上限**（落盘无 DB 上限；文件读盘闸口见 source_file_within_limit）
 pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), BubbleError> {
@@ -539,7 +581,7 @@ mod win {
         let png = if has_png {
             // FIX014.45：PNG 格式存在不代表字节可用（空/截断/错标）；坏字节必须
             // 继续回退 CF_DIB / CF_HDROP，不能提前返回一个必然校验失败的载荷。
-            copy_format(png_fmt).filter(|bytes| super::image_extension(bytes) == Some("png"))
+            copy_format(png_fmt).filter(|bytes| super::png_payload_is_valid(bytes))
         } else {
             None
         };
@@ -1016,6 +1058,25 @@ mod tests {
             validate_image_bytes(b"definitely not an image"),
             Err(BubbleError::UnsupportedFormat)
         ));
+    }
+
+    #[test]
+    fn png_payload_validation_rejects_truncated_header() {
+        let png = fixture_png();
+        assert!(png_payload_is_valid(&png));
+        let mut signature_only = png.clone();
+        signature_only.truncate(8);
+        assert!(
+            !png_payload_is_valid(&signature_only),
+            "仅 PNG 签名/截断头部不得被当作可用载荷"
+        );
+        let mut truncated = png;
+        let half = truncated.len() / 2;
+        truncated.truncate(half);
+        assert!(
+            !png_payload_is_valid(&truncated),
+            "截断 IDAT / 缺 IEND 的载荷不得被当作可用图片"
+        );
     }
 
     #[test]

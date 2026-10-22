@@ -25,11 +25,13 @@ pub fn set_board_backdrop(app: AppHandle, open: bool) {
     // FIX014.24：开板时按**应用主题设置**重新声明 DWM 深色档，而不是沿用主窗
     // 创建时按系统主题写入的旧值；否则 App 手动暗色 + 系统浅色会亮底配暗卡。
     if open {
-        let theme = app
-            .state::<AppContext>()
-            .lock_settings()
-            .map(|s| s.theme)
-            .unwrap_or(0);
+        let theme = match app.state::<AppContext>().lock_settings() {
+            Ok(settings) => settings.theme,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("背板 DWM 读取设置锁失败（回跟随系统）：{err:?}"));
+                0
+            }
+        };
         let system_dark = window
             .theme()
             .map(|t| t == tauri::Theme::Dark)

@@ -46,6 +46,26 @@ describe("TodoList 组件级交互（FIX014.35）", () => {
     vi.restoreAllMocks();
   });
 
+  it("主拍结束后刷新到达前双击，行消失时清除编辑态", async () => {
+    wrapper = mount(TodoList, { props: { items: [] } });
+    await wrapper.setProps({ items: [ITEM] });
+    await flushPromises();
+
+    const row = wrapper.find(".todo-row");
+    await row.trigger("click", { clientX: 0, clientY: 0 });
+    await flushPromises();
+    vi.advanceTimersByTime(300);
+    await flushPromises();
+
+    await row.trigger("dblclick");
+    await flushPromises();
+    expect(wrapper.find(".t-edit").exists()).toBe(true);
+
+    await wrapper.setProps({ items: [] });
+    await flushPromises();
+    expect(wrapper.find(".t-edit").exists()).toBe(false);
+  });
+
   it("勾选 300ms 主拍内双击不进入行内编辑", async () => {
     wrapper = mount(TodoList, { props: { items: [] } });
     await wrapper.setProps({ items: [ITEM] });

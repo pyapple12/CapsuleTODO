@@ -969,9 +969,9 @@ impl Storage {
     }
 
     /// 全量覆盖写块（PL027）：事务内**按 id 差分 upsert**（id > 0 = 更新、id = 0 = 新增），
-    /// 并删除清单外的旧块（图块 id 恒 > 0——新图块只由粘贴命令产生）。形态不变量由调用方
-    /// 经 `todo::validate_note_blocks` 把关。**被移除图块的文件引用一并精确释放**（块集
-    /// 变更即引用集变更的固有语义）。返回落库后的新块列表（含回填 id）
+    /// 删除清单外的旧文本块；图块则**软删除保留行与文件到关板/启动 purge**（Ctrl+Z 可复活）。
+    /// 形态不变量由调用方经 `todo::validate_note_blocks` 把关。事务提交后仅对确认不再被
+    /// 引用的图文件做 best-effort 释放。返回落库后的新块列表（含回填 id）
     pub fn set_note_blocks(
         &self,
         images_dir: &Path,
@@ -1141,11 +1141,16 @@ impl Storage {
         // PATCH002.56 口径改定（2026-10-19）：storage **不自行补块** —— 末块不变量由**前端在保存点**
         // 唯一负责（两边都管会导致"补 → 下次保存被差分删"的来回抖动）
         // 释放不再被引用的图文件（旧路径 − **落库后仍存的**路径；引用数归零才删）。
-        // 用落库后查询而非入参推断：入参只带 {id, kind, text}，图块文件信息在库内
+        // 用落库后查询而非入参推断：入参只带 {id, kind, text}，图块文件信息在库内。
+        // 事务已提交，释放失败只能 best-effort 落日志——不能让已成功写入返回 Err。
         let surviving = self.note_image_paths(todo_id)?;
         for rel in old_paths {
             if !surviving.contains(&rel) {
-                self.release_note_image(images_dir, &rel)?;
+                if let Err(err) = self.release_note_image(images_dir, &rel) {
+                    crate::diag::warn_diag(&format!(
+                        "详情块提交后释放图片失败（best-effort 不阻断）：{err}"
+                    ));
+                }
             }
         }
         self.note_blocks(todo_id)
@@ -1180,7 +1185,10 @@ impl Storage {
                 return Err(err);
             }
         };
-        self.conn.execute_batch("BEGIN")?;
+        if let Err(err) = self.conn.execute_batch("BEGIN") {
+            self.sweep_after_failed_write(images_dir);
+            return Err(err.into());
+        }
         let result = (|| -> Result<(), StorageError> {
             let order: Option<i64> = self
                 .conn
@@ -1274,7 +1282,12 @@ impl Storage {
             Ok(())
         })();
         match result {
-            Ok(()) => self.commit_transaction("插图写入")?,
+            Ok(()) => {
+                if let Err(err) = self.commit_transaction("插图写入") {
+                    self.sweep_after_failed_write(images_dir);
+                    return Err(err);
+                }
+            }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("插图事务回滚失败：{rollback}"));
@@ -1394,7 +1407,10 @@ impl Storage {
             self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫（不留半份）
             return Err(err);
         }
-        self.conn.execute_batch("BEGIN")?;
+        if let Err(err) = self.conn.execute_batch("BEGIN") {
+            self.sweep_after_failed_write(images_dir);
+            return Err(err.into());
+        }
         let result = (|| -> Result<Vec<i64>, StorageError> {
             let order: Option<i64> = self
                 .conn
@@ -1551,7 +1567,10 @@ impl Storage {
         })();
         let part_ids = match result {
             Ok(part_ids) => {
-                self.commit_transaction("多段粘贴")?;
+                if let Err(err) = self.commit_transaction("多段粘贴") {
+                    self.sweep_after_failed_write(images_dir);
+                    return Err(err);
+                }
                 part_ids
             }
             Err(err) => {
@@ -3468,6 +3487,54 @@ mod tests {
     }
 
     #[test]
+    fn purge_deleted_note_blocks_none_sweeps_all_todos() {
+        // FIX014.2 启动分支：todo_id=None 必须清掉所有条目的软删除图块，而不是只清一个。
+        let st = storage();
+        let dir = temp_images_dir();
+        let first = st.add("甲").expect("写入必须成功");
+        let second = st.add("乙").expect("写入必须成功");
+        let first_text = st
+            .set_note_blocks(&dir, first.id, &[nb_text(0, "甲文")])
+            .expect("第一条写块必须成功");
+        let second_text = st
+            .set_note_blocks(&dir, second.id, &[nb_text(0, "乙文")])
+            .expect("第二条写块必须成功");
+        st.add_note_image_block(
+            &dir,
+            first.id,
+            first_text[0].id,
+            "甲文",
+            "",
+            &png_bytes(),
+            None,
+            "261018010101",
+        )
+        .expect("第一条插图必须成功");
+        st.add_note_image_block(
+            &dir,
+            second.id,
+            second_text[0].id,
+            "乙文",
+            "",
+            &png_bytes(),
+            None,
+            "261018010102",
+        )
+        .expect("第二条插图必须成功");
+        st.set_note_blocks(&dir, first.id, &[nb_text(first_text[0].id, "甲文")])
+            .expect("第一条删图必须成功");
+        st.set_note_blocks(&dir, second.id, &[nb_text(second_text[0].id, "乙文")])
+            .expect("第二条删图必须成功");
+
+        let purged = st
+            .purge_deleted_note_blocks(&dir, None)
+            .expect("启动全量收口必须成功");
+        assert_eq!(purged, 2, "两个条目的软删除图块都应清理");
+        assert_eq!(st.note_blocks(first.id).expect("读块").len(), 1);
+        assert_eq!(st.note_blocks(second.id).expect("读块").len(), 1);
+    }
+
+    #[test]
     fn pending_image_placeholder_upgrades_and_keeps_text_block() {
         let st = storage();
         let dir = temp_images_dir();
@@ -3815,6 +3882,33 @@ mod tests {
             "应报可读 NotFound（此前只有 QueryReturnedNoRows）"
         );
         assert_eq!(note_folder_count(&dir), 0, "校验在落盘之前 → 不该建文件夹");
+    }
+
+    #[test]
+    fn insert_image_transaction_begin_failure_cleans_folder() {
+        // FIX014.51：落盘后 BEGIN 失败也必须补偿清扫，不能把 note_* 夹留到下次启动。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        st.conn.execute_batch("BEGIN").expect("测试前置事务");
+        let err = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "文字",
+                "",
+                &png_bytes(),
+                None,
+                "261018020202",
+            )
+            .expect_err("嵌套 BEGIN 必须失败");
+        assert!(matches!(err, StorageError::Sqlite(_)));
+        st.conn.execute_batch("ROLLBACK").expect("清理前置事务");
+        assert_eq!(note_folder_count(&dir), 0, "失败路径不得留下图片夹");
     }
 
     #[test]

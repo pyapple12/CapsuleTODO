@@ -5,7 +5,7 @@
 //! Win11 圆角边距被 muda 深色自绘涂实 = 上下空条，原生无尺寸口；点外收起 =
 //! 专用守候（按键 + 光标判定），菜单存亡事实源 = 菜单窗可见性（守候锁死判定
 //! 与 Enter 忽略共用）。
-//! 预览窗显隐 = 单一常驻守候线程 + 状态机（Idle/Armed/Shown/Suppressed）：
+//! 预览窗显隐 = 单一常驻守候线程 + 状态机（Idle/Armed/Shown/Suppressed/ClickConsumed）：
 //! Enter 武装（图标上持续停留 500ms 才显示，瞬间划过不打扰），离开两区域
 //! 400ms 隐藏；菜单开 = 锁死（Suppressed），收起后需新 Enter 重新武装。
 //! 预览 Shown 态的显隐只由守候线程执行（show/hide 唯一调用者），事件处理只写

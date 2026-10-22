@@ -693,12 +693,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // FIX014.24：跟随系统（theme=0）时系统主题变化也重声明 DWM 深色档；
                 // 手动浅/暗档由设置命令负责，这里只在跟随态响应系统事件。
                 if window.label() == "main" {
-                    let app_theme = window
+                    let app_theme = match window
                         .app_handle()
                         .state::<AppContext>()
                         .lock_settings()
-                        .map(|s| s.theme)
-                        .unwrap_or(0);
+                    {
+                        Ok(settings) => settings.theme,
+                        Err(err) => {
+                            crate::diag::warn_diag(&format!(
+                                "系统主题变化读取设置锁失败（回跟随系统）：{err:?}"
+                            ));
+                            0
+                        }
+                    };
                     if app_theme == 0 {
                         glass_backdrop::apply_frame_style(
                             window,

@@ -31,7 +31,7 @@ import { DIAG, debugLog, dragDiag as diagLog, undoLog } from "../dev/diagnostics
 // 一段一行一块 + 图块混排——Enter 光标处拆块 / Backspace@块首（上一块文字→合并、
 // 上一块图→删该图）/ Delete 只作用本块内（永不涉及下方块）/ Ctrl+V 粘贴插图（唯一
 // 插图入口，不做板内按钮）/ 图块悬停 ×、选中态键盘删、双击开原图、拖拽调序 /
-// Ctrl+Enter 保存并关板（仅文本块响应）。标题行内改名沿用（≤12 字防抖）。
+// Ctrl+Enter 板级保存并关板（板内焦点在哪都响应）。标题行内改名沿用（≤12 字防抖）。
 // 板内整板阅读 + 玻璃滑杆挂**滚动容器**（id 沿用 detail-note：帘联动与套件零改动）。
 
 const props = defineProps<{
@@ -140,7 +140,7 @@ const pendingBlockDeletes = new Set<Promise<void>>();
 /** 本次拖拽收场链（在飞保存 → reorder）；rerender 等它完成再重拉 */
 let dragCommit: Promise<unknown> | null = null;
 
-// —— 临时诊断（PATCH002.44 打点，测完即删）已按纪律全清 ——
+// —— 诊断打点（PATCH002.44）保留在 dev-diag 构建，普通 release 由 __DIAG__ 静态剔除 ——
 
 /** 浏览器原生按内容定高（Chromium 123+）：可用时**不做** JS 增高——内联 `height` 会压过它。
  * PATCH002.44：从根上杀掉 `height="auto"` 的"塌一下"中间态（滚动跳动的触发源之一） */
@@ -262,6 +262,9 @@ function scheduleSave(): void {
   const todoId = todo.id;
   const list = blocks.value;
   saveTimer = window.setTimeout(() => {
+    saveTimer = undefined;
+    // 粘贴/输入法窗口内不得用旧数组补写；最终态由粘贴收尾或关板 flush 负责。
+    if (pasteInFlight > 0 || editInFlight > 0) return;
     // 临时诊断（.72 排查）：哪个保存入口
     if (DIAG) undoLog(`save:caller=debounce inFlight=${pasteInFlight} len=${list.length}`);
     void saveBlocksFor(todoId, list);
@@ -282,7 +285,7 @@ async function saveBlocksForCore(
   if (!force && savedTodoId !== todoId) return true;
   const sig = signature(list);
   if (!force && sig === savedSignature && savedTodoId === todoId) return true;
-  // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块 + **签名指纹**
+  // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：构建载荷**之前**的本地末块 + **签名指纹**
   // （PATCH002.72：指纹用于比对"这次要保存的是不是刚才那一代"）
   const preLast = list[list.length - 1];
   if (DIAG) {
@@ -305,7 +308,7 @@ async function saveBlocksForCore(
     });
     savedTodoId = todoId;
     savedSignature = signature(list);
-    // 临时诊断（抖动定位，测完即删）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
+    // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
     // （PATCH002.72：与 `pre-save` 行配对读——两行指纹相同 = 服务端没改块集 ✓）
     const savedLast = saved[saved.length - 1];
     if (DIAG) {
@@ -355,7 +358,7 @@ async function loadBlocks(todoId: number, ghost: HTMLElement | null = null): Pro
     // paint，因此不会出现"新列表 + ghost"或"矮一截"的中间帧
     ghost?.remove();
     blocks.value = normalizeBlocks(serverList);
-    if (DIAG) dragDiagDetailed("loadBlocks:done"); // 临时诊断（抖动定位，测完即删）：重拉赋值后的本地列表
+    if (DIAG) dragDiagDetailed("loadBlocks:done"); // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：重拉赋值后的本地列表
     savedTodoId = todoId;
     // PATCH002.56 修正：**基准必须反映服务端真实状态**（归一化**之前**的列表）——
     // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
@@ -501,7 +504,9 @@ async function deleteBlockRun(
   let anim: Animation | null = null;
   /** 收场：摘数据 + 交还光标 + 落库；**代际不符（用户已撤销）则放弃并还原行观感** */
   const settle = async (): Promise<void> => {
-    if (undoSeq !== seq) {
+    // 普通撤销才放弃收场；切源也会让 loadBlocks 递增 undoSeq，但旧条目的删除
+    // 仍必须按捕获的 todoId/list 落库（否则切走后删除永远不生效）。
+    if (undoSeq !== seq && props.todo?.id === todoId) {
       if (leavingKey.value === block._key) leavingKey.value = "";
       anim?.cancel(); // 撤掉 forwards 填充
       clearCollapse(rowEl);
@@ -796,10 +801,25 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   // FIX014.6：粘贴前估算“当前笔记 + 本次内容”；超过 100 块 / 10,000 字符时
   // **静默失效**（preventDefault 后直接返回）——不删原文、不写库、不弹提示。
   // 精确块集仍由 Rust 在写入前兜底校验。
-  if (!notePasteFitsLimits(blocks.value, selRange.value, plainClip, htmlClip, hasImage)) {
+  // 单块原生选区（Ctrl+A 或块内拖选）不在 selRange 中，必须按同一块内的
+  // 原生区间扣减，否则“全选替换”会被误判为超限而静默无反应。
+  const nativeRange =
+    !selRange.value && el.selectionStart !== el.selectionEnd
+      ? {
+          from: { index, offset: el.selectionStart ?? 0 },
+          to: { index, offset: el.selectionEnd ?? 0 },
+        }
+      : null;
+  if (
+    !notePasteFitsLimits(blocks.value, selRange.value ?? nativeRange, plainClip, htmlClip, hasImage)
+  ) {
     e.preventDefault();
     return;
   }
+  // 粘贴会整体替换/重排块列表；先撤掉粘贴前已武装的防抖保存，避免旧数组在
+  // 失败恢复保存之后又把“删除后”状态写回库（FIX014.9）。
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   // 临时诊断（.72 排查）：粘贴走了哪个分支 + 自绘选区是否还在（`selRange` 空 ⇒ 普通粘贴）
   {
     const r = selRange.value;
@@ -883,12 +903,26 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const html = htmlClip;
   if (html.includes("<img")) {
     e.preventDefault();
-    await pasteHtmlAt(index, start, end, html, plainClip);
+    const pasteTodoId = props.todo?.id ?? null;
+    pasteInFlight += 1;
+    try {
+      await pasteHtmlAt(index, start, end, html, plainClip);
+    } finally {
+      pasteInFlight -= 1;
+      if (pasteTodoId != null && props.todo?.id === pasteTodoId) scheduleSave();
+    }
     return;
   }
   if (hasImage) {
     e.preventDefault();
-    await pasteImageAt(index, start, end, plainClip);
+    const pasteTodoId = props.todo?.id ?? null;
+    pasteInFlight += 1;
+    try {
+      await pasteImageAt(index, start, end, plainClip);
+    } finally {
+      pasteInFlight -= 1;
+      if (pasteTodoId != null && props.todo?.id === pasteTodoId) scheduleSave();
+    }
     return;
   }
   const text = plainClip;
@@ -1161,7 +1195,7 @@ function focusedBlockKey(): string | undefined {
 /** 空块归一化（组件侧包装）：带"当前焦点块 key"（PATCH002.75）+ 块数变化诊断 */
 function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
   const out = normalizeBlankBlocks(list, { preferredKey: focusedBlockKey(), makeKey: localKey });
-  // 临时诊断（抖动定位，测完即删）：归一化**改变块数**时记一笔（`keep` = 留下的是哪一块）
+  // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：归一化**改变块数**时记一笔（`keep` = 留下的是哪一块）
   if (DIAG && out.length !== list.length) {
     const last = list[list.length - 1];
     debugLog(
@@ -1286,7 +1320,7 @@ function onBlocksFocusOut(e: FocusEvent): void {
   // PATCH002.72 C5：粘贴"先删后插"期间，被删文本域的失焦会伪造一次 focusout ⇒
   // 此刻归一化落库 = 把"删完、还没插"的空中间态写进库（实证：`sig=36` 的空块被保存 ✗）
   if (pasteInFlight > 0 || editInFlight > 0) return;
-  // 临时诊断（抖动定位，测完即删）：焦点离开块区 → 会走保存点归一化
+  // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：焦点离开块区 → 会走保存点归一化
   if (DIAG) dragDiagDetailed("focusout:normalizeAndFlush");
   // PATCH002.84：失焦 flush 入链——拖图按下时的 force save 必须先于 reorder 收场
   void noteWrite.run(() => normalizeAndFlush());
@@ -1823,7 +1857,7 @@ function endStuckSelection(): void {
  * **只掐 DnD，不动选区机制**（`.45` 单块内原生选择照旧；图块调序走 pointer 事件不受影响）。 */
 function onBoardDragStart(e: DragEvent): void {
   e.preventDefault();
-  if (DIAG) dragDiagDetailed("dnd:blocked"); // 临时诊断（随 PATCH002 整批收官清）
+  if (DIAG) dragDiagDetailed("dnd:blocked"); // dev-diag 保留 / release 剔除
 }
 
 // —— 拖拽调序（**仅图块可拖**；机制复用 useDragReorder，落点提交走 note_reorder）——
@@ -1851,7 +1885,7 @@ async function reloadAfterDrag(todoId: number, ghost: HTMLElement | null = null)
   if (DIAG) dragDiagDetailed("drag:settled");
 }
 
-/** 临时诊断（抖动定位，测完即删）：滚动几何 + 列表末尾块（`last` 的 kind#id）——
+/** 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：滚动几何 + 列表末尾块（`last` 的 kind#id）——
  * 经 dev-only 插件送 Rust stdout；调用点统一 `if (DIAG)` 门控。 */
 const dragDiagDetailed = (tag: string): void => {
   const el = scrollEl.value;
@@ -1879,7 +1913,7 @@ installNoteDragHooks({
     const todo = props.todo;
     if (todo == null) return;
     if (DIAG) dragDiagDetailed(`drag:commit slots=${slots.join(",")}`);
-    // 临时诊断（退回定位，测完即删）：提交那一刻 DOM 里**每一行**的 class+rowId
+    // 临时诊断（退回定位，dev-diag 保留 / release 剔除）：提交那一刻 DOM 里**每一行**的 class+rowId
     // —— 用于找出"DOM 比数组多出来的那一行"是什么（ghost 残留 / 重复行 / 别的）
     const domEl = scrollEl.value;
     const rows = domEl ? [...domEl.querySelectorAll<HTMLElement>(".note-block")] : [];
@@ -1913,7 +1947,7 @@ installNoteDragHooks({
   },
   rerender: (ctx) => {
     const todo = props.todo;
-    // PATCH002.57 打点（测完即删）：进入重拉前的 DOM/数组对齐快照（候选 1 的判决点）
+    // PATCH002.57 打点（dev-diag 保留 / release 剔除）：进入重拉前的 DOM/数组对齐快照（候选 1 的判决点）
     if (DIAG) dragDiagDetailed("drag:rerender-entry");
     // PATCH002.82：ghost 由重拉流程收尾（列表高度保持到新列表就位）
     if (!todo) {
@@ -2133,7 +2167,13 @@ watch(
       // 切源快照（同 todo watch，PATCH002.47）：todo→气泡切换时 `props.todo` 已为 null，
       // 必须按快照把未决编辑写回旧条目 id（否则这段编辑丢失）
       const prev = { todoId: savedTodoId, list: blocks.value };
-      void flushPending(prev); // todo→bubble 切源同款先 flush（FIX003.4）
+      // todo→bubble 切源先 flush，再按同一快照收口软删除图块（FIX014.2 对称补口）。
+      const oldTodoId = prev.todoId;
+      if (oldTodoId != null) {
+        void flushPending(prev).then(() => finalizeTodoAfterFlush(oldTodoId));
+      } else {
+        void flushPending(prev);
+      }
       if (b.kind === "Image") {
         // PL025 图片气泡：板面 = 落盘图片（按需取绝对路径 → asset 协议直读）
         bubbleText.value = "";
@@ -2230,11 +2270,13 @@ watch(titleDraft, (text) => {
  * 捕获的** {todoId, list} 快照：watch 里 `props.todo` 已是新条目，必须按快照写回旧 id
  * （否则守卫必假 → 旧条目的未决编辑丢失，PATCH002.47）。缺省按当前条目 */
 async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }): Promise<void> {
+  // 关板/切源先撤掉所有待触发拍子；即使粘贴窗口内提前返回，也不能留下旧数组的定时保存。
+  clearTimeout(renameTimer);
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   // PATCH002.72 C5：粘贴窗口内不落库（此时 `blocks` 可能是"删完未插"的中间态 ✗）；
   // 收尾的 `finally` 会把最终态按快照写回（板已切走时也能写，沿 `.47` 口径）
   if (pasteInFlight > 0 || editInFlight > 0) return;
-  clearTimeout(renameTimer);
-  clearTimeout(saveTimer);
   const rename = renamePending;
   renamePending = null;
   const jobs: Array<Promise<void>> = [];

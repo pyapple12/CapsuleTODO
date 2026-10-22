@@ -17,11 +17,11 @@
 
 ## 中文版
 
-一款玻璃质感的桌面 Todo 看板——常驻桌面一隅，随手记、随手勾。聚焦时是真实的 Windows 亚克力磨砂，失焦时回归透明，深浅色随系统；再配上一枚全局热键，把任何软件里闪过的念头随手收进气泡。
+一款玻璃质感的桌面 Todo 看板——常驻桌面一隅，随手记、随手勾。常态纯透明；打开详情板/浮板且窗口聚焦时才挂真实的 Windows 亚克力，收板或失焦立即回归透明；深浅色可跟随系统或手动指定。再配上一枚全局热键，把任何软件里闪过的念头随手收进气泡。
 
 ### ✨ 功能亮点
 
-- 🪟 **会呼吸的玻璃** —— 焦点联动 DWM 亚克力（聚焦磨砂、失焦透明），深浅色跟随系统
+- 🪟 **会呼吸的玻璃** —— 按需 DWM 亚克力（板开且聚焦时出现，收板/失焦即透明），主题可跟随系统或手动指定
 - ⚡ **顺手捕获** —— 任意软件中按全局热键（默认 `Ctrl+Alt+C`），选中文字或图片直接捕获（自动复制），内容落为气泡并自动去重
 - 🖼️ **图片气泡** —— 截图 / 图片文件也能收进气泡；单击看大图、双击用系统程序开原图，复制回保真
 - 📝 **待办清单** —— 单击勾选入档、双击行内改名、拖拽排序、详情板写笔记（有笔记的行左上角红点提示）
@@ -39,20 +39,20 @@
 
 ### 🧱 技术栈
 
-| 层      | 选型                                | 说明                                      |
-| ------- | ----------------------------------- | ----------------------------------------- |
-| 📦 壳   | Tauri 2（Rust + 系统 WebView）      | 包体小（~13MB），系统能力原生接入         |
-| 🦀 核心 | 纯 Rust——状态机 / SQLite / 业务规则 | 全部业务逻辑在 Rust 侧，`cargo test` 直测 |
-| 🖼️ 前端 | Vue 3 + TypeScript + Vite           | 只做展示，零业务逻辑                      |
-| 🗄️ 存储 | SQLite（rusqlite）                  | 零配置本地库                              |
-| 🪟 玻璃 | DWM SYSTEMBACKDROP 焦点联动         | 系统级真亚克力，无组合引擎 hack           |
+| 层      | 选型                                | 说明                                        |
+| ------- | ----------------------------------- | ------------------------------------------- |
+| 📦 壳   | Tauri 2（Rust + 系统 WebView）      | 包体小（~13MB），系统能力原生接入           |
+| 🦀 核心 | 纯 Rust——状态机 / SQLite / 业务规则 | 全部业务逻辑在 Rust 侧，`cargo test` 直测   |
+| 🖼️ 前端 | Vue 3 + TypeScript + Vite           | 只做展示，零业务逻辑                        |
+| 🗄️ 存储 | SQLite（rusqlite）                  | 零配置本地库                                |
+| 🪟 玻璃 | DWM SYSTEMBACKDROP 按需挂摘         | 板开且聚焦时系统级真亚克力，无组合引擎 hack |
 
 ### 🛠️ 开发
 
 ```bash
 npm install         # 首次
 cargo test          # Rust 核心全量测试（不依赖 UI）
-npm run tauri:dev   # 开发运行（build:diag + dev-diag feature；改前端后先 npm run build）
+npm run tauri:dev   # 开发运行（自动 build:diag + dev-diag；改前端后重启该命令即可）
 npm run build       # 前端构建（含 vue-tsc 类型检查）
 ```
 
@@ -84,17 +84,19 @@ CapsuleTODO/
 │   │   ├── tray.rs            # 托盘（预览显隐状态机 + 自绘菜单）
 │   │   ├── fullscreen.rs      # 全屏让位（前台窗口轮询）
 │   │   ├── snap.rs            # 贴边吸附纯函数
-│   │   ├── glass_backdrop.rs  # 玻璃背板（DWM SYSTEMBACKDROP 焦点联动）
+│   │   ├── glass_backdrop.rs  # 玻璃背板（按需 DWM SYSTEMBACKDROP：板开+聚焦挂/收板+失焦摘）
 │   │   └── commands/          # Tauri 命令层（薄封装，核心可脱离 Tauri 直测）
 │   ├── capabilities/          # ACL 权限白名单（拖动等前端能力）
+│   ├── build.rs               # Tauri 构建脚本（dev-diag 内联 ACL）
 │   ├── icons/                 # 应用图标（正式五件套 + 设计源）
 │   ├── tests/                 # 集成测试（真实文件库探针 / 迁移）
-│   └── tauri.conf.json        # 窗口 / CSP / 打包配置
+│   ├── tauri.conf.json        # 窗口 / CSP / 打包配置
+│   └── tauri.dev.conf.json    # dev-only 配置（诊断 capability）
 ├── ui/                        # 🖼️ Vue 3 前端（只做展示，零业务逻辑）
 │   ├── src/components/        # 三页签 + 详情板 + 设置板 + 托盘窗等组件
 │   ├── src/composables/       # 组合式逻辑（玻璃滑杆 / 整板阅读 / 罩死 / 拖拽 …）
 │   ├── src/styles/            # 样式层（玻璃卡 / 清单 / 气泡 / 详情 …）
-│   ├── src/dev/               # 冒烟基座与 mock（浏览器直跑）
+│   ├── src/dev/               # 冒烟基座 / mock / diagnostics（dev-diag 专用）
 │   └── types.ts               # IPC DTO 类型镜像（与 Rust serde 同源）
 ├── design/                    # 🎨 HTML/CSS/JS 设计原型（三页签全交互，实现的事实参照）
 ├── release/                   # 📦 绿色包使用说明（随 zip 分发的那份 README）
@@ -130,11 +132,11 @@ Capsule 系列第四作：CapsuleRetro（包装游戏）→ CapsulePlan（落定
 
 ## English
 
-A glassmorphic desktop TODO board that lives in the corner of your screen — real Windows Acrylic that turns frosty when focused and crystal-clear when idle, following your system theme. Plus a global hotkey to sweep fleeting thoughts from any app into bubbles.
+A glassmorphic desktop TODO board that lives in the corner of your screen — normally fully transparent; real Windows Acrylic appears only while a detail/floating board is open and focused, and is removed as soon as the board closes or focus leaves. The theme can follow the OS or be set manually. Plus a global hotkey to sweep fleeting thoughts from any app into bubbles.
 
 ### ✨ Highlights
 
-- 🪟 **Glass that breathes** — focus-linked DWM Acrylic (frosted when active, transparent when idle), light/dark follows the OS
+- 🪟 **Glass that breathes** — on-demand DWM Acrylic (only while a board is open and focused; transparent when closed or unfocused), theme follows the OS or a manual choice
 - ⚡ **Frictionless capture** — press the global hotkey (default `Ctrl+Alt+C`) anywhere, even with text selected (auto-copy & capture); snippets land as bubbles, deduplicated automatically
 - 🖼️ **Image bubbles** — screenshots and image files land as bubbles too; click to view large, double-click to open the original, copy back faithfully
 - 📝 **Todo board** — one-click archive, inline rename (double-click), drag to reorder, per-item notes & detail panel (rows with a note show a red dot)
@@ -152,20 +154,20 @@ Grab `CapsuleTODO_v0.2.2_win_x64.zip` from [Releases](../../releases), unzip any
 
 ### 🧱 Built With
 
-| Layer      | Choice                                             | Why                                                          |
-| ---------- | -------------------------------------------------- | ------------------------------------------------------------ |
-| 📦 Shell   | Tauri 2 (Rust + system WebView)                    | tiny footprint (~13 MB), native capabilities                 |
-| 🦀 Core    | Pure Rust — state machines, SQLite, business rules | all logic lives in Rust, directly unit-tested (`cargo test`) |
-| 🖼️ UI      | Vue 3 + TypeScript + Vite                          | presentation only, zero business logic                       |
-| 🗄️ Storage | SQLite via rusqlite                                | zero-config local database                                   |
-| 🪟 Glass   | DWM `SYSTEMBACKDROP` focus-linking                 | real OS Acrylic, no composition-engine hacks                 |
+| Layer      | Choice                                             | Why                                                                            |
+| ---------- | -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 📦 Shell   | Tauri 2 (Rust + system WebView)                    | tiny footprint (~13 MB), native capabilities                                   |
+| 🦀 Core    | Pure Rust — state machines, SQLite, business rules | all logic lives in Rust, directly unit-tested (`cargo test`)                   |
+| 🖼️ UI      | Vue 3 + TypeScript + Vite                          | presentation only, zero business logic                                         |
+| 🗄️ Storage | SQLite via rusqlite                                | zero-config local database                                                     |
+| 🪟 Glass   | DWM `SYSTEMBACKDROP` on demand                     | real OS Acrylic while a board is open and focused; no composition-engine hacks |
 
 ### 🛠️ Develop
 
 ```bash
 npm install         # once
 cargo test          # Rust core: full test suite, no UI required
-npm run tauri:dev   # dev run (build:diag + dev-diag feature — rebuild via npm run build after UI edits)
+npm run tauri:dev   # dev run (auto build:diag + dev-diag — restart this after UI edits)
 npm run build       # frontend build incl. vue-tsc type check
 ```
 
@@ -186,7 +188,9 @@ CapsuleTODO/
 │   │   ├── todo.rs            # todo pure logic (DTO + text validation)
 │   │   ├── bubble.rs          # bubble pure logic (DTO + capture validation + text/image kind)
 │   │   ├── whiteboard.rs      # whiteboard pure logic (length validation)
-│   │   ├── storage.rs         # SQLite repository (3 tables, parameterized SQL; image naming/dedup/cleanup)
+│   │   ├── storage.rs         # SQLite repository (4 tables, parameterized SQL; image naming/dedup/cleanup)
+│   │   ├── html_paste.rs      # clipboard HTML parser (paragraphs / images / script-style stripping)
+│   │   ├── image_fetch.rs     # remote image download (size / timeout / total budget / concurrency)
 │   │   ├── settings.rs        # settings persistence (position / limit / hotkey / on-top / snap / theme)
 │   │   ├── paths.rs           # runtime dual-location paths (configs/ + data/ + data/images/)
 │   │   ├── capture.rs         # selection capture (clipboard-wait state machine + synthetic copy)
@@ -195,12 +199,14 @@ CapsuleTODO/
 │   │   ├── tray.rs            # tray (preview visibility state machine + custom menu)
 │   │   ├── fullscreen.rs      # fullscreen yield (foreground-window polling)
 │   │   ├── snap.rs            # edge-snap pure functions
-│   │   ├── glass_backdrop.rs  # glass backdrop (DWM SYSTEMBACKDROP focus-linking)
+│   │   ├── glass_backdrop.rs  # glass backdrop (on-demand DWM SYSTEMBACKDROP: attach when board open + focused, detach on close/blur)
 │   │   └── commands/          # Tauri command layer (thin shell; cores are Tauri-free & directly testable)
 │   ├── capabilities/          # ACL allowlist (drag & other frontend capabilities)
+│   ├── build.rs               # Tauri build script (dev-diag inline ACL)
 │   ├── icons/                 # app icons (release set + design source)
 │   ├── tests/                 # integration tests (real-file DB probe / migration)
-│   └── tauri.conf.json        # window / CSP / bundle config
+│   ├── tauri.conf.json        # window / CSP / bundle config
+│   └── tauri.dev.conf.json    # dev-only config (diagnostic capability)
 ├── ui/                        # 🖼️ Vue 3 frontend (presentation only, zero business logic)
 │   ├── src/components/        # three tabs + detail / settings overlays + tray windows
 │   ├── src/composables/       # composables (glass slider / board read / mask-dead / drag …)

@@ -429,11 +429,18 @@ watch(
 watch(
   () => props.items,
   (list) => {
+    // 勾选主拍与清单刷新之间有短暂窗口：若该行已不在列表，编辑态必须立即退出，
+    // 否则 editingId 悬挂会把后续所有行的单击/勾选吞掉（FIX014.10 残余窗口）。
+    if (editingId.value != null && !list.some((t) => t.id === editingId.value)) {
+      editingId.value = null;
+    }
     if (pendingExitId.value === null) return;
     const it = list.find((t) => t.id === pendingExitId.value);
     if (it && it.text === editDraft.value.trim()) {
       pendingExitId.value = null;
       editingId.value = null;
+    } else if (!it) {
+      pendingExitId.value = null;
     }
   },
   { deep: true },

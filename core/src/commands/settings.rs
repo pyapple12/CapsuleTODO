@@ -285,8 +285,8 @@ pub fn settings_get_theme(ctx: State<'_, AppContext>) -> Result<u8, CommandError
     Ok(ctx.lock_settings()?.theme)
 }
 
-/// 写入主题三态（FIX013.2）：钳制后落库 → 广播 prefs-changed（设置板回显与未来
-/// 消费端同步，照 set_snap_to_edge 形态；主题无窗口操作，落库即生效）
+/// 写入主题三态（FIX013.2）：钳制后落库 → 按应用主题重声明 DWM 深色档 →
+/// 广播 prefs-changed（设置板回显与未来消费端同步，照 set_snap_to_edge 形态）
 #[tauri::command]
 pub fn settings_set_theme(
     theme: u8,
@@ -298,7 +298,13 @@ pub fn settings_set_theme(
     // FIX014.24：主题写入后立即按应用主题重声明 DWM 深色档；否则系统浅色 +
     // 手动暗色会继续沿用启动时的浅色背板。
     if let Some(window) = app.get_webview_window("main") {
-        let theme = ctx.lock_settings().map(|s| s.theme).unwrap_or(0);
+        let theme = match ctx.lock_settings() {
+            Ok(settings) => settings.theme,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("主题 DWM 读取设置锁失败（回跟随系统）：{err:?}"));
+                0
+            }
+        };
         let system_dark = window
             .theme()
             .map(|t| t == tauri::Theme::Dark)

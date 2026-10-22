@@ -90,65 +90,56 @@ fn find_tag_end(tag: &str) -> Option<usize> {
     None
 }
 
+/// 非正文块类型（注释 / 脚本 / 样式）。
+#[derive(Clone, Copy)]
+enum NonContent {
+    Comment,
+    Script,
+    Style,
+}
+
+/// 单次扫描找最近的非正文块起点（FIX014.47：替代每轮 3 次全余量搜索，
+/// 避免大量注释/脚本把解析拖成二次方）。
+fn find_non_content(html: &str) -> Option<(usize, NonContent)> {
+    let bytes = html.as_bytes();
+    for (i, _) in bytes.iter().enumerate() {
+        if bytes[i] != b'<' {
+            continue;
+        }
+        let tail = &bytes[i..];
+        if tail.starts_with(b"<!--") {
+            return Some((i, NonContent::Comment));
+        }
+        if tail.len() >= 7 && tail[..7].eq_ignore_ascii_case(b"<script") {
+            return Some((i, NonContent::Script));
+        }
+        if tail.len() >= 6 && tail[..6].eq_ignore_ascii_case(b"<style") {
+            return Some((i, NonContent::Style));
+        }
+    }
+    None
+}
+
 /// 去掉注释、`<script>` / `<style>` 整段内容（FIX014.20：脚本里的 `<img>` 不得成图，
 /// 样式/脚本正文不得进入笔记）。未闭合时丢弃剩余内容，避免把脚本正文当文本。
 fn strip_non_content(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     loop {
-        let comment = find_ci(rest, "<!--");
-        let script = find_ci(rest, "<script");
-        let style = find_ci(rest, "<style");
-        let (start, kind) = match (comment, script, style) {
-            (Some(c), Some(s), Some(y)) => {
-                let (at, kind) = if c <= s && c <= y {
-                    (c, "comment")
-                } else if s <= y {
-                    (s, "script")
-                } else {
-                    (y, "style")
-                };
-                (at, kind)
-            }
-            (Some(c), Some(s), None) => {
-                if c <= s {
-                    (c, "comment")
-                } else {
-                    (s, "script")
-                }
-            }
-            (Some(c), None, Some(y)) => {
-                if c <= y {
-                    (c, "comment")
-                } else {
-                    (y, "style")
-                }
-            }
-            (None, Some(s), Some(y)) => {
-                if s <= y {
-                    (s, "script")
-                } else {
-                    (y, "style")
-                }
-            }
-            (Some(at), None, None) => (at, "comment"),
-            (None, Some(at), None) => (at, "script"),
-            (None, None, Some(at)) => (at, "style"),
-            (None, None, None) => {
-                out.push_str(rest);
-                break;
-            }
+        let Some((start, kind)) = find_non_content(rest) else {
+            out.push_str(rest);
+            break;
         };
         out.push_str(&rest[..start]);
         match kind {
-            "comment" => {
+            NonContent::Comment => {
                 let after = &rest[start + 4..];
                 let Some(end) = after.find("-->") else {
                     break;
                 };
                 rest = &after[end + 3..];
             }
-            "script" => {
+            NonContent::Script => {
                 let Some(end) = find_ci(&rest[start..], "</script") else {
                     break;
                 };
@@ -159,7 +150,7 @@ fn strip_non_content(html: &str) -> String {
                 };
                 rest = &tail[close + 1..];
             }
-            _ => {
+            NonContent::Style => {
                 let Some(end) = find_ci(&rest[start..], "</style") else {
                     break;
                 };
@@ -224,22 +215,31 @@ fn replace_br_tags(chunk: &str) -> String {
     out
 }
 
+/// 单次扫描找最近的块级闭合标签起点（FIX014.47：避免每个标签都重新扫全部 11 个前缀）。
+fn find_next_block_tag(chunk: &str) -> Option<usize> {
+    let bytes = chunk.as_bytes();
+    for (i, _) in bytes.iter().enumerate() {
+        if bytes[i] != b'<' || bytes.get(i + 1) != Some(&b'/') {
+            continue;
+        }
+        let tail = &bytes[i + 2..];
+        for tag in BLOCK_TAGS {
+            let name = &tag.as_bytes()[2..];
+            if tail.len() >= name.len() && tail[..name.len()].eq_ignore_ascii_case(name) {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
 /// 把块级闭合标签（含其 `>`）整体替换为换行。FIX014.44：此前只替换 `</p` 前缀，
 /// 残留的 `>` 逼得 `strip_tags` 跳过所有顶层 `>`，会误删正文里的比较符。
 fn replace_block_tags(chunk: &str) -> String {
     let mut out = String::with_capacity(chunk.len());
     let mut rest = chunk;
     loop {
-        let mut earliest: Option<usize> = None;
-        for tag in BLOCK_TAGS {
-            if let Some(at) = find_ci(rest, tag) {
-                earliest = match earliest {
-                    Some(current) if current <= at => Some(current),
-                    _ => Some(at),
-                };
-            }
-        }
-        let Some(at) = earliest else {
+        let Some(at) = find_next_block_tag(rest) else {
             out.push_str(rest);
             break;
         };
@@ -273,7 +273,18 @@ pub fn strip_tags(chunk: &str) -> String {
             }
         }
         if chunk.as_bytes()[i] == b'<' {
+            let next = chunk.as_bytes().get(i + 1).copied();
+            let looks_like_tag = next
+                .is_some_and(|b| b == b'/' || b == b'!' || b == b'?' || b.is_ascii_alphabetic());
+            // 裸 `<`（如 “1 < 2”“<3”）不是标签，保留并继续；否则未闭合标签
+            // 会把后面的全部正文一起吞掉。
+            if !looks_like_tag {
+                out.push('<');
+                i += 1;
+                continue;
+            }
             let Some(end) = find_tag_end(&chunk[i..]) else {
+                out.push_str(&chunk[i..]);
                 break;
             };
             i += end + 1;
@@ -464,6 +475,13 @@ mod tests {
     }
 
     #[test]
+    fn strip_tags_preserves_bare_lt_in_text() {
+        assert_eq!(strip_tags("1 < 2"), "1 < 2");
+        assert_eq!(strip_tags("<3"), "<3");
+        assert_eq!(strip_tags("<p>1 < 2</p>"), "1 < 2");
+    }
+
+    #[test]
     fn split_blocks_consumes_all_br_variants() {
         assert_eq!(
             parse("甲<br>乙<br/>丙<br />丁"),
@@ -493,11 +511,30 @@ mod tests {
 
     #[test]
     fn parse_truncates_oversized_html_at_utf8_boundary() {
-        // 只验证截断后不 panic、仍能解析文本；上限是防御性边界。
-        let html = format!("<p>{}</p>", "a".repeat(MAX_HTML_BYTES));
+        // 截断点之后放可观察标记，证明上限确实生效；ASCII 与多字节边界各一次。
+        let html = format!(
+            "<p>{}</p><img src=\"after-limit.png\">",
+            "a".repeat(MAX_HTML_BYTES)
+        );
         let parts = parse(&html);
-        assert_eq!(parts.len(), 1);
-        assert!(matches!(parts[0], HtmlPart::Text(_)));
+        assert!(
+            parts.iter().all(|part| !matches!(
+                part,
+                HtmlPart::Image(src) if src == "after-limit.png"
+            )),
+            "超过上限的尾部图片不得被解析"
+        );
+
+        let body = "a".repeat(MAX_HTML_BYTES - 2);
+        let html = format!("<p>{body}é</p><img src=\"after-limit.png\">");
+        let parts = parse(&html);
+        assert!(
+            parts.iter().all(|part| !matches!(
+                part,
+                HtmlPart::Image(src) if src == "after-limit.png"
+            )),
+            "UTF-8 边界截断后不得 panic 或带入尾部标记"
+        );
     }
 
     #[test]

@@ -1,12 +1,13 @@
 //! Todo 命令：清单增删勾查改（操作即落库，单一事实源 = db；核心抽自由函数直测）。
-//! PL010 扩容：todo_rename/todo_set_note 新命令 + todo_list 附龄期裁决（业务在 Rust）。
+//! PL010 扩容：todo_rename + todo_list 附龄期裁决（业务在 Rust）；PL027 起笔记由
+//! `note_blocks_*` 块命令承载，`todo_set_note` 已退役。
 
 use tauri::{Emitter, Manager, State};
 
 use super::{AppContext, CommandError};
 use crate::todo::{
     age_level, validate_note_blocks, validate_text, AgeLevel, NoteBlock, NoteBlockKind, TodoError,
-    TodoItem, ARCHIVE_RETENTION_MS, MAX_NOTE_BLOCKS,
+    TodoItem, ARCHIVE_RETENTION_MS, MAX_NOTE_BLOCKS, MAX_NOTE_LEN,
 };
 
 /// 变更广播（PL018.6 问题一修复；FIX006.1 载荷 origin 方案）：清单数据任何变更后
@@ -432,8 +433,31 @@ pub fn note_insert_image_core(
     let stamp = crate::util::local_stamp();
     let storage = ctx.lock_storage()?;
     // 插入后块数 = 现有 + 2（原块复用为 before 文本块）——超限直接拒（不写盘不插块）
-    if storage.note_blocks(todo_id)?.len() + 2 > MAX_NOTE_BLOCKS {
+    let current = storage.note_blocks(todo_id)?;
+    if current.len() + 2 > MAX_NOTE_BLOCKS {
         return Err(CommandError::Todo(TodoError::TooManyBlocks.to_string()));
+    }
+    // FIX014.48：单图路径也必须走最终文本不变量（newline / 总长）；此前只有 HTML
+    // 路径有 preflight，IPC 误用可把含换行的 before/after 写进库并锁死后续保存。
+    if before.contains(['\n', '\r']) || after.contains(['\n', '\r']) {
+        return Err(CommandError::Todo(
+            TodoError::NewlineInTextBlock.to_string(),
+        ));
+    }
+    let current_chars = current
+        .iter()
+        .filter(|block| block.kind == NoteBlockKind::Text)
+        .map(|block| block.text.chars().count())
+        .sum::<usize>();
+    let target_chars = current
+        .iter()
+        .find(|block| block.id == block_id)
+        .map(|block| block.text.chars().count())
+        .unwrap_or(0);
+    let final_chars =
+        current_chars.saturating_sub(target_chars) + before.chars().count() + after.chars().count();
+    if final_chars > MAX_NOTE_LEN {
+        return Err(CommandError::Todo(TodoError::NoteTooLong.to_string()));
     }
     let blocks = storage.add_note_image_block(
         images_dir,
@@ -1340,6 +1364,40 @@ mod tests {
         let paths: Vec<String> = second.iter().filter_map(|b| b.image_path.clone()).collect();
         assert_eq!(paths.len(), 2, "两个图块");
         assert_eq!(paths[0], paths[1], "同内容复用同一文件");
+    }
+
+    #[test]
+    fn note_insert_image_rejects_newline_in_before_or_after() {
+        // FIX014.48：单图粘贴与 HTML 粘贴共用文本块不变量，不允许换行落库。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved = note_blocks_save_core(
+            item.id,
+            &[input(0, NoteBlockKind::Text, "原文")],
+            &dir,
+            &ctx,
+        )
+        .expect("保存必须成功");
+        let captured = crate::clipboard_image::CapturedImage {
+            bytes: fixture_png(),
+            file_name: None,
+        };
+        let err =
+            note_insert_image_core(item.id, saved[0].id, "前\n段", "后", &captured, &dir, &ctx)
+                .expect_err("before 含换行必须拒绝");
+        assert!(matches!(err, CommandError::Todo(_)));
+        let err =
+            note_insert_image_core(item.id, saved[0].id, "前", "后\r段", &captured, &dir, &ctx)
+                .expect_err("after 含换行必须拒绝");
+        assert!(matches!(err, CommandError::Todo(_)));
+        assert_eq!(
+            note_blocks_list_core(item.id, &dir, &ctx)
+                .expect("读块必须成功")
+                .len(),
+            1,
+            "拒绝后不得插入块"
+        );
     }
 
     #[test]
