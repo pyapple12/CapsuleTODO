@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { UI_TEXT_MAX_LEN } from "../../types";
+import { shouldIgnoreImeEnter } from "../composables/imeEnter";
 import { useAutoHideError } from "../composables/useAutoHideError";
 
 // 添加行（PL008.7 重构）：REC 按钮（average-swan-99 直引配方）+ plastic-parrot-88 输入框。
@@ -12,6 +13,12 @@ import { useAutoHideError } from "../composables/useAutoHideError";
 const emit = defineEmits<{ added: [] }>();
 const draft = ref("");
 const { message: error, show: showError, hide: clearError } = useAutoHideError(10_000);
+
+/** FIX014.30：中文输入法组字中的 Enter 只用于选词，不得提交待办。 */
+function onAddEnter(e: KeyboardEvent): void {
+  if (shouldIgnoreImeEnter(e)) return;
+  void add();
+}
 
 async function add(): Promise<void> {
   const text = draft.value.trim();
@@ -39,7 +46,7 @@ async function add(): Promise<void> {
         type="text"
         :maxlength="UI_TEXT_MAX_LEN"
         placeholder="添加一条待办…"
-        @keydown.enter="add"
+        @keydown.enter="onAddEnter"
       />
       <button class="btn-add" :disabled="draft.trim().length === 0" @click="add">
         <span class="btn-add-face"><span class="btn-add-text">REC</span></span>

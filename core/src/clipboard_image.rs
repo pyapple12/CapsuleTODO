@@ -534,36 +534,43 @@ mod win {
         }
         let png_fmt = png_format();
         let has_png = png_fmt != 0 && unsafe { IsClipboardFormatAvailable(png_fmt) } != 0;
-        // 短临界区：只拷原始字节/取文件路径，编码与读盘挪到 CloseClipboard 之后
-        let raw = if has_png {
-            copy_format(png_fmt)
-        } else {
+        // 短临界区：只拷原始字节/取文件路径，编码与读盘挪到 CloseClipboard 之后。
+        // FIX014.25：PNG 格式声明存在 ≠ PNG 取数成功；失败必须继续回退 DIB/HDROP。
+        let png = if has_png { copy_format(png_fmt) } else { None };
+        if has_png && png.is_none() {
+            crate::diag::warn_diag("剪贴板图片读取：PNG 取数失败，回退 CF_DIB/文件");
+        }
+        let dib = if png.is_none() {
             copy_format(CF_DIB)
-        };
-        // 三级兜底：PNG/CF_DIB 皆缺席时才探文件引用（截图与文件复制互斥，PL024.8b）
-        let drop_path = if has_png || raw.is_some() {
-            None
         } else {
+            None
+        };
+        // PNG 失败即预取文件引用；DIB 若也失败/非法，仍可落到最后一级（PL024.8b）。
+        let drop_path = if png.is_none() {
             read_drop_path()
+        } else {
+            None
         };
         unsafe { CloseClipboard() };
-        if has_png {
-            return raw.map(|bytes| super::CapturedImage {
+        if let Some(bytes) = png {
+            return Some(super::CapturedImage {
                 bytes,
                 file_name: None,
             });
         }
-        if let Some(dib) = raw {
-            return match super::encode_png_from_dib(&dib) {
-                Ok(png) => Some(super::CapturedImage {
-                    bytes: png,
-                    file_name: None,
-                }),
+        if let Some(dib) = dib {
+            match super::encode_png_from_dib(&dib) {
+                Ok(png) => {
+                    return Some(super::CapturedImage {
+                        bytes: png,
+                        file_name: None,
+                    });
+                }
                 Err(err) => {
                     crate::diag::warn_diag(&format!("剪贴板图片读取：CF_DIB 编码失败（{err}）"));
-                    None
+                    // DIB 失败后仍继续走文件引用，不能因中间格式失败吞掉最后一级。
                 }
-            };
+            }
         }
         drop_path.and_then(|path| read_image_file(&path))
     }

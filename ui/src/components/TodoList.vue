@@ -17,6 +17,7 @@ import {
   type DragCtx,
 } from "../composables/useDragReorder";
 import { expectedOrderMatches } from "../composables/dragHandoff";
+import { shouldIgnoreImeEnter } from "../composables/imeEnter";
 
 // ===== 清单页（PL010.4 换装实验场形态）：行模板 1:1（NeonCheckbox + t-text +
 // DelButton 二态 + age-alert 黄红提醒）+ TransitionGroup 出入场（0.3s 显式 duration——
@@ -239,6 +240,12 @@ function startEditFocusFlow(): void {
  * 1.5s 超时兜底防 refresh 失败卡编辑态 */
 const pendingExitId = ref<number | null>(null);
 let pendingExitTimer: number | undefined; // FIX013.3：兜底拍子句柄（换条编辑时须掐）
+
+/** FIX014.30：输入法组字中的 Enter 只选词，不提交行内标题。 */
+function onEditEnter(item: TodoItem, e: KeyboardEvent): void {
+  if (shouldIgnoreImeEnter(e)) return;
+  void commitEdit(item);
+}
 
 async function commitEdit(item: TodoItem): Promise<void> {
   const text = editDraft.value.trim();
@@ -504,7 +511,7 @@ onUnmounted(() => {
             v-model="editDraft"
             class="t-edit"
             :maxlength="UI_TEXT_MAX_LEN"
-            @keydown.enter="commitEdit(item)"
+            @keydown.enter="onEditEnter(item, $event)"
             @blur="commitEdit(item)"
             @keydown.esc="editingId = null"
           />

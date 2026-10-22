@@ -68,6 +68,11 @@ pub(crate) fn enforce(identifier: &str) -> Gate {
                 MUTEX_HANDLE.store(handle, std::sync::atomic::Ordering::SeqCst);
                 // 首实例：建"唤前"事件（自动复位），供第二实例发脉冲
                 let event = create_show_event(&show_event_name(identifier));
+                if event == 0 {
+                    // FIX014.22：唤前是增强入口；事件建不起来只损失双击唤前，
+                    // 落日志留痕，不阻断首实例启动。
+                    crate::diag::warn_diag("单实例唤前事件创建失败（双击 exe 唤前不可用）");
+                }
                 SHOW_EVENT.store(event, std::sync::atomic::Ordering::SeqCst);
                 Gate::First
             }

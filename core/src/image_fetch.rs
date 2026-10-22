@@ -78,6 +78,24 @@ fn worker_count(n: usize) -> usize {
     n.min(MAX_CONCURRENCY)
 }
 
+/// FIX014.21：CAS 预留整批总字节；失败时**不改变**计数器。
+/// 只有真正被接纳的图片才占预算，超限图片不会把后续小图一起拖下水。
+fn reserve_total(total: &AtomicUsize, len: usize) -> bool {
+    let mut current = total.load(Ordering::Relaxed);
+    loop {
+        let Some(next) = current.checked_add(len) else {
+            return false;
+        };
+        if next > MAX_TOTAL_BYTES {
+            return false;
+        }
+        match total.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 /// 读取最多 `limit` 字节；多读 1 字节用于判定超限（**不信任 Content-Length**）
 fn read_limited<R: Read>(reader: R, limit: usize) -> FetchResult {
     let mut buf = Vec::new();
@@ -174,11 +192,11 @@ pub fn fetch_all(urls: &[String]) -> Vec<FetchResult> {
                 };
                 let result = match result {
                     Ok(bytes) => {
-                        let prev = total_bytes.fetch_add(bytes.len(), Ordering::Relaxed);
-                        if prev + bytes.len() > MAX_TOTAL_BYTES {
-                            Err(FetchError::TotalLimit)
-                        } else {
+                        // 只有接纳成功才计数；CAS 失败/超限不留下虚增配额。
+                        if reserve_total(&total_bytes, bytes.len()) {
                             Ok(bytes)
+                        } else {
+                            Err(FetchError::TotalLimit)
                         }
                     }
                     Err(err) => Err(err),
@@ -233,6 +251,18 @@ mod tests {
         assert_eq!(worker_count(1), 1);
         assert_eq!(worker_count(4), 4);
         assert_eq!(worker_count(10), 4);
+    }
+
+    #[test]
+    fn total_reservation_does_not_consume_rejected_bytes() {
+        // FIX014.21：超限拒绝不得虚增计数器；随后的小图仍可入预算。
+        let total = AtomicUsize::new(MAX_TOTAL_BYTES - 5);
+        assert!(!reserve_total(&total, 10));
+        assert_eq!(total.load(Ordering::Relaxed), MAX_TOTAL_BYTES - 5);
+        assert!(reserve_total(&total, 5));
+        assert_eq!(total.load(Ordering::Relaxed), MAX_TOTAL_BYTES);
+        assert!(!reserve_total(&total, 1));
+        assert_eq!(total.load(Ordering::Relaxed), MAX_TOTAL_BYTES);
     }
 
     #[test]

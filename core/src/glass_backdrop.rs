@@ -83,6 +83,15 @@ extern "system" {
     fn DwmSetWindowAttribute(hwnd: isize, attr: u32, value: *const u32, size: u32) -> i32;
 }
 
+/// FIX014.24：应用主题三态 → DWM 深色声明。`0` 跟随系统，`1` 浅色，`2` 暗色。
+pub fn is_dark(theme: u8, system_dark: bool) -> bool {
+    match theme {
+        1 => false,
+        2 => true,
+        _ => system_dark,
+    }
+}
+
 // —— 私有纯 FFI 核（收裸句柄；供公开壳复用，亦保留裸句柄入口）——
 
 /// 切换系统背板：`on = true` 挂亚克力、`false` 回纯透明。
@@ -195,3 +204,18 @@ pub fn apply_round_corners<W: WinHandle>(window: &W) {
 /// 窗口系统圆角（非 Windows 空桩）
 #[cfg(not(target_os = "windows"))]
 pub fn apply_round_corners<W: WinHandle>(_window: &W) {}
+
+#[cfg(test)]
+mod tests {
+    use super::is_dark;
+
+    /// FIX014.24：应用主题三态解析——手动浅/暗覆盖系统，跟随态透传系统值。
+    #[test]
+    fn app_theme_resolves_dwm_dark_flag() {
+        assert!(!is_dark(1, true));
+        assert!(is_dark(2, false));
+        assert!(is_dark(0, true));
+        assert!(!is_dark(0, false));
+        assert!(!is_dark(99, false), "越界值回退跟随系统，不应强制暗色");
+    }
+}

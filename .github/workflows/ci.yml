@@ -37,6 +37,9 @@ jobs:
       - name: 前端类型检查与构建（vue-tsc + vite，产出 dist/）
         run: npm run build
 
+      - name: 前端测试
+        run: npm test
+
       - name: cargo fmt --check
         run: cargo fmt --check
         working-directory: core

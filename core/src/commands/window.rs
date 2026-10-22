@@ -6,6 +6,7 @@
 
 use tauri::{AppHandle, Manager};
 
+use super::AppContext;
 use crate::glass_backdrop;
 
 /// 板开合驱动的系统背板（PATCH002.60）：按需挂摘系统亚克力。
@@ -21,5 +22,19 @@ pub fn set_board_backdrop(app: AppHandle, open: bool) {
         crate::diag::warn_diag("主窗口缺失（系统背板未切换）");
         return;
     };
+    // FIX014.24：开板时按**应用主题设置**重新声明 DWM 深色档，而不是沿用主窗
+    // 创建时按系统主题写入的旧值；否则 App 手动暗色 + 系统浅色会亮底配暗卡。
+    if open {
+        let theme = app
+            .state::<AppContext>()
+            .lock_settings()
+            .map(|s| s.theme)
+            .unwrap_or(0);
+        let system_dark = window
+            .theme()
+            .map(|t| t == tauri::Theme::Dark)
+            .unwrap_or(true);
+        glass_backdrop::apply_frame_style(&window, glass_backdrop::is_dark(theme, system_dark));
+    }
     glass_backdrop::set_backdrop(&window, open);
 }

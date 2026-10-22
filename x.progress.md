@@ -886,16 +886,16 @@
 - [x] FIX014.18 [P3] `remove_note_block` 死代码 —— 做法：删除 `storage.rs::remove_note_block`；原测试改用 `set_note_blocks` 软删除 + `purge_deleted_note_blocks` 收口。**实施记录（2026-10-22 已落 + 248 Rust 测试绿；grep 零生产调用）**。验证：`note_image_released_only_at_zero_reference`；`cargo clippy/test`。
 - [x] FIX014.19 [P3] storage 模块头/列数漂移 —— 做法：更新模块头为四表与迁移链；`init()` 注释改为 todos/bubbles/note_blocks 实际列与索引；`note` 列退役说明保留。**实施记录（2026-10-22 已落；prettier 通过）**。验证：文档通读 + prettier。
 - [x] FIX014.20 [P3] HTML 解析边界/性能 —— 做法：`html_paste.rs` 的 `strip_tags` 引号感知、`split_blocks` 吃 `<br>`/`<br/>`/`<br />`、`parse` 前剥 script/style/注释、`find_ci/replace_ci` 字节扫描、`MAX_HTML_BYTES` 截断。**实施记录（2026-10-22 已落 + 248 Rust 测试绿）**。验证：`strip_tags_ignores_gt_inside_quoted_attributes`、`split_blocks_consumes_all_br_variants`、`parse_skips_script_style_and_comments`、`parse_truncates_oversized_html_at_utf8_boundary`；`cargo test`。
-- [ ] FIX014.21 [P3] image_fetch 总字节计数不回滚 —— 做法：`fetch_all` 先 CAS 预占、超限回退或仅成功计数。验证：超限后小图仍可入限；`cargo test`。
-- [ ] FIX014.22 [P3] 容错白名单登记缺口 —— 做法：`diag` 写失败、单实例建对象/唤前失败、启动占位清理失败逐条补 AGENTS 三要素或改严格；事件失败补留痕。验证：文档核对 + `cargo test`。
-- [ ] FIX014.23 [P3] 设置写失败内存/磁盘分叉 —— 做法：`commands/settings.rs` 四个 set_core 先 clone setting，`save` 成功后再写回 ctx；失败回滚。验证：只读文件/磁盘失败注入；`cargo test`/live。
-- [ ] FIX014.24 [P3] 主题切换 DWM 深色声明不跟随 —— 做法：`settings_set_theme`/prefs 链路重调 `glass_backdrop::apply_frame_style`；或 `set_board_backdrop` 按当前 theme 整定。验证：浅/暗切换后开板亚克力基调正确；live。
-- [ ] FIX014.25 [P3] 剪贴板 PNG 分支失败不回落 —— 做法：`clipboard_image.rs::read_clipboard_image` PNG copy 失败时继续 CF_DIB/HDROP；补失败路径日志。验证：模拟 PNG 取数失败仍读到 DIB/HDROP；`cargo test`/live。
-- [ ] FIX014.26 [P3] 临时 `debug_log` 仍在 release —— 做法：`commands/mod.rs:139-143` 删除或 `#[cfg(debug_assertions)]`；`DetailOverlay.vue` 41 处调用同步门控/删除；更新 AGENTS“诊断全清”。验证：`cargo test`/build；DEV 无未知命令。
-- [ ] FIX014.27 [P3] DEV mock 与真机命令漂移 —— 做法：`mock-invoke.ts` 补 `note_paste_html`/`note_copy_selection`/`note_fetch_pending_images`/`debug_log`/`set_board_backdrop`/热键 suspend-resume/tray 命令；`note_blocks_save` 镜像上限。验证：DEV 长笔记无“未知命令”；`npm test`。
-- [ ] FIX014.28 [P3] CI 未跑前端测试 —— 做法：`.github/workflows/ci.yml` 在 build 后加 `npm test`（可选 prettier check）；与 AGENTS 门禁一致。验证：CI 绿 + 本地 npm test。
-- [ ] FIX014.29 [P3] AGENTS/README/模块注释漂移 —— 做法：更新 AGENTS 当前状态/版本线/目录树（html_paste/image_fetch）、README 四表与模块、lib/bubble/todo 旧注释。验证：grep 旧表述零命中；prettier。
-- [ ] FIX014.30 [P3] AddBar/行内标题输入法 Enter —— 做法：`AddBar.vue:42`、`TodoList.vue:504` 的 Enter 加 `isComposing`/229 守卫。验证：中文输入法上屏不提前提交；`npm test`/live。
+- [x] FIX014.21 [P3] image_fetch 总字节计数不回滚 —— 做法：`fetch_all` 用 CAS `reserve_total` 只接纳成功字节，超限不虚增配额。**实施记录（2026-10-22 已落 + 251 Rust 测试绿）**。验证：`total_reservation_does_not_consume_rejected_bytes`；`cargo test`。
+- [x] FIX014.22 [P3] 容错白名单登记缺口 —— 做法：AGENTS 补诊断日志写失败、单实例对象/唤前失败、启动占位清理失败、通知类事件失败四条白名单；`single_instance` 唤前事件创建失败补日志；既有事件失败留痕核对。**实施记录（2026-10-22 已落 + 251 Rust 测试绿）**。验证：白名单核对 + `cargo test`。
+- [x] FIX014.23 [P3] 设置写失败内存/磁盘分叉 —— 做法：`commands/settings.rs` 各 `set_*_core` 克隆设置、`save` 成功后才回写 ctx；失败保持旧值。**实施记录（2026-10-22 已落 + 251 Rust 测试绿）**。验证：`save_failure_keeps_runtime_settings_unchanged`；`cargo test`。
+- [x] FIX014.24 [P3] 主题切换 DWM 深色声明不跟随 —— 做法：`glass_backdrop::is_dark` 统一三态解析；`settings_set_theme`、`set_board_backdrop` 与 `WindowEvent::ThemeChanged` 重调 `apply_frame_style`。**实施记录（2026-10-22 已落 + 251 Rust 测试绿；按用户定案不补 live）**。验证：`app_theme_resolves_dwm_dark_flag`；`cargo test`。
+- [x] FIX014.25 [P3] 剪贴板 PNG 分支失败不回落 —— 做法：`read_clipboard_image` 仅在 PNG 取数成功时返回；失败继续 CF_DIB，再失败继续 CF_HDROP，并补日志。**实施记录（2026-10-22 已落 + 251 Rust 测试绿；剪贴板 FFI 场景待 live 触发）**。验证：代码路径审查 + `cargo test`。
+- [x] FIX014.26 [P3] 临时 `debug_log` 仍在 release —— **去向：并入 FIX014.38（PATCH002 诊断打点与 release 隔离的完整方案）；本项勾选完成，不再单独实施**。
+- [x] FIX014.27 [P3] DEV mock 与真机命令漂移 —— 做法：`mock-invoke.ts` 补 `note_paste_html`/`note_copy_selection`/`note_fetch_pending_images`/`debug_log`/`set_board_backdrop`/热键 suspend-resume/tray 命令；`note_blocks_save` 镜像 100 块/10,000 字符。**实施记录（2026-10-22 已落 + 前端 70 测试绿）**。验证：`mock-command-parity.spec.ts` 命令覆盖；`npm test`。
+- [x] FIX014.28 [P3] CI 未跑前端测试 —— 做法：`.github/workflows/ci.yml` 在 build 后加 `npm test`。**实施记录（2026-10-22 已落；本地 npm test 70 绿，CI 待下次推送运行）**。验证：workflow YAML + 本地 `npm test`。
+- [x] FIX014.29 [P3] AGENTS/README/模块注释漂移 —— 做法：更新 AGENTS 当前状态/版本线/目录树（html_paste/image_fetch）、README 四表与模块、`lib.rs` 玻璃口径；`storage.rs` 由 014.19 已更新。**实施记录（2026-10-22 已落 + Prettier 通过）**。验证：grep 旧表述 + prettier。
+- [x] FIX014.30 [P3] AddBar/行内标题输入法 Enter —— 做法：`AddBar.vue`/`TodoList.vue` 的 Enter 改显式处理函数，`isComposing || keyCode===229` 早退。**实施记录（2026-10-22 已落 + 前端 70 测试绿；中文输入法场景待 live 触发）**。验证：`npm test`/`vue-tsc`。
 - [ ] FIX014.31 [P3] 归档/徽章旧响应覆盖 —— 做法：`App.vue::refreshArchive`/`refreshBadge` 接入 `refreshSeq` 同类 latestOnly。验证：连发删除/归档旧响应不复活行；`npm test`/live。
 - [ ] FIX014.32 [P3] 跨块拖选无 window blur 收尾 —— 做法：`DetailOverlay.vue` 注册 window blur/mouseleave → `selection.up()`/reset；卸载清理。验证：拖出窗口松手后板内首次点击即可落光标；live。
 - [ ] FIX014.33 [P3] 离场行仍可起拖 —— 做法：`useDragReorder.ts:347` 改判 `todo-leave-active`/`note-block-leaving` 或加 `data-leaving`。验证：删除/归档 320ms 内长按不起拖；`npm test`/live。

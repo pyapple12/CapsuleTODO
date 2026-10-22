@@ -246,8 +246,13 @@ const handlers: Record<string, CommandHandler> = {
       text: string;
     }>;
     // 不变量（镜像 Rust todo::validate_note_blocks）
+    if (input.length > 100) throw "详情块数超限（上限 100 块）";
     if (!input.some((b) => b.kind === "Text")) throw "详情块为空（至少保留一个文本块）";
     if (input.some((b) => b.kind === "Text" && /[\n\r]/.test(b.text))) throw "文本块不允许含换行";
+    const totalChars = input
+      .filter((b) => b.kind === "Text")
+      .reduce((sum, b) => sum + Array.from(b.text).length, 0);
+    if (totalChars > 10_000) throw "笔记超长（上限 10000 字符）";
     // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
     const old = state.noteBlocks.get(todoId) ?? [];
     const saved: MockNoteBlock[] = input.map((b) => {
@@ -288,6 +293,47 @@ const handlers: Record<string, CommandHandler> = {
     recomputeHasNote(todoId);
     return { status: "image", blocks: list };
   },
+  note_paste_html: (args) => {
+    // FIX014.27：DEV 最小镜像——只处理单图 + 前后文本；远端图不入 mock 下载链。
+    const todoId = Number(args.todoId);
+    const blockId = Number(args.blockId);
+    const html = String(args.html ?? "");
+    const list = state.noteBlocks.get(todoId) ?? [];
+    const idx = list.findIndex((b) => b.id === blockId);
+    if (idx < 0) throw `详情块不存在：${blockId}`;
+    if (!html.toLowerCase().includes("<img")) {
+      return { outcome: { status: "no_image" }, pending: [] };
+    }
+    const before = String(args.before ?? "");
+    const after = String(args.after ?? "");
+    list[idx].text = before;
+    list.splice(idx + 1, 0, {
+      id: ++state.noteBlockSeq,
+      kind: "Image",
+      text: "",
+      image_path: MOCK_NOTE_IMAGE,
+    });
+    if (after.trim()) {
+      list.splice(idx + 2, 0, {
+        id: ++state.noteBlockSeq,
+        kind: "Text",
+        text: after,
+        image_path: null,
+      });
+    }
+    state.noteBlocks.set(todoId, list);
+    recomputeHasNote(todoId);
+    return { outcome: { status: "image", blocks: list }, pending: [] };
+  },
+  note_copy_selection: () => null,
+  note_fetch_pending_images: () => null,
+  debug_log: () => null,
+  set_board_backdrop: () => null,
+  settings_suspend_bubble_hotkey: () => null,
+  settings_resume_bubble_hotkey: () => null,
+  tray_preview_resize: () => null,
+  tray_menu_action: () => null,
+  main_hide_to_tray: () => null,
   note_reorder: (args) => {
     const todoId = Number(args.todoId);
     const ids = (args.ids ?? []) as number[];
@@ -508,6 +554,11 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
 /** 是否应启用 mock：DEV 构建 且 非 Tauri 运行时（真 internals 缺席） */
 export function shouldMock(): boolean {
   return import.meta.env.DEV && !("__TAURI_INTERNALS__" in window);
+}
+
+/** 测试辅助：mock 是否覆盖某真机命令（FIX014.27 命令清单一致性）。 */
+export function hasMockCommand(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(handlers, name);
 }
 
 /** 事件回调注册计数（transformCallback 分配 id 用） */

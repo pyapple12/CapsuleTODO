@@ -54,8 +54,11 @@ pub fn settings_set_max_bubbles_core(
 ) -> Result<(), CommandError> {
     let clamped = clamp_max_bubbles(value);
     let mut settings = ctx.lock_settings()?;
-    settings.max_bubbles = clamped;
-    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    // FIX014.23：先在副本上改，save 成功后才回写 ctx，防内存/磁盘分叉。
+    let mut next = settings.clone();
+    next.max_bubbles = clamped;
+    crate::settings::save(path, &next).map_err(CommandError::from)?;
+    *settings = next;
     Ok(())
 }
 
@@ -148,8 +151,11 @@ pub fn settings_set_bubble_hotkey_core(
 ) -> Result<crate::hotkey::HotkeyCombo, CommandError> {
     let normalized = crate::hotkey::parse(combo)?;
     let mut settings = ctx.lock_settings()?;
-    settings.bubble_hotkey = crate::hotkey::to_display(&normalized);
-    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    // FIX014.23：副本保存成功后再回写；外层重注册失败仍走既有回滚。
+    let mut next = settings.clone();
+    next.bubble_hotkey = crate::hotkey::to_display(&normalized);
+    crate::settings::save(path, &next).map_err(CommandError::from)?;
+    *settings = next;
     Ok(normalized)
 }
 
@@ -193,8 +199,11 @@ pub fn settings_set_always_on_top_core(
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
     let mut settings = ctx.lock_settings()?;
-    settings.always_on_top = on;
-    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    // FIX014.23：保存失败不得留下“运行时已开、磁盘未开”的分叉。
+    let mut next = settings.clone();
+    next.always_on_top = on;
+    crate::settings::save(path, &next).map_err(CommandError::from)?;
+    *settings = next;
     Ok(())
 }
 
@@ -262,8 +271,11 @@ pub fn settings_set_snap_to_edge_core(
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
     let mut settings = ctx.lock_settings()?;
-    settings.snap_to_edge = on;
-    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    // FIX014.23：副本保存成功后才回写。
+    let mut next = settings.clone();
+    next.snap_to_edge = on;
+    crate::settings::save(path, &next).map_err(CommandError::from)?;
+    *settings = next;
     Ok(())
 }
 
@@ -283,6 +295,19 @@ pub fn settings_set_theme(
 ) -> Result<(), CommandError> {
     let path = settings_path_or_err()?;
     settings_set_theme_core(theme, &path, &ctx)?;
+    // FIX014.24：主题写入后立即按应用主题重声明 DWM 深色档；否则系统浅色 +
+    // 手动暗色会继续沿用启动时的浅色背板。
+    if let Some(window) = app.get_webview_window("main") {
+        let theme = ctx.lock_settings().map(|s| s.theme).unwrap_or(0);
+        let system_dark = window
+            .theme()
+            .map(|t| t == tauri::Theme::Dark)
+            .unwrap_or(true);
+        crate::glass_backdrop::apply_frame_style(
+            &window,
+            crate::glass_backdrop::is_dark(theme, system_dark),
+        );
+    }
     emit_prefs_changed(&app, &ctx);
     Ok(())
 }
@@ -296,8 +321,11 @@ pub fn settings_set_theme_core(
 ) -> Result<(), CommandError> {
     let clamped = clamp_theme(theme);
     let mut settings = ctx.lock_settings()?;
-    settings.theme = clamped;
-    crate::settings::save(path, &settings).map_err(CommandError::from)?;
+    // FIX014.23：副本保存成功后才回写。
+    let mut next = settings.clone();
+    next.theme = clamped;
+    crate::settings::save(path, &next).map_err(CommandError::from)?;
+    *settings = next;
     Ok(())
 }
 
@@ -315,6 +343,29 @@ mod tests {
             storage: Mutex::new(Storage::open_in_memory().expect("内存库必须可开")),
             settings: Mutex::new(crate::settings::WindowSettings::default()),
         }
+    }
+
+    #[test]
+    fn save_failure_keeps_runtime_settings_unchanged() {
+        // FIX014.23：磁盘写失败时 ctx 必须保持旧值。
+        let ctx = test_context();
+        let root =
+            std::env::temp_dir().join(format!("capsule-settings-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("临时目录必须可建");
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"file").expect("占位文件必须可写");
+        let bad_path = blocker.join("config.json");
+        let before = ctx.lock_settings().expect("锁").max_bubbles;
+        let err = settings_set_max_bubbles_core(8, &bad_path, &ctx)
+            .expect_err("父路径是文件时保存必须失败");
+        assert!(matches!(err, CommandError::Settings(_)));
+        assert_eq!(
+            ctx.lock_settings().expect("锁").max_bubbles,
+            before,
+            "保存失败后运行时设置不得改变"
+        );
+        let _ = std::fs::remove_file(&blocker);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -73,7 +73,9 @@ CapsuleTODO/
 │   │   ├── todo.rs            # 待办纯逻辑（DTO + 文本校验）
 │   │   ├── bubble.rs          # 气泡纯逻辑（DTO + 捕获校验 + 文本/图片类型）
 │   │   ├── whiteboard.rs      # 白板纯逻辑（内容长度校验）
-│   │   ├── storage.rs         # SQLite 仓储（三表，参数化 SQL；图片落盘命名/去重/清理）
+│   │   ├── storage.rs         # SQLite 仓储（四表，参数化 SQL；图片落盘命名/去重/清理）
+│   │   ├── html_paste.rs      # 剪贴板 HTML 解析（段落 / 图片 / 脚本样式剥离）
+│   │   ├── image_fetch.rs     # 远端图下载（限长 / 超时 / 总预算 / 并发）
 │   │   ├── settings.rs        # 设置持久化（位置 / 上限 / 热键 / 置顶 / 吸附 / 主题）
 │   │   ├── paths.rs           # 运行时数据双落址（configs/ + data/ + data/images/）
 │   │   ├── capture.rs         # 圈选捕获（剪贴板等待状态机 + 合成复制）

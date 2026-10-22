@@ -1,7 +1,7 @@
 //! 应用装配：桌面固定（置顶 + 全屏让位）、位置记忆与模块注册。
-//! 玻璃材质定案（2026-09-29 用户定案更新）：聚焦联动系统背板——聚焦挂 DWM
-//! SYSTEMBACKDROP 亚克力、失焦切 NONE 回纯透明（glass_backdrop.rs），前端 30%
-//! 分态纱保留（聚焦纱退 0%）；聚焦/失焦均发 window-focus 事件驱动前端纱态与交互。
+//! 玻璃材质（PATCH002.60 口径）：**板开 && 窗口聚焦时**挂 DWM SYSTEMBACKDROP
+//! 亚克力，收板/失焦摘回纯透明（glass_backdrop.rs）；前端 30% 分态纱保留，
+//! 聚焦/失焦发 window-focus 事件驱动纱态与交互。
 
 pub mod bubble;
 pub mod capture;
@@ -670,6 +670,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         break;
                     });
+                }
+            }
+            if let WindowEvent::ThemeChanged(theme) = event {
+                // FIX014.24：跟随系统（theme=0）时系统主题变化也重声明 DWM 深色档；
+                // 手动浅/暗档由设置命令负责，这里只在跟随态响应系统事件。
+                if window.label() == "main" {
+                    let app_theme = window
+                        .app_handle()
+                        .state::<AppContext>()
+                        .lock_settings()
+                        .map(|s| s.theme)
+                        .unwrap_or(0);
+                    if app_theme == 0 {
+                        glass_backdrop::apply_frame_style(
+                            window,
+                            glass_backdrop::is_dark(0, *theme == tauri::Theme::Dark),
+                        );
+                    }
                 }
             }
             if let WindowEvent::Focused(focused) = event {
