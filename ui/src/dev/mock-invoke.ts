@@ -263,6 +263,9 @@ const handlers: Record<string, CommandHandler> = {
     recomputeHasNote(todoId);
     return saved;
   },
+  note_blocks_purge_deleted: (): void => {
+    // DEV mock 无真实文件引用；软删除收口为 no-op
+  },
   note_paste_image: (args) => {
     const todoId = Number(args.todoId);
     const blockId = Number(args.blockId);

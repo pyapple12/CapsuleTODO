@@ -128,27 +128,73 @@ pub fn unescape(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// 从 `<img …>` 标签里取 `src` 值（双/单引号与无引号三态；取不到 → None）
+/// 属性名字符（按 HTML 属性名边界解析，避免 `srcset` / `data-src` 误命中）
+fn attr_name_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.')
+}
+
+/// 从 `<img …>` 标签里按属性名取 `src` 值（双/单引号与无引号三态；取不到 → None）。
+/// **FIX014.7**：不再用裸子串 `find("src")`——`srcset` 前置或 `alt="src"` 都会误命中；
+/// 这里顺序扫描属性名与值，只接受完整属性名 `src`。
 fn attr_src(tag: &str) -> Option<String> {
-    let lower = tag.to_ascii_lowercase();
-    let at = lower.find("src")?;
-    let rest = tag[at + 3..].trim_start();
-    let rest = rest.strip_prefix('=')?.trim_start();
-    let mut chars = rest.chars();
-    match chars.next()? {
-        '"' | '\'' => {
-            let quote = rest.chars().next()?;
-            let body = &rest[1..];
-            let end = body.find(quote)?;
-            Some(unescape(body[..end].trim()).replace(['\n', '\r'], ""))
+    let bytes = tag.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // 跳过标签名、空白与分隔符，定位属性名
+        while i < bytes.len()
+            && (bytes[i].is_ascii_whitespace() || matches!(bytes[i], b'<' | b'/' | b'>'))
+        {
+            i += 1;
         }
-        _ => {
-            let end = rest
-                .find(|c: char| c.is_whitespace() || c == '>')
-                .unwrap_or(rest.len());
-            Some(unescape(rest[..end].trim()).replace(['\n', '\r'], ""))
+        if i >= bytes.len() {
+            break;
+        }
+        let name_start = i;
+        while i < bytes.len() && attr_name_char(bytes[i]) {
+            i += 1;
+        }
+        if i == name_start {
+            i += 1; // 非属性名字符（如 `!`）——跳过，继续
+            continue;
+        }
+        let name = &tag[name_start..i];
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            continue; // 无值属性（如 `disabled`）——继续找下一个属性
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return None;
+        }
+        let value = if matches!(bytes[i], b'"' | b'\'') {
+            let quote = bytes[i];
+            i += 1;
+            let value_start = i;
+            while i < bytes.len() && bytes[i] != quote {
+                i += 1;
+            }
+            let value = &tag[value_start..i];
+            if i < bytes.len() {
+                i += 1; // 跳过闭合引号
+            }
+            value
+        } else {
+            let value_start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+                i += 1;
+            }
+            &tag[value_start..i]
+        };
+        if name.eq_ignore_ascii_case("src") {
+            return Some(unescape(value.trim()).replace(['\n', '\r'], ""));
         }
     }
+    None
 }
 
 /// 大小写无关查找
@@ -231,5 +277,30 @@ mod tests {
     #[test]
     fn strip_tags_handles_comments_and_attributes() {
         assert_eq!(strip_tags("x<!-- 注释 -->y<b class=\"z\">B</b>"), "xyB");
+    }
+
+    #[test]
+    fn attr_src_ignores_srcset_and_alt_values() {
+        // FIX014.7：属性名按边界解析，srcset 前置 / alt 值里的 src 不得误命中
+        assert_eq!(
+            parse("<img srcset=\"a.png 1x, b.png 2x\" src=\"real.png\">"),
+            vec![HtmlPart::Image("real.png".to_string())]
+        );
+        assert_eq!(
+            parse("<img alt=\"src\" src=\"real.png\">"),
+            vec![HtmlPart::Image("real.png".to_string())]
+        );
+        assert_eq!(
+            parse("<img data-src=\"placeholder.png\" SRC='real.png'>"),
+            vec![HtmlPart::Image("real.png".to_string())]
+        );
+        assert_eq!(
+            parse("<img\nsrc = real.png>"),
+            vec![HtmlPart::Image("real.png".to_string())]
+        );
+        assert_eq!(
+            parse("<img src=\"\">"),
+            vec![HtmlPart::Image(String::new())]
+        );
     }
 }

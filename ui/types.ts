@@ -4,6 +4,12 @@
  * 的一半兼容余量，联动关系锚 core/src/todo.rs 注释——改上限两端同步） */
 export const UI_TEXT_MAX_LEN = 12;
 
+/** 详情笔记长度上限（FIX014.6：与 Rust `todo::MAX_NOTE_LEN` 同值；改一处两端同步） */
+export const UI_NOTE_MAX_LEN = 10_000;
+
+/** 详情块数上限（FIX014.6：与 Rust `todo::MAX_NOTE_BLOCKS` 同值；改一处两端同步） */
+export const UI_NOTE_MAX_BLOCKS = 100;
+
 /** 龄期提醒档位（镜像 AgeLevel；裁决在 Rust，前端只读渲染） */
 export type AgeLevel = "None" | "Yellow" | "Red";
 

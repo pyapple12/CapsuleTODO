@@ -351,6 +351,28 @@ pub fn note_blocks_save_core(
         .collect())
 }
 
+/// FIX014.2：关板 finalize——硬删该条目软删除的图块并释放原图；无图行时零操作。
+#[tauri::command]
+pub fn note_blocks_purge_deleted(
+    todo_id: i64,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
+    let images_dir = crate::paths::images_dir()
+        .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+    note_blocks_purge_deleted_core(todo_id, &images_dir, &ctx)
+}
+
+/// note_blocks_purge_deleted 核心实现（关板/启动共用的存储层收口）。
+pub fn note_blocks_purge_deleted_core(
+    todo_id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let storage = ctx.lock_storage()?;
+    storage.purge_deleted_note_blocks(images_dir, Some(todo_id))?;
+    Ok(())
+}
+
 /// 粘贴插图（**唯一插图入口**）：命中剪贴板图片 → 落盘/复用 + 光标处切分插入 → 广播
 /// 粘贴剪贴板图片（PATCH002.71：读剪贴板 / 解码 / 落盘 / 预览全部移到阻塞线程，
 /// 不再冻结 UI 主线程）
@@ -702,6 +724,82 @@ pub async fn note_paste_html(
     Ok(result)
 }
 
+/// 构造 HTML 粘贴后的最终块集（FIX014.6）：只读查询，不落盘、不写库。
+/// `insert_note_parts` 会按 before/after/parts 重组块序列；这里按同一语义预览，
+/// 供 `validate_note_blocks` 在**写入前**拦截超限。
+fn preview_html_final_blocks(
+    storage: &crate::storage::Storage,
+    todo_id: i64,
+    block_id: i64,
+    before: &str,
+    after: &str,
+    parts: &[crate::storage::NotePastePart],
+) -> Result<Vec<NoteBlock>, CommandError> {
+    let current = storage.note_blocks(todo_id)?;
+    let index = current
+        .iter()
+        .position(|block| block.id == block_id)
+        .ok_or_else(|| CommandError::Storage(format!("目标块不存在：{block_id}")))?;
+    let follows = current.len().saturating_sub(index + 1);
+    let keep_before = !before.trim().is_empty();
+    let keep_after = !after.trim().is_empty();
+    let last_is_image = matches!(
+        parts.last(),
+        Some(crate::storage::NotePastePart::Image { .. })
+            | Some(crate::storage::NotePastePart::PendingImage { .. })
+    );
+
+    let mut final_blocks: Vec<NoteBlock> = current[..index].to_vec();
+    if keep_before {
+        final_blocks.push(NoteBlock {
+            id: 0,
+            kind: NoteBlockKind::Text,
+            text: before.to_string(),
+            image_file: None,
+        });
+    }
+    for part in parts {
+        final_blocks.push(match part {
+            crate::storage::NotePastePart::Text(text) => NoteBlock {
+                id: 0,
+                kind: NoteBlockKind::Text,
+                text: text.clone(),
+                image_file: None,
+            },
+            // 远端占位升级后是图块；按图块口径校验，避免把占位文案算进文本长度
+            crate::storage::NotePastePart::Image { .. }
+            | crate::storage::NotePastePart::PendingImage { .. } => NoteBlock {
+                id: 0,
+                kind: NoteBlockKind::Image,
+                text: String::new(),
+                image_file: None,
+            },
+        });
+    }
+    if keep_after {
+        final_blocks.push(NoteBlock {
+            id: 0,
+            kind: NoteBlockKind::Text,
+            text: after.to_string(),
+            image_file: None,
+        });
+    }
+    let mut needs_blank = !keep_after && follows == 0 && last_is_image;
+    if !final_blocks.iter().any(|b| b.kind == NoteBlockKind::Text) {
+        needs_blank = true;
+    }
+    if needs_blank {
+        final_blocks.push(NoteBlock {
+            id: 0,
+            kind: NoteBlockKind::Text,
+            text: String::new(),
+            image_file: None,
+        });
+    }
+    final_blocks.extend_from_slice(&current[index + 1..]);
+    Ok(final_blocks)
+}
+
 /// 粘贴核心（**不读剪贴板、不联网 → 可直测**）：HTML → 片段序列 → 多段插入。
 /// `data:` 图直解入库；http(s) 图先落 `🖼 下载中…` 占位 + 返回 pending 任务，
 /// 由前端随后调 `note_fetch_pending_images` 后台下载（PATCH002.76）；其他 scheme /
@@ -764,6 +862,11 @@ pub fn note_paste_html_core(
     if storage.note_blocks(todo_id)?.len() + parts.len() + 3 > MAX_NOTE_BLOCKS {
         return Err(CommandError::Todo(TodoError::TooManyBlocks.to_string()));
     }
+    // FIX014.6：在写文件/写库前按最终块集统一校验（总长 / 块数 / 换行）；
+    // 超限直接拒绝，前端静默中止，不留下任何半成品。
+    let final_blocks =
+        preview_html_final_blocks(&storage, todo_id, block_id, before, after, &parts)?;
+    validate_note_blocks(&final_blocks).map_err(|err| CommandError::Todo(err.to_string()))?;
     let (blocks, part_ids) =
         storage.insert_note_parts(images_dir, todo_id, block_id, before, after, &parts, &stamp)?;
     let pending = parts
@@ -1273,6 +1376,32 @@ mod tests {
             blocks.iter().any(|b| b.image_path.is_some()),
             "正常 PNG 仍要入块"
         );
+    }
+
+    #[test]
+    fn paste_html_rejects_overlong_note_before_write() {
+        // FIX014.6：总长超限必须在写库前拒绝；原块保持不动
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved = note_blocks_save_core(
+            item.id,
+            &[input(0, NoteBlockKind::Text, "原文")],
+            &dir,
+            &ctx,
+        )
+        .expect("保存必须成功");
+        let html = format!("<p>{}</p>", "字".repeat(crate::todo::MAX_NOTE_LEN + 1));
+        let err = note_paste_html_core(item.id, saved[0].id, "", "", &html, &dir, &ctx)
+            .expect_err("超过总长必须在写入前拒绝");
+        assert!(matches!(err, CommandError::Todo(_)));
+        let blocks = ctx
+            .lock_storage()
+            .expect("取库必须成功")
+            .note_blocks(item.id)
+            .expect("读块必须成功");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "原文", "拒绝后原内容不得被改动");
     }
 
     #[test]

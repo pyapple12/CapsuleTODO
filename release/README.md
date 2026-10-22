@@ -20,7 +20,7 @@
 - **勾选完成**：点条目左侧圆圈——播放勾选动画后收入归档；
 - **归档自动清理**：已完成条目在归档中保留 7 天，超时自动删除（不可恢复）；
 - **修改标题**：双击条目直接在行内编辑；
-- **查看详情 / 写笔记**：单击条目正文打开详情板；**有笔记的行左上角常显红点**；
+- **查看详情 / 写笔记**：单击条目正文打开详情板；**有笔记的行左上角常显红点**；单条笔记请控制在约 **10,000 字符 / 100 块**以内（超出属非正常使用，不保证保存）；粘贴内容会超过上限时会静默失败（Ctrl+V 无反应，原文保持不变）；
 - **删除**：条目右侧删除钮，点两次确认；
 - **调整顺序**：按住条目拖动。
 
@@ -140,7 +140,7 @@ A glassy desktop Todo board that stays in a corner of your desktop — jot and t
 - **Complete**: click the circle on the left — it animates into the archive;
 - **Auto-cleanup**: finished items stay in the archive for 7 days, then are deleted automatically;
 - **Rename**: double-click a row to edit inline;
-- **Details / notes**: click a row to open the detail panel; **rows with a note show a red dot**;
+- **Details / notes**: click a row to open the detail panel; **rows with a note show a red dot**; keep a note under about **10,000 characters / 100 blocks** (beyond that is outside normal use and is not guaranteed to save); a paste that would exceed the limit fails silently (Ctrl+V does nothing and the original content is kept);
 - **Delete**: the delete button on the right — click twice to confirm;
 - **Reorder**: drag a row.
 

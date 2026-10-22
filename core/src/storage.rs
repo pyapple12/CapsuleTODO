@@ -247,7 +247,8 @@ impl Storage {
                 text       TEXT NOT NULL DEFAULT '',
                 image_hash TEXT,
                 image_file TEXT,
-                source_url TEXT
+                source_url TEXT,
+                deleted_at INTEGER
             );",
         )?;
         self.migrate()?;
@@ -286,6 +287,7 @@ impl Storage {
         self.migrate_bubble_image_file()?;
         self.migrate_note_to_blocks()?;
         self.migrate_note_source_url()?;
+        self.migrate_note_soft_delete()?;
         self.drop_note_column()?;
         Ok(())
     }
@@ -412,7 +414,8 @@ impl Storage {
     /// PL027 数据迁移：`todos.note`（单列纯文本）→ `note_blocks` 文本块（**一段一行一块**）。
     /// 存量 note 按 `\n` 拆成多个文本块（`\r` 一并剥除），空 note 建一个空文本块
     /// （不变量：至少一个文本块）。幂等：该 todo 已有块则跳过；无 note 列（新库/已迁移）
-    /// 直接跳过。须在 `drop_note_column` 之前调用
+    /// 直接跳过。须在 `drop_note_column` 之前调用。
+    /// **FIX014.4**：整段迁移包事务——中途失败全部回滚，不留下部分迁移状态。
     pub fn migrate_note_to_blocks(&self) -> Result<(), StorageError> {
         if !self.column_set("todos")?.contains("note") {
             return Ok(());
@@ -422,44 +425,62 @@ impl Storage {
             .prepare("SELECT id, note FROM todos")?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
-        for (todo_id, note) in rows {
-            let existing: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1",
-                [todo_id],
-                |row| row.get(0),
-            )?;
-            if existing > 0 {
-                continue;
-            }
-            let lines: Vec<String> = note
-                .split('\n')
-                .map(|line| line.trim_end_matches('\r').to_string())
-                .collect();
-            // PATCH002 归一化：前导空行丢弃、连续空行合并（只留一个）；结果为空则补一个空块
-            let mut order = 0i64;
-            let mut prev_blank = true;
-            for line in &lines {
-                let blank = line.trim().is_empty();
-                if blank && prev_blank {
+        self.conn.execute_batch("BEGIN")?;
+        let result = (|| -> Result<(), StorageError> {
+            for (todo_id, note) in rows {
+                let existing: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1",
+                    [todo_id],
+                    |row| row.get(0),
+                )?;
+                if existing > 0 {
                     continue;
                 }
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', ?3)",
-                    rusqlite::params![todo_id, order, line],
-                )?;
-                prev_blank = blank;
-                order += 1;
+                let lines: Vec<String> = note
+                    .split('\n')
+                    .map(|line| line.trim_end_matches('\r').to_string())
+                    .collect();
+                // PATCH002 归一化：前导空行丢弃、连续空行合并（只留一个）；结果为空则补一个空块
+                let mut order = 0i64;
+                let mut prev_blank = true;
+                for line in &lines {
+                    let blank = line.trim().is_empty();
+                    if blank && prev_blank {
+                        continue;
+                    }
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, ?2, 'text', ?3)",
+                        rusqlite::params![todo_id, order, line],
+                    )?;
+                    prev_blank = blank;
+                    order += 1;
+                }
+                if order == 0 {
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, 0, 'text', '')",
+                        [todo_id],
+                    )?;
+                }
             }
-            if order == 0 {
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, 0, 'text', '')",
-                    [todo_id],
-                )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(err) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(err.into());
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("详情笔记迁移回滚失败：{rollback}"));
+                }
+                Err(err)
             }
         }
-        Ok(())
     }
 
     /// PATCH002.76：`note_blocks` 补 `source_url` 列（幂等）。远端图占位/成功后存原
@@ -468,6 +489,16 @@ impl Storage {
         if !self.column_set("note_blocks")?.contains("source_url") {
             self.conn
                 .execute("ALTER TABLE note_blocks ADD COLUMN source_url TEXT", [])?;
+        }
+        Ok(())
+    }
+
+    /// FIX014.2：`note_blocks` 补 `deleted_at` 列（幂等）——图块删除在关板前只软删除，
+    /// 保留行与图片文件供 Ctrl+Z；关板 finalize / 启动时再硬删（purge_deleted_note_blocks）。
+    fn migrate_note_soft_delete(&self) -> Result<(), StorageError> {
+        if !self.column_set("note_blocks")?.contains("deleted_at") {
+            self.conn
+                .execute("ALTER TABLE note_blocks ADD COLUMN deleted_at INTEGER", [])?;
         }
         Ok(())
     }
@@ -554,6 +585,7 @@ impl Storage {
     /// 仅内部字面量拼接（无外部注入面，沿 column_set 的 format! 先例）
     const TODO_COLUMNS: &str = "id, text, done, created_at, done_at,
          EXISTS(SELECT 1 FROM note_blocks nb WHERE nb.todo_id = todos.id
+                AND nb.deleted_at IS NULL
                 AND (nb.kind = 'image' OR TRIM(nb.text) <> ''))";
 
     /// 读取单条；不存在返回 NotFound
@@ -649,21 +681,23 @@ impl Storage {
         })
     }
 
-    /// 读该条目的详情块（sort_order 升序 = 展示序，id 兜底）
+    /// 读该条目的详情块（sort_order 升序 = 展示序，id 兜底）；软删除行不返回
     pub fn note_blocks(&self, todo_id: i64) -> Result<Vec<NoteBlock>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, text, image_file FROM note_blocks
-             WHERE todo_id = ?1 ORDER BY sort_order ASC, id ASC",
+             WHERE todo_id = ?1 AND deleted_at IS NULL
+             ORDER BY sort_order ASC, id ASC",
         )?;
         let rows = stmt.query_map([todo_id], Self::row_to_note_block)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 读单个块；不存在 NotFound（开原图取数源，PL027）
+    /// 读单个块；不存在/已软删除返回 NotFound（开原图取数源，PL027）
     pub fn get_note_block(&self, id: i64) -> Result<NoteBlock, StorageError> {
         self.conn
             .query_row(
-                "SELECT id, kind, text, image_file FROM note_blocks WHERE id = ?1",
+                "SELECT id, kind, text, image_file FROM note_blocks
+                 WHERE id = ?1 AND deleted_at IS NULL",
                 [id],
                 Self::row_to_note_block,
             )
@@ -673,7 +707,8 @@ impl Storage {
             })
     }
 
-    /// 该条目全部图块的图片相对路径（释放/迁移用）
+    /// 该条目全部图块的图片相对路径（释放/迁移用）。**包含软删除行**：关板前
+    /// 被删图块仍占引用，防 sweep 提前删文件；真正的释放由 purge_deleted_note_blocks 收口。
     fn note_image_paths(&self, todo_id: i64) -> Result<Vec<String>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT image_file FROM note_blocks WHERE todo_id = ?1 AND image_file IS NOT NULL",
@@ -700,6 +735,50 @@ impl Storage {
             ));
         }
         Ok(())
+    }
+
+    /// FIX014.2：关板/启动收口——硬删软删除的图块行并释放其图片。
+    /// `todo_id = None` 用于启动清扫历史残留；删除前收集路径，删除后按**剩余 active
+    /// 行引用数**释放文件（同图多块复用不会被误删）。行删除失败回滚，文件释放 best-effort。
+    pub fn purge_deleted_note_blocks(
+        &self,
+        images_dir: &Path,
+        todo_id: Option<i64>,
+    ) -> Result<usize, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT image_file FROM note_blocks
+             WHERE deleted_at IS NOT NULL
+               AND (?1 IS NULL OR todo_id = ?1)
+               AND image_file IS NOT NULL",
+        )?;
+        let paths: Vec<String> = stmt
+            .query_map([todo_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        self.conn.execute_batch("BEGIN")?;
+        let result = self.conn.execute(
+            "DELETE FROM note_blocks
+             WHERE deleted_at IS NOT NULL AND (?1 IS NULL OR todo_id = ?1)",
+            [todo_id],
+        );
+        let deleted = match result {
+            Ok(count) => {
+                self.conn.execute_batch("COMMIT")?;
+                count
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("软删除块清理回滚失败：{rollback}"));
+                }
+                return Err(StorageError::Sqlite(err));
+            }
+        };
+        for rel in paths {
+            if let Err(err) = self.release_note_image(images_dir, &rel) {
+                crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort）：{err}"));
+            }
+        }
+        Ok(deleted)
     }
 
     /// 孤儿清扫式引用释放（PL027；供删条目 / 归档回收后调用）：删除 `images/` 下所有
@@ -746,7 +825,8 @@ impl Storage {
         let exists: Option<i64> = self
             .conn
             .query_row(
-                "SELECT id FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                "SELECT id FROM note_blocks
+                 WHERE id = ?1 AND todo_id = ?2 AND deleted_at IS NULL",
                 rusqlite::params![block_id, todo_id],
                 |row| row.get(0),
             )
@@ -777,15 +857,26 @@ impl Storage {
     ) -> Result<Vec<NoteBlock>, StorageError> {
         let old_paths = self.note_image_paths(todo_id)?;
         let keep_ids: Vec<i64> = blocks.iter().map(|b| b.id).filter(|id| *id > 0).collect();
+        let deleted_at = (self.now)();
         self.conn.execute_batch("BEGIN")?;
         let result = (|| -> Result<(), StorageError> {
-            let existing: Vec<i64> = self
+            let existing: Vec<(i64, String)> = self
                 .conn
-                .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1")?
-                .query_map([todo_id], |row| row.get(0))?
+                .prepare("SELECT id, kind FROM note_blocks WHERE todo_id = ?1")?
+                .query_map([todo_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<Result<Vec<_>, _>>()?;
-            for id in existing {
-                if !keep_ids.contains(&id) {
+            for (id, kind) in existing {
+                if keep_ids.contains(&id) {
+                    continue;
+                }
+                if kind == "image" {
+                    // FIX014.2：图块删除先软删除，文件/行保留到关板 finalize；Ctrl+Z 可复活
+                    self.conn.execute(
+                        "UPDATE note_blocks SET deleted_at = COALESCE(deleted_at, ?2)
+                         WHERE id = ?1",
+                        rusqlite::params![id, deleted_at],
+                    )?;
+                } else {
                     self.conn
                         .execute("DELETE FROM note_blocks WHERE id = ?1", [id])?;
                 }
@@ -832,7 +923,8 @@ impl Storage {
                             }
                             let changed = self.conn.execute(
                                 "UPDATE note_blocks SET sort_order = ?2, kind = 'text', text = ?3,
-                                     image_hash = NULL, image_file = NULL, source_url = NULL
+                                     image_hash = NULL, image_file = NULL, source_url = NULL,
+                                     deleted_at = NULL
                                  WHERE id = ?1 AND todo_id = ?4",
                                 rusqlite::params![block.id, i as i64, text, todo_id],
                             )?;
@@ -858,7 +950,8 @@ impl Storage {
                     NoteBlockKind::Image => {
                         // 图块只可能来自粘贴命令（落盘 + hash 已就位）——此处只改序
                         let changed = self.conn.execute(
-                            "UPDATE note_blocks SET sort_order = ?2, kind = 'image'
+                            "UPDATE note_blocks SET sort_order = ?2, kind = 'image',
+                                 deleted_at = NULL
                              WHERE id = ?1 AND todo_id = ?3",
                             rusqlite::params![block.id, i as i64, todo_id],
                         )?;
@@ -926,14 +1019,16 @@ impl Storage {
             let order: Option<i64> = self
                 .conn
                 .query_row(
-                    "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                    "SELECT sort_order FROM note_blocks
+                     WHERE id = ?1 AND todo_id = ?2 AND deleted_at IS NULL",
                     rusqlite::params![block_id, todo_id],
                     |row| row.get(0),
                 )
                 .optional()?;
             let order = order.ok_or(StorageError::NotFound(block_id))?;
             let follows: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
+                "SELECT COUNT(*) FROM note_blocks
+                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
                 rusqlite::params![todo_id, order],
                 |row| row.get(0),
             )?;
@@ -946,7 +1041,7 @@ impl Storage {
             // 该块之后的块后移（腾出新增块的位置）
             self.conn.execute(
                 "UPDATE note_blocks SET sort_order = sort_order + ?3
-                 WHERE todo_id = ?1 AND sort_order > ?2",
+                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
                 rusqlite::params![todo_id, order, shift],
             )?;
             let mut next = order + 1;
@@ -954,7 +1049,8 @@ impl Storage {
                 // 原块保留为「上段」文本块，图块插在其后
                 self.conn.execute(
                     "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL, source_url = NULL
+                         image_hash = NULL, image_file = NULL, source_url = NULL,
+                         deleted_at = NULL
                      WHERE id = ?1",
                     rusqlite::params![block_id, before],
                 )?;
@@ -968,7 +1064,8 @@ impl Storage {
                 // 上段为空：原块直接变图块（顶替，不留前导空块）
                 self.conn.execute(
                     "UPDATE note_blocks SET kind = 'image', text = '',
-                         image_hash = ?2, image_file = ?3, source_url = NULL
+                         image_hash = ?2, image_file = ?3, source_url = NULL,
+                         deleted_at = NULL
                      WHERE id = ?1",
                     rusqlite::params![block_id, hash, rel],
                 )?;
@@ -990,13 +1087,15 @@ impl Storage {
             }
             // 保底：结果无文本块 → 补一个空文本块（"至少一个文本块"不变量）
             let texts: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND kind = 'text'",
+                "SELECT COUNT(*) FROM note_blocks
+                 WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL",
                 [todo_id],
                 |row| row.get(0),
             )?;
             if texts == 0 {
                 let last: i64 = self.conn.query_row(
-                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1",
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks
+                     WHERE todo_id = ?1 AND deleted_at IS NULL",
                     [todo_id],
                     |row| row.get(0),
                 )?;
@@ -1120,14 +1219,16 @@ impl Storage {
             let order: Option<i64> = self
                 .conn
                 .query_row(
-                    "SELECT sort_order FROM note_blocks WHERE id = ?1 AND todo_id = ?2",
+                    "SELECT sort_order FROM note_blocks
+                     WHERE id = ?1 AND todo_id = ?2 AND deleted_at IS NULL",
                     rusqlite::params![block_id, todo_id],
                     |row| row.get(0),
                 )
                 .optional()?;
             let order = order.ok_or(StorageError::NotFound(block_id))?;
             let follows: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND sort_order > ?2",
+                "SELECT COUNT(*) FROM note_blocks
+                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
                 rusqlite::params![todo_id, order],
                 |row| row.get(0),
             )?;
@@ -1149,7 +1250,7 @@ impl Storage {
                 + parts.len() as i64;
             self.conn.execute(
                 "UPDATE note_blocks SET sort_order = sort_order + ?3
-                 WHERE todo_id = ?1 AND sort_order > ?2",
+                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
                 rusqlite::params![todo_id, order, shift],
             )?;
             let mut next = order + 1;
@@ -1159,7 +1260,8 @@ impl Storage {
             if keep_before {
                 self.conn.execute(
                     "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL, source_url = NULL
+                         image_hash = NULL, image_file = NULL, source_url = NULL,
+                         deleted_at = NULL
                      WHERE id = ?1",
                     rusqlite::params![block_id, before],
                 )?;
@@ -1192,7 +1294,8 @@ impl Storage {
                         if reuse_original {
                             self.conn.execute(
                                 "UPDATE note_blocks SET kind = 'image', text = '',
-                                     image_hash = ?2, image_file = ?3, source_url = NULL
+                                     image_hash = ?2, image_file = ?3, source_url = NULL,
+                                     deleted_at = NULL
                                  WHERE id = ?1",
                                 rusqlite::params![block_id, hash, rel],
                             )?;
@@ -1244,7 +1347,8 @@ impl Storage {
                 )?;
             }
             let texts: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks WHERE todo_id = ?1 AND kind = 'text'",
+                "SELECT COUNT(*) FROM note_blocks
+                 WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL",
                 [todo_id],
                 |row| row.get(0),
             )?;
@@ -1252,7 +1356,8 @@ impl Storage {
             // 否则整条只有远程图时后台成功后会变成零文本块，下一次保存被校验拒绝
             if texts - pending_count <= 0 {
                 let last: i64 = self.conn.query_row(
-                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1",
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks
+                     WHERE todo_id = ?1 AND deleted_at IS NULL",
                     [todo_id],
                     |row| row.get(0),
                 )?;
@@ -1298,7 +1403,7 @@ impl Storage {
             .conn
             .query_row(
                 "SELECT text, source_url FROM note_blocks
-                 WHERE id = ?1 AND todo_id = ?2 AND kind = 'text'",
+                 WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND deleted_at IS NULL",
                 rusqlite::params![block_id, todo_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1319,8 +1424,9 @@ impl Storage {
             };
         let changed = match self.conn.execute(
             "UPDATE note_blocks SET kind = 'image', text = '',
-                 image_hash = ?3, image_file = ?4, source_url = ?5
-             WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?6 AND source_url = ?5",
+                 image_hash = ?3, image_file = ?4, source_url = ?5, deleted_at = NULL
+             WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?6
+               AND source_url = ?5 AND deleted_at IS NULL",
             rusqlite::params![
                 block_id,
                 todo_id,
@@ -1356,7 +1462,8 @@ impl Storage {
     ) -> Result<bool, StorageError> {
         let changed = self.conn.execute(
             "UPDATE note_blocks SET text = ?3, source_url = ?3
-             WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?4 AND source_url = ?3",
+             WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?4
+               AND source_url = ?3 AND deleted_at IS NULL",
             rusqlite::params![block_id, todo_id, url, PENDING_NOTE_IMAGE_TEXT],
         )?;
         Ok(changed > 0)
@@ -1367,7 +1474,8 @@ impl Storage {
     fn degrade_pending_note_images(&self) -> Result<usize, StorageError> {
         let changed = self.conn.execute(
             "UPDATE note_blocks SET text = source_url, source_url = NULL
-             WHERE kind = 'text' AND text = ?1 AND source_url IS NOT NULL",
+             WHERE kind = 'text' AND text = ?1 AND source_url IS NOT NULL
+               AND deleted_at IS NULL",
             [PENDING_NOTE_IMAGE_TEXT],
         )?;
         Ok(changed)
@@ -1402,14 +1510,15 @@ impl Storage {
     pub fn reorder_note_blocks(&self, todo_id: i64, ids: &[i64]) -> Result<(), StorageError> {
         let mut existing: Vec<i64> = self
             .conn
-            .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1")?
+            .prepare("SELECT id FROM note_blocks WHERE todo_id = ?1 AND deleted_at IS NULL")?
             .query_map([todo_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
         existing.sort_unstable();
         Self::validate_reorder_ids(ids, &existing, "详情块集")?;
         for (i, id) in ids.iter().enumerate() {
             self.conn.execute(
-                "UPDATE note_blocks SET sort_order = ?2 WHERE id = ?1",
+                "UPDATE note_blocks SET sort_order = ?2
+                 WHERE id = ?1 AND deleted_at IS NULL",
                 rusqlite::params![id, i as i64],
             )?;
         }
@@ -2146,6 +2255,52 @@ mod tests {
     }
 
     #[test]
+    fn migration_rolls_back_all_rows_when_insert_fails() {
+        // FIX014.4：第二行注入失败 → 整段迁移回滚；旧 note 列仍在，重试可完整迁移
+        let st = pl010_storage_with_notes();
+        st.conn
+            .execute_batch(
+                "CREATE TABLE note_blocks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    todo_id INTEGER NOT NULL,
+                    sort_order INTEGER NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'text',
+                    text TEXT NOT NULL DEFAULT ''
+                 );
+                 CREATE TRIGGER fail_second_note_block
+                 BEFORE INSERT ON note_blocks
+                 WHEN NEW.todo_id = 2
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected failure');
+                 END;",
+            )
+            .expect("造块表与故障触发器必须成功");
+        st.migrate_note_to_blocks()
+            .expect_err("第二行注入失败必须返回错误");
+        let count: i64 = st
+            .conn
+            .query_row("SELECT COUNT(*) FROM note_blocks", [], |row| row.get(0))
+            .expect("计数必须成功");
+        assert_eq!(count, 0, "失败后不得留下半迁移块");
+        assert!(
+            st.column_set("todos")
+                .expect("探列必须成功")
+                .contains("note"),
+            "迁移失败不得误删旧 note 列"
+        );
+        st.conn
+            .execute_batch("DROP TRIGGER fail_second_note_block;")
+            .expect("移除故障触发器必须成功");
+        st.migrate_note_to_blocks()
+            .expect("故障解除后必须可完整重试");
+        let count: i64 = st
+            .conn
+            .query_row("SELECT COUNT(*) FROM note_blocks", [], |row| row.get(0))
+            .expect("计数必须成功");
+        assert_eq!(count, 5, "四行笔记按行拆块：1 + 2 + 1 + 1");
+    }
+
+    #[test]
     fn new_row_gets_created_at_and_no_blocks() {
         // 注入固定时间源：add 落 created_at = now（PL027：新行无块、has_note 不亮）
         let fixed = 1_700_000_000_000i64;
@@ -2759,6 +2914,64 @@ mod tests {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn deleted_image_is_soft_kept_until_purge() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "文字",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let image_id = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("必须有图块")
+            .id;
+        assert_eq!(note_folder_count(&dir), 1);
+
+        // 删除图块：行软删除、文件保留，撤销可用旧 id 复活
+        st.set_note_blocks(&dir, item.id, &[nb_text(base[0].id, "文字")])
+            .expect("删图保存必须成功");
+        assert!(st
+            .note_blocks(item.id)
+            .expect("读块必须成功")
+            .iter()
+            .all(|b| b.kind == NoteBlockKind::Text));
+        assert_eq!(note_folder_count(&dir), 1, "关板前原图必须保留");
+
+        let restored = st
+            .set_note_blocks(
+                &dir,
+                item.id,
+                &[nb_text(base[0].id, "文字"), nb_image(image_id)],
+            )
+            .expect("撤销恢复图块必须成功");
+        assert_eq!(restored.len(), 2);
+        assert!(restored.iter().any(|b| b.kind == NoteBlockKind::Image));
+
+        // 再次删除并关板收口：硬删 + 文件释放
+        st.set_note_blocks(&dir, item.id, &[nb_text(base[0].id, "文字")])
+            .expect("再次删图必须成功");
+        assert_eq!(
+            st.purge_deleted_note_blocks(&dir, Some(item.id))
+                .expect("关板收口必须成功"),
+            1
+        );
+        assert_eq!(note_folder_count(&dir), 0, "关板后原图释放");
     }
 
     /// 图片块入参夹具（`set_note_blocks` 对 Image 只改 sort_order，故只需 id/kind）

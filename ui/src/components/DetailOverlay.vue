@@ -20,6 +20,7 @@ import {
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
+import { notePasteFitsLimits } from "../composables/notePasteLimits";
 import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection";
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
 import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
@@ -132,7 +133,9 @@ const {
 // 只接拖拽收场链；粘贴/撤销/切源/关板不入链（S3 全包写队列见 problems#24，未来做）
 const noteWrite = useNoteWriteChain();
 /** 在飞 note 保存（含已发出的防抖 / 失焦保存）；拖拽 commit 前统一等待 */
-const noteSavesInFlight = new Set<Promise<void>>();
+const noteSavesInFlight = new Set<Promise<boolean>>();
+/** 在飞删块收场（FIX014.2）：关板 finalize 必须先等删除动效/落库完成，再清理软删除 */
+const pendingBlockDeletes = new Set<Promise<void>>();
 /** 本次拖拽收场链（在飞保存 → reorder）；rerender 等它完成再重拉 */
 let dragCommit: Promise<unknown> | null = null;
 
@@ -277,10 +280,14 @@ function scheduleSave(): void {
  * 治"幻影块永不落库"，PATCH002.46）。
  * 守卫：该条目尚未锚定（`savedTodoId` 不符）时直接跳过——防"开板瞬间空列表被当成
  * 全量覆盖"把服务端块集清空（冒烟实证：开板即报"详情块为空"） */
-async function saveBlocksForCore(todoId: number, list: LocalBlock[], force = false): Promise<void> {
-  if (!force && savedTodoId !== todoId) return;
+async function saveBlocksForCore(
+  todoId: number,
+  list: LocalBlock[],
+  force = false,
+): Promise<boolean> {
+  if (!force && savedTodoId !== todoId) return true;
   const sig = signature(list);
-  if (!force && sig === savedSignature && savedTodoId === todoId) return;
+  if (!force && sig === savedSignature && savedTodoId === todoId) return true;
   // 临时诊断（抖动定位，测完即删）：构建载荷**之前**的本地末块 + **签名指纹**
   // （PATCH002.72：指纹用于比对"这次要保存的是不是刚才那一代"）
   const preLast = list[list.length - 1];
@@ -291,7 +298,7 @@ async function saveBlocksForCore(todoId: number, list: LocalBlock[], force = fal
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
     // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
-    if (blocks.value !== list) return;
+    if (blocks.value !== list) return true;
     // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
     saved.forEach((b, i) => {
       const local = list[i];
@@ -309,16 +316,18 @@ async function saveBlocksForCore(todoId: number, list: LocalBlock[], force = fal
       line: `save todo=${todoId} sent=${payload.length} got=${saved.length} lastGot=${savedLast ? `${savedLast.kind}#${savedLast.id}` : "none"} sig=${savedSignature.length}/${sigFingerprint(savedSignature)}`,
     }).catch((err) => console.error("诊断上报失败", err));
     emit("changed");
+    return true;
   } catch (err) {
     // 临时诊断（.72 排查）：保存失败原先只落 console ⇒ 日志里完全隐身 ✗（本次就靠它才能定位）
     console.error("详情保存失败", err);
     undoLog(`save:fail todo=${todoId} len=${payload.length} err=${String(err)}`);
+    return false;
   }
 }
 
 /** 登记在飞保存（PATCH002.84 / S2）：拖拽 commit 前统一等待，防旧序 save 晚于 reorder。
- * 只登记、不改语义；核心实现见 `saveBlocksForCore`。 */
-function saveBlocksFor(todoId: number, list: LocalBlock[], force = false): Promise<void> {
+ * 只登记、不改语义；核心实现见 `saveBlocksForCore`。返回是否成功（FIX014.9 失败回滚用） */
+function saveBlocksFor(todoId: number, list: LocalBlock[], force = false): Promise<boolean> {
   const task = saveBlocksForCore(todoId, list, force);
   noteSavesInFlight.add(task);
   void task.then(
@@ -329,10 +338,10 @@ function saveBlocksFor(todoId: number, list: LocalBlock[], force = false): Promi
 }
 
 /** 当前条目的立即落库（薄壳；`force` 见 `saveBlocksFor`） */
-async function saveBlocks(force = false): Promise<void> {
+async function saveBlocks(force = false): Promise<boolean> {
   const todo = props.todo;
-  if (todo == null) return;
-  await saveBlocksFor(todo.id, blocks.value, force);
+  if (todo == null) return false;
+  return saveBlocksFor(todo.id, blocks.value, force);
 }
 
 /** 载入该条目的块（开板/切条目/收场重拉） */
@@ -385,8 +394,9 @@ function focusBlock(key: string, caret: number): void {
 }
 
 /** 文本块输入：重算高度 + 排保存（v-model 已写入模型）；打字即退出选区 + 清结构性撤销栈 */
-function onBlockInput(e: Event): void {
+function onBlockInput(index: number, e: Event): void {
   autosize(e.target as HTMLTextAreaElement);
+  if (!(e as InputEvent).isComposing) repairTextBlockNewlines(index);
   if (selAnchor.value || selFocus.value) clearSel();
   // PATCH002.73：替换/组字的那一下输入**不清栈**（刚压的快照要活到撤销时 ✓）；
   // 其余输入照旧"打字即清结构性栈" ✓
@@ -462,6 +472,21 @@ function clearCollapse(el: HTMLElement | null): void {
 async function deleteBlock(index: number, caretTo: "prev" | "next" | null = null): Promise<void> {
   const block = blocks.value[index];
   if (!block) return;
+  const task = deleteBlockRun(index, block, caretTo);
+  pendingBlockDeletes.add(task);
+  try {
+    await task;
+  } finally {
+    pendingBlockDeletes.delete(task);
+  }
+}
+
+/** 删块本体（由 deleteBlock 跟踪；关板 finalize 需等待其动效与落库） */
+async function deleteBlockRun(
+  index: number,
+  block: LocalBlock,
+  caretTo: "prev" | "next" | null,
+): Promise<void> {
   pushUndo();
   const seq = undoSeq; // 收场前复核代际（见函数头"可回退"）
   if (selectedKey.value === block._key) selection.clearImage();
@@ -541,6 +566,48 @@ function mergeWithNext(index: number): void {
   focusBlock(cur._key, caret);
 }
 
+/** 文本块 Enter/换行统一拆块（FIX014.1）：普通 Enter 与 beforeinput 的 line-break
+ * 走同一入口，避免 Shift/Alt+Enter 绕过 keydown 插入 `\n` 破坏块不变量。 */
+function splitBlockFromEnter(index: number, el: HTMLTextAreaElement): void {
+  if (selRange.value) {
+    pushUndo();
+    const at = removeSelectedRange(false);
+    if (at) splitBlock(at.index, at.offset, false);
+    undoLog(`enter:sel afterSplit=${blocks.value.length}`);
+    return;
+  }
+  undoLog(`enter:plain index=${index} start=${el.selectionStart ?? 0}`);
+  splitBlock(index, el.selectionStart ?? 0);
+}
+
+/** beforeinput 兜底（FIX014.1）：输入法以外的 line-break/paragraph 输入一律拆块。 */
+function onBlockBeforeInput(index: number, e: InputEvent): void {
+  if (e.isComposing) return;
+  if (e.inputType !== "insertLineBreak" && e.inputType !== "insertParagraph") return;
+  e.preventDefault();
+  splitBlockFromEnter(index, e.target as HTMLTextAreaElement);
+}
+
+/** 输入后最后防线（FIX014.1）：异常路径仍写入换行时按行拆块，绝不静默拼成一行。 */
+function repairTextBlockNewlines(index: number): void {
+  const block = blocks.value[index];
+  if (!block || block.kind !== "Text" || !/[\r\n]/.test(block.text)) return;
+  const parts = block.text.split(/\r\n|\r|\n/);
+  block.text = parts.shift() ?? "";
+  if (parts.length === 0) return;
+  const created: LocalBlock[] = parts.map((text) => ({
+    id: 0,
+    kind: "Text",
+    text,
+    image_path: null,
+    _key: localKey(),
+  }));
+  blocks.value.splice(index + 1, 0, ...created);
+  scheduleSave();
+  const last = created[created.length - 1];
+  void nextTick(() => focusBlock(last._key, last.text.length));
+}
+
 /** 文本块键盘（PATCH002.22 语义定案：两键删的是"**分隔**"而非"删块"）：空块 →
  * Backspace/Delete 删本块自身（**首/末块保持**，不吃相邻图）；非空块**块首 Backspace** →
  * 上块文本合并 / 上块图删图；非空块**块尾 Delete**（本批新增）→ 下块文本合并上来 /
@@ -554,23 +621,11 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
   const collapsed = start === end; // 无选区：两键的"分隔"语义只在光标态成立
-  if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+  if (e.key === "Enter") {
+    // Ctrl/Meta+Enter 由板级保存关板接管；其余 Enter（含 Shift/Alt）不能插入换行
+    if (e.ctrlKey || e.metaKey) return;
     e.preventDefault();
-    // PATCH002.73：有自绘选区 ⇒ **先删选区，再在选区起点拆块**（首块留空、光标落第二行行首 ✓，
-    // 等价"空行上回车"）；全程**一次**撤销（快照取在删除前 ✓）
-    if (selRange.value) {
-      pushUndo();
-      const at = removeSelectedRange(false);
-      const afterDel = blocks.value.length;
-      if (at) splitBlock(at.index, at.offset, false);
-      // 临时诊断（.73 排查）：Enter 走的是哪条路 + 删/拆之后的块数
-      undoLog(
-        `enter:sel at=${at ? `${at.index}:${at.offset}` : "null"} afterDel=${afterDel} afterSplit=${blocks.value.length}`,
-      );
-      return;
-    }
-    undoLog(`enter:plain index=${index} start=${start}`);
-    splitBlock(index, start);
+    splitBlockFromEnter(index, el);
     return;
   }
   // ① 空块：删掉"本块这一行"本身（首块 Backspace / 末块 Delete 无处可并 → 保持原状）；
@@ -732,6 +787,16 @@ function clipboardHasImage(e: ClipboardEvent): boolean {
 /** 文本块粘贴：带图 → 拦截走 Rust 插图；多行文本 → 拦截按行拆块；单行文本 → 原生 */
 async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const el = e.target as HTMLTextAreaElement;
+  const plainClip = e.clipboardData?.getData("text/plain") ?? "";
+  const htmlClip = e.clipboardData?.getData("text/html") ?? "";
+  const hasImage = clipboardHasImage(e);
+  // FIX014.6：粘贴前估算“当前笔记 + 本次内容”；超过 100 块 / 10,000 字符时
+  // **静默失效**（preventDefault 后直接返回）——不删原文、不写库、不弹提示。
+  // 精确块集仍由 Rust 在写入前兜底校验。
+  if (!notePasteFitsLimits(blocks.value, selRange.value, plainClip, htmlClip, hasImage)) {
+    e.preventDefault();
+    return;
+  }
   // 临时诊断（.72 排查）：粘贴走了哪个分支 + 自绘选区是否还在（`selRange` 空 ⇒ 普通粘贴）
   {
     const r = selRange.value;
@@ -740,7 +805,7 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     undoLog(
       `paste:enter sel=${r ? `${r.from.index}:${r.from.offset}->${r.to.index}:${r.to.offset}` : "null"}` +
         ` anchor=${a ? `${a.index}:${a.offset}` : "null"} focus=${f ? `${f.index}:${f.offset}` : "null"}` +
-        ` native=${el.selectionStart}-${el.selectionEnd} lines=${(e.clipboardData?.getData("text/plain") ?? "").split("\n").length}`,
+        ` native=${el.selectionStart}-${el.selectionEnd} lines=${plainClip.split("\n").length}`,
     );
   }
   // PATCH002.70（A）：**自绘选区存在时，粘贴 = 整体替换选区**。
@@ -754,41 +819,51 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     // PATCH002.72：**一次粘贴 = 一次撤销**。唯一一次快照取在**粘贴前**（= Ctrl+A 选中的那整篇），
     // 删选区 + 后续插入一律不再入栈 ⇒ 第一次 Ctrl+Z 就回到"粘贴前"，不会先落到"空" ✗
     const todoId = props.todo?.id ?? null;
+    // FIX014.9：选区替换失败可回滚——删除前保存完整快照；插入失败（>4MB 图 /
+    // 非法图 / >100 块 HTML / 后端错误）恢复原文并强制落库，绝不停在“已删未插”。
+    const snapshot = blocks.value.map((b) => ({ ...b }));
     clearKeepUndo("paste"); // 粘贴开始：豁免一律失效 ✓
     pasteInFlight += 1; // C5：窗口内所有保存入口跳过（防"删完未插"的空中间态落库）
     let at: SelPoint | null = null;
+    let pasteOk = false;
     try {
       pushUndo();
       at = removeSelectedRange(false);
-      const html0 = e.clipboardData?.getData("text/html") ?? "";
-      const plain0 = e.clipboardData?.getData("text/plain") ?? "";
+      const html0 = htmlClip;
+      const plain0 = plainClip;
       if (!at) return;
       // PATCH002.72 C6：图 / HTML 分支让 Rust 按"库里的块集"重建列表 ⇒ 本地删除必须先落库，
       // 否则服务端返回"未删的旧块 + 插入"（实证 len=6 ⇒ 旧内容跑到粘贴内容之后 ✗）
-      if (html0.includes("<img") || clipboardHasImage(e)) await saveBlocks(true);
+      if (html0.includes("<img") || hasImage) {
+        if (!(await saveBlocks(true))) return;
+      }
       if (html0.includes("<img")) {
-        await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
-        return;
+        pasteOk = await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
+      } else if (hasImage) {
+        pasteOk = await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
+      } else if (plain0.length > 0) {
+        pasteTextLines(at.index, at.offset, at.offset, plain0, false);
+        pasteOk = true;
       }
-      if (clipboardHasImage(e)) {
-        await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
-        return;
-      }
-      if (plain0.length > 0) pasteTextLines(at.index, at.offset, at.offset, plain0, false);
     } finally {
       pasteInFlight -= 1;
       // 临时诊断（.72 排查）：替换分支收尾时的模型规模与去向
       undoLog(
         `paste:end inFlight=${pasteInFlight} len=${blocks.value.length} sameTodo=${props.todo?.id === todoId}`,
       );
-      // 窗口关闭后统一落**最终态**：板已切走/已关 ⇒ 按快照写回原条目（沿 `.47` 口径）；
-      // 仍在同一条目 ⇒ 交给防抖（`pasteTextLines` 在窗口内的 scheduleSave 被跳过了 ✗）
-      if (todoId != null) {
-        if (props.todo?.id === todoId) scheduleSave();
-        else void saveBlocksFor(todoId, blocks.value);
+      if (!pasteOk) {
+        // 失败恢复：本地回原文；数据库里可能已落“删除后的空态”，用强制保存写回原文。
+        // 已切源时只写回旧条目，不覆盖新条目当前显示。不加 UI 提示（014.9 定案：静默恢复）。
+        if (props.todo?.id === todoId) blocks.value = snapshot;
+        if (todoId != null) await saveBlocksFor(todoId, snapshot, true);
+      } else if (todoId != null && props.todo?.id === todoId) {
+        // 仍在同一条目 ⇒ 交给防抖（`pasteTextLines` 在窗口内的 scheduleSave 被跳过了 ✗）。
+        // 已切源/关板时**不再用当前 blocks 写旧条目**：图 / HTML 的最终态已由后端落库，
+        // 当前数组可能已属于新条目，强写会污染旧条目（FIX014.9 连带收口）。
+        scheduleSave();
       }
-      // PATCH002.78：替换分支收尾把光标放到**插入起点**（Ctrl+A ⇒ 第一行行首；三条插入分支统一）
-      if (at && props.todo?.id === todoId) focusInsertionStart(at);
+      // PATCH002.78：只在成功插入后把光标放到**插入起点**（失败恢复不动光标）
+      if (pasteOk && at && props.todo?.id === todoId) focusInsertionStart(at);
     }
     return;
   }
@@ -798,18 +873,18 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   const end = el.selectionEnd ?? 0;
   // PATCH002.25：剪贴板带 text/html 且含 <img> → 走多段粘贴（唯一能带**多图 + 段落结构**
   // 的载体；应用内复制经 PATCH002.24 内联 data: 图，此处免联网直取）
-  const html = e.clipboardData?.getData("text/html") ?? "";
+  const html = htmlClip;
   if (html.includes("<img")) {
     e.preventDefault();
-    await pasteHtmlAt(index, start, end, html, e.clipboardData?.getData("text/plain") ?? "");
+    await pasteHtmlAt(index, start, end, html, plainClip);
     return;
   }
-  if (clipboardHasImage(e)) {
+  if (hasImage) {
     e.preventDefault();
-    await pasteImageAt(index, start, end, e.clipboardData?.getData("text/plain") ?? "");
+    await pasteImageAt(index, start, end, plainClip);
     return;
   }
-  const text = e.clipboardData?.getData("text/plain") ?? "";
+  const text = plainClip;
   if (text.includes("\n") || text.includes("\r")) {
     e.preventDefault();
     pasteTextLines(index, start, end, text);
@@ -843,19 +918,19 @@ async function pasteImageAt(
   end: number,
   fallbackText: string,
   push = true,
-): Promise<void> {
+): Promise<boolean> {
   const todo = props.todo;
   const block = blocks.value[index];
-  if (todo == null || !block) return;
+  if (todo == null || !block) return false;
   const key = block._key; // await 期间数组可能被整体替换 → 之后一律按 _key 重解析
   if (!(await ensureBlocksReady())) {
     console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
-    return;
+    return false;
   }
   const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
   if (!target || target.id <= 0) {
     console.error("粘贴中止：目标块定位失败", { key });
-    return;
+    return false;
   }
   const before = target.text.slice(0, Math.min(start, target.text.length));
   const after = target.text.slice(Math.min(end, target.text.length));
@@ -866,7 +941,8 @@ async function pasteImageAt(
       before,
       after,
     });
-    if (props.todo?.id !== todo.id) return;
+    // 后端已成功；即使此刻已切源，本次粘贴也应视为成功（最终态由切源收尾写回旧条目）
+    if (props.todo?.id !== todo.id) return true;
     if (outcome.status === "image") {
       if (push) pushUndo(); // 结构性操作入栈（仅真插图入栈；文本回落由 pasteTextLines 按同一 push 决定）
       blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
@@ -880,8 +956,10 @@ async function pasteImageAt(
       const at = blocks.value.findIndex((b) => b._key === key);
       pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
     }
+    return true;
   } catch (err) {
     console.error("插入图片失败", err);
+    return false;
   }
 }
 
@@ -895,19 +973,19 @@ async function pasteHtmlAt(
   html: string,
   fallbackText: string,
   push = true,
-): Promise<void> {
+): Promise<boolean> {
   const todo = props.todo;
   const block = blocks.value[index];
-  if (todo == null || !block) return;
+  if (todo == null || !block) return false;
   const key = block._key;
   if (!(await ensureBlocksReady())) {
     console.error("粘贴中止：详情块未就绪（目标块尚未落库）");
-    return;
+    return false;
   }
   const target = blocks.value.find((b) => b._key === key) ?? blocks.value[index];
   if (!target || target.id <= 0) {
     console.error("粘贴中止：目标块定位失败", { key });
-    return;
+    return false;
   }
   const before = target.text.slice(0, Math.min(start, target.text.length));
   const after = target.text.slice(Math.min(end, target.text.length));
@@ -933,7 +1011,7 @@ async function pasteHtmlAt(
       // （PATCH002.72：`push` 透传——回落分支未入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);
       pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
-      return;
+      return true;
     }
     // PATCH002.76：占位块已入库；即使此刻已切源也启动后台，事件按 todoId 自判
     if (result.pending.length > 0) {
@@ -942,8 +1020,10 @@ async function pasteHtmlAt(
         jobs: result.pending,
       }).catch((err) => console.error("图片后台下载启动失败", err));
     }
+    return true;
   } catch (err) {
     console.error("粘贴图文失败", err);
+    return false;
   }
 }
 
@@ -1940,6 +2020,10 @@ function open(): void {
       ov.style.setProperty("--origin-y", `${Math.round(props.anchor.y - or.top)}px`);
     }
     syncKit();
+    // 开板滚动：syncKit 在 blocks 异步到达前挂载，空/短内容会被
+    // useBoardRead 初始判为 pinned=true；随后块长高时 RO 会贴底 ⇒ 开板落在最底下。
+    // 开板先显式取消贴底，块到达后保持顶部（不依赖 loadBlocks 与 open 的竞速）。
+    kit?.boardRead.setPinned(false);
     autosizeAll();
     autosizeBubble(); // PATCH002.27：气泡全文板只读 textarea 同步增高（不自己滚）
     // 滚动复位（A4 = design resetDetailScroll）：换内容必归零
@@ -1956,16 +2040,18 @@ function open(): void {
   });
 }
 
-/** 关板：flush 未决保存 + 摘 open 类 + 帘布复位 + 卸套件 */
+/** 关板：flush 未决保存 + 软删除收口 + 摘 open 类 + 帘布复位 + 卸套件 */
 function close(): void {
   if (!isOpen.value) return; // 幂等守卫：已关再调不重复 flush/emit（FIX003.10⑧）
+  const closeTodoId = props.todo?.id ?? savedTodoId;
+  const prev = closeTodoId != null ? { todoId: closeTodoId, list: blocks.value.slice() } : null;
   clearKeepUndo("close"); // 关板：豁免失效 ✓
   selection.clearAll(); // 选区随板关闭复位（PATCH002.16；文本+图块+原生残留）
-  void flushPending();
   isOpen.value = false;
   syncKit();
   syncVeils();
   emit("close");
+  if (prev) void finalizeTodoAfterClose(prev.todoId, prev.list);
 }
 
 // 数据源变化驱动开合与草稿装载（todo / bubble 双模式互斥）
@@ -1975,8 +2061,12 @@ watch(
     if (t) {
       // 切源快照：**清空前**捕获旧条目的 id 与块列表（PATCH002.47——切源 flush 必须写回旧 id，
       // 否则"打字后立刻切条目"这段编辑永久丢失）
-      const prev = { todoId: savedTodoId, list: blocks.value };
-      void flushPending(prev); // 切源先 flush 旧条目未决保存（快照写回旧 id，FIX003.4）
+      const prev = { todoId: savedTodoId, list: blocks.value.slice() };
+      // 切源：同步排队旧条目 flush（快照写回旧 id），完成后再收口软删除图块（FIX014.2）
+      const oldTodoId = prev.todoId;
+      if (oldTodoId != null) {
+        void flushPending(prev).then(() => finalizeTodoAfterFlush(oldTodoId));
+      }
       bubbleImgSrc.value = ""; // 图片残留清防串板
       imageError.value = "";
       titleDraft.value = t.text;
@@ -2129,6 +2219,26 @@ async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }
   await Promise.all(jobs);
 }
 
+/** FIX014.2：仅收口软删除（调用方已触发最终保存）——等删块/保存完成再硬删并释放原图。
+ * undo 栈在下次 loadBlocks 时清空，故关板后 Ctrl+Z 无效。 */
+async function finalizeTodoAfterFlush(todoId: number): Promise<void> {
+  try {
+    await Promise.all([...pendingBlockDeletes]);
+    if (pasteInFlight > 0 || editInFlight > 0) return;
+    await Promise.all([...noteSavesInFlight]);
+    await noteWrite.run(() => invoke("note_blocks_purge_deleted", { todoId }));
+  } catch (err) {
+    // 收口失败保留软删除行/原图，启动清扫兜底；不打断关板
+    console.error("关板软删除收口失败", err);
+  }
+}
+
+/** 关板收口：先 flush 快照，再清理软删除图块（必须同一次 close 调用内完成）。 */
+async function finalizeTodoAfterClose(todoId: number, list: LocalBlock[]): Promise<void> {
+  await flushPending({ todoId, list });
+  await finalizeTodoAfterFlush(todoId);
+}
+
 /** 视口尺寸变化后重算自动增高（PATCH002.27）：宽度一变文本就重排 → 不重算会把文字截掉
  * （textarea 已不自己滚，高度必须跟着内容走） */
 function onViewportResize(): void {
@@ -2255,7 +2365,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenNoteImageReady?.();
   unlistenNoteImageFailed?.();
-  void flushPending();
+  if (savedTodoId != null) void finalizeTodoAfterClose(savedTodoId, blocks.value.slice());
   kit?.boardRead.destroy(); // 卸载即卸套件（FIX013.5 显式清理）
   kit?.glassBar.destroy();
   kit = null;
@@ -2379,7 +2489,8 @@ onBeforeUnmount(() => {
                 rows="1"
                 @focus="onTextFocus(block._key)"
                 @mousedown="onTextMouseDown(i, $event)"
-                @input="onBlockInput"
+                @beforeinput="onBlockBeforeInput(i, $event)"
+                @input="onBlockInput(i, $event)"
                 @keydown="onBlockKeydown(i, $event)"
                 @paste="onBlockPaste(i, $event)"
               ></textarea>

@@ -861,3 +861,45 @@
 - [ ] PL028.4 [P1] 气泡详情接入块编辑器（含系统 Ctrl+V 图文粘贴）+ 列表行内预览口径落地 —— **验证**：IAB + live（图文混排粘贴正确 + 行内预览正确）
 - [ ] PL028.5 [P1] 白板接入块编辑器（`content` 迁块 + 长度上限块口径） —— **验证**：IAB + live（白板图文混排 + 持久化往返）
 - [ ] PL028.6 [P2] 收口：全量门禁 + 真实库副本迁移回归 + 文档连带 + 版本推进 —— **验证**：cargo fmt/clippy/test/doc + vue-tsc/build + prettier 全绿 + 迁移往返
+
+### FIX014: 第12轮审计修复 [audit#A014]
+
+> 报告见 z.plan.md 附录 A014；按 P1 → P2 → P3 顺序执行。P0 无；参考观察项全部不提升。
+
+- [x] FIX014.1 [P1] Shift/Alt/Meta+Enter 换行致保存死锁 —— 做法：`DetailOverlay.vue::onBlockKeydown` 的 Enter 分支改为“无 Ctrl/Meta 一律 preventDefault 并拆块”；新增 `@beforeinput` 处理 `insertLineBreak/insertParagraph`；`onBlockInput` 对残留换行按行拆块兜底；**不加通用保存失败提示**。**实施记录（2026-10-22 已落 + 门禁绿 + live 通过）**。验证：Shift/Alt+Enter 不产生 `\n`；live 输入后关板重开内容完整；`npm test`/`vue-tsc`/build。
+- [x] FIX014.2 [P1] 删图块撤销后 Image id NotFound 锁死保存 —— 做法：`note_blocks` 增 `deleted_at` 软删除列；`set_note_blocks` 对缺失图块只标记不硬删、不释放文件；撤销恢复旧 id 时清标记；`close`/切源/卸载经 `finalizeTodoAfterClose` 等最终保存后调 `note_blocks_purge_deleted` 硬删并释放；启动清扫残留；不转占位、不加通用失败提示。**实施记录（2026-10-22 已落 + 门禁绿 + live 通过）**。验证：storage TDD“删图→撤销→保存”成功、关板 purge、启动清扫；live 删图→Ctrl+Z→编辑→关板重开；`cargo test`/`npm test`。
+- [x] FIX014.3 [P1] 笔记 10,000 字符/100 块上限无前置提示且保存静默失败 —— **去向：2026-10-22 用户定案永久豁免（A014 §四 P40）；README 写入使用约束；不实施前端计数/UI 提示/测试，不移除审计历史**。验证：README 中英双语限制说明在位；A014 §二/§四 登记在位。
+- [x] FIX014.4 [P2] PL027 迁移无事务 —— 做法：`storage.rs::migrate_note_to_blocks` 整段包 `BEGIN/COMMIT`，任一错误 `ROLLBACK` 并向上返回；`drop_note_column` 保持仅迁移成功后执行；**不做 100 块/10,000 字符收敛**。**实施记录（2026-10-22 已落 + `cargo test` 绿 + 用户确认默认通过，无需 live）**。验证：`migration_rolls_back_all_rows_when_insert_fails`（注入第二行失败→零残留、旧 note 列保留、解除后完整重试）；`cargo test`。
+- [x] FIX014.5 [P2] 单实例唤前只生效一次 —— 做法：只改 `core/src/lib.rs` 的 setup 单实例守候线程为 `loop`，`wait_for_wake` 每次信号后继续等待；收到信号 show+focus，等待失败才退出；**`single_instance.rs` 不动**。**实施记录（2026-10-22 已落 + 门禁绿 + 用户确认默认通过，无需 live）**。验证：首启→隐藏托盘→双击 exe 唤前→再隐藏→再双击仍唤前。
+- [x] FIX014.6 [P2] HTML 粘贴绕过笔记总长/换行校验 —— 做法：`DetailOverlay.vue::onBlockPaste` 入口用 `notePasteLimits.ts` 估算“当前笔记 + 剪贴内容”；超 100 块 / 10,000 字符时 `preventDefault` 静默返回，不删原文、不写库、不弹提示；`commands/todo.rs::note_paste_html_core` 在 `insert_note_parts` 前按最终块集调 `validate_note_blocks` 兜底；README 写明静默失败。**实施记录（2026-10-22 已落 + 66 前端/233 Rust 测试绿 + 用户确认默认通过，无需 live）**。验证：`note-paste-limits.spec.ts`、`paste_html_rejects_overlong_note_before_write`；live 粘贴 >10k/超 100 块无反应且原文保留。
+- [x] FIX014.7 [P2] `attr_src` 命中 srcset/alt 导致丢图 —— 做法：`html_paste.rs::attr_src` 改属性名边界解析（完整属性名 `src`，跳过 `srcset`/`data-src`，支持空白、单双引号、无引号）。**实施记录（2026-10-22 已落 + `cargo test` 绿 + 用户确认默认通过，无需 live）**。验证：`attr_src_ignores_srcset_and_alt_values`；live 粘贴含 `srcset`/`alt="src"` 的网页复制。
+- [x] FIX014.8 [P2] 远端图自动下载可请求内网/回环 —— **去向：2026-10-22 用户定案条件豁免（A014 登记于 §四 T8）；功能目标即拉取图片，本机/内网地址能取到图即保留；不实施地址过滤、不降级 URL 文本、不移除审计历史**。重评触发：粘贴来源不可信或出现本机/内网误访问风险反馈时，再评估目标地址过滤 + 重定向逐跳校验。验证：条件豁免登记在位；现行为保留（允许本机/内网图片下载）。
+- [x] FIX014.9 [P2] 选区替换粘贴失败先删原文 —— 做法：`DetailOverlay.vue::onBlockPaste` 选区替换分支删除前保存完整快照；`pasteImageAt`/`pasteHtmlAt` 返回成功布尔；失败时恢复快照并 `saveBlocksFor(..., true)` 强制写回原文；**不做后端整体事务、不加 UI 提示**。**实施记录（2026-10-22 已落 + 门禁绿 + 用户确认默认通过，无需 live）**。验证：>4MB 图 / 非法图 / >100 块 HTML 失败后原文仍在、库仍是原文；`npm test`/live。
+- [x] FIX014.10 [P2] 勾选主拍内双击行导致清单单击失效 —— 做法：`TodoList.vue::onRowDblClick` 在清拍子后先判 `toggleTimers.has(item.id)` 早退；**不新增 watch/状态机**。**实施记录（2026-10-22 已落 + 门禁绿 + 用户确认默认通过，无需 live）**。验证：勾选后 300ms 内双击该行，等归档后点其他行/勾选框正常。
+- [ ] FIX014.11 [P3] 存储多语句写无事务 —— 做法：`storage.rs::remove`、`purge_expired_done`、`reorder_note_blocks` 套 `BEGIN/ROLLBACK/COMMIT`；补第二语句失败用例。验证：注入失败无半态；`cargo test`。
+- [ ] FIX014.12 [P3] `set_note_blocks` 不校验 todo/重复 id —— 做法：入口 `SELECT 1 FROM todos WHERE id`，无行返回 NotFound；重复 id 显式拒绝（沿 reorder 校验）。验证：TDD 归档后迟到保存/重复 id；`cargo test`。
+- [ ] FIX014.13 [P3] `note_blocks` 无索引 —— 做法：迁移建 `(todo_id,sort_order)` 与 `image_file` 索引；`sweep_orphan_note_images` 改一次 DISTINCT 查询。验证：EXPLAIN/迁移幂等 + cargo test。
+- [ ] FIX014.14 [P3] 同批同图重复落盘 —— 做法：`storage.rs::insert_note_parts` 维护批内 hash→rel 表，命中直接复用；补同图两次粘贴用例。验证：盘上仅一夹；`cargo test`。
+- [ ] FIX014.15 [P3] 图片气泡回滚留孤儿夹 —— 做法：`storage.rs::add_image_bubble` 失败分支补偿删除 `bubble_*` 夹，或写盘移出事务。验证：注入写盘/提交失败无残留；`cargo test`。
+- [ ] FIX014.16 [P3] 原名 preview.png 覆盖原图 —— 做法：`write_note_image_prepared` 预览固定另名/冲突时改原名；补同名用例。验证：原图与预览共存；`cargo test`。
+- [ ] FIX014.17 [P3] 图片相对路径可越界删除 —— 做法：`release_note_image`/`remove_image_folder` join 前校验分段非空、无 `..`/根；空串直接拒绝。验证：构造 `../`/空串用例；`cargo test`。
+- [ ] FIX014.18 [P3] `remove_note_block` 死代码 —— 做法：删方法或标 `#[cfg(test)]`/非生产路径注释；grep 零生产调用。验证：cargo clippy/test。
+- [ ] FIX014.19 [P3] storage 模块头/列数漂移 —— 做法：`storage.rs:1-6`、`:225-226` 补 note_blocks 四表与六列/迁移清单。验证：文档通读 + prettier。
+- [ ] FIX014.20 [P3] HTML 解析边界/性能 —— 做法：`html_paste.rs::strip_tags` 引号感知；`split_blocks` 吃 `<br/>` 尾斜杠；parse 前剥 `<script>/<style>`；`find_ci/replace_ci` 改字节扫描/提前限长。验证：补四类用例；`cargo test`。
+- [ ] FIX014.21 [P3] image_fetch 总字节计数不回滚 —— 做法：`fetch_all` 先 CAS 预占、超限回退或仅成功计数。验证：超限后小图仍可入限；`cargo test`。
+- [ ] FIX014.22 [P3] 容错白名单登记缺口 —— 做法：`diag` 写失败、单实例建对象/唤前失败、启动占位清理失败逐条补 AGENTS 三要素或改严格；事件失败补留痕。验证：文档核对 + `cargo test`。
+- [ ] FIX014.23 [P3] 设置写失败内存/磁盘分叉 —— 做法：`commands/settings.rs` 四个 set_core 先 clone setting，`save` 成功后再写回 ctx；失败回滚。验证：只读文件/磁盘失败注入；`cargo test`/live。
+- [ ] FIX014.24 [P3] 主题切换 DWM 深色声明不跟随 —— 做法：`settings_set_theme`/prefs 链路重调 `glass_backdrop::apply_frame_style`；或 `set_board_backdrop` 按当前 theme 整定。验证：浅/暗切换后开板亚克力基调正确；live。
+- [ ] FIX014.25 [P3] 剪贴板 PNG 分支失败不回落 —— 做法：`clipboard_image.rs::read_clipboard_image` PNG copy 失败时继续 CF_DIB/HDROP；补失败路径日志。验证：模拟 PNG 取数失败仍读到 DIB/HDROP；`cargo test`/live。
+- [ ] FIX014.26 [P3] 临时 `debug_log` 仍在 release —— 做法：`commands/mod.rs:139-143` 删除或 `#[cfg(debug_assertions)]`；`DetailOverlay.vue` 41 处调用同步门控/删除；更新 AGENTS“诊断全清”。验证：`cargo test`/build；DEV 无未知命令。
+- [ ] FIX014.27 [P3] DEV mock 与真机命令漂移 —— 做法：`mock-invoke.ts` 补 `note_paste_html`/`note_copy_selection`/`note_fetch_pending_images`/`debug_log`/`set_board_backdrop`/热键 suspend-resume/tray 命令；`note_blocks_save` 镜像上限。验证：DEV 长笔记无“未知命令”；`npm test`。
+- [ ] FIX014.28 [P3] CI 未跑前端测试 —— 做法：`.github/workflows/ci.yml` 在 build 后加 `npm test`（可选 prettier check）；与 AGENTS 门禁一致。验证：CI 绿 + 本地 npm test。
+- [ ] FIX014.29 [P3] AGENTS/README/模块注释漂移 —— 做法：更新 AGENTS 当前状态/版本线/目录树（html_paste/image_fetch）、README 四表与模块、lib/bubble/todo 旧注释。验证：grep 旧表述零命中；prettier。
+- [ ] FIX014.30 [P3] AddBar/行内标题输入法 Enter —— 做法：`AddBar.vue:42`、`TodoList.vue:504` 的 Enter 加 `isComposing`/229 守卫。验证：中文输入法上屏不提前提交；`npm test`/live。
+- [ ] FIX014.31 [P3] 归档/徽章旧响应覆盖 —— 做法：`App.vue::refreshArchive`/`refreshBadge` 接入 `refreshSeq` 同类 latestOnly。验证：连发删除/归档旧响应不复活行；`npm test`/live。
+- [ ] FIX014.32 [P3] 跨块拖选无 window blur 收尾 —— 做法：`DetailOverlay.vue` 注册 window blur/mouseleave → `selection.up()`/reset；卸载清理。验证：拖出窗口松手后板内首次点击即可落光标；live。
+- [ ] FIX014.33 [P3] 离场行仍可起拖 —— 做法：`useDragReorder.ts:347` 改判 `todo-leave-active`/`note-block-leaving` 或加 `data-leaving`。验证：删除/归档 320ms 内长按不起拖；`npm test`/live。
+- [ ] FIX014.34 [P3] 详情路径 IPC/重排放大 —— 做法：图片保存移到 `engageDrag`；`onListChanged` 合并节流；`syncMaskDead` 只由所在列表滑杆触发。验证：长笔记滚动/拖图帧率；live。
+- [ ] FIX014.35 [P3] 高风险组件零组件级测试 —— 做法：`ui/tests` 新增 DetailOverlay/TodoList 挂载用例（Shift+Enter、删图撤销、勾选拍子双击）；mock invoke。验证：`npm test` 新增用例绿。
+- [ ] FIX014.36 [P1] 第12轮审计修复收尾验证 —— 做法：全部 FIX014 条目完成后跑 `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` / `cargo doc --no-deps` / `npm test` / `npm run build` / prettier；逐条 live 复核 P1/P2 复现路径并更新 A014 状态。验证：门禁全绿 + A014 状态收口。
+- [x] FIX014.37 [P2] 详情板打开落在最底部（2026-10-22 live 追加；已修 + 门禁绿） —— **根因**：`DetailOverlay.open()` 的 `nextTick` 先 `syncKit()`，`loadBlocks()` 尚未返回，`useBoardRead` 初始化 `syncPinned()` 把空/短容器判为 `pinned=true`；块数据到达后 `ResizeObserver` 按贴底补偿 `scrollTop=scrollHeight`，覆盖随后 `open()` 的 `scrollTop=0`。**做法**：`open()` 在 `syncKit()` 后、`autosizeAll()` 前显式 `kit?.boardRead.setPinned(false)`，再执行 `scrollTop=0`；不改变 `.69` 贴底与 `.82/.89` 拖拽交接。**验证**：长笔记从顶部打开、切条目/关板重开均从顶部；`npm test` / `vue-tsc` / `npm run build` 通过；live 待用户复核。

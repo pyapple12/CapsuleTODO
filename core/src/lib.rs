@@ -246,6 +246,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     storage
         .drop_image_column()
         .map_err(|err| format!("image 列退役失败：{err}"))?;
+    // FIX014.2：启动收口上次异常退出残留的软删除图块（正常关板由 note_blocks_purge_deleted
+    // 清理）；失败 best-effort 只落日志，不阻断启动。
+    if let Err(err) = storage.purge_deleted_note_blocks(&images, None) {
+        crate::diag::warn_diag(&format!(
+            "启动软删除图块清理失败（best-effort 不阻断）：{err}"
+        ));
+    }
     // PATCH002.46 启动清扫：清掉无块引用的 `note_*` 图片夹（历史孤儿 + 崩溃残留）。
     // 失败 best-effort 只落日志——残留文件代价小于阻断启动（沿"详情图删除失败不阻断"先例）
     if let Err(err) = storage.sweep_orphan_note_images(&images) {
@@ -273,6 +280,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::todo::todo_reorder,
             commands::todo::note_blocks_list,
             commands::todo::note_blocks_save,
+            commands::todo::note_blocks_purge_deleted,
             commands::todo::note_paste_image,
             commands::todo::note_reorder,
             commands::todo::note_open_image,
@@ -346,22 +354,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 窗口图标整定（PATCH002.59）：把 exe 内嵌多帧图标按系统尺寸取帧、双槽同设
             // ——Tauri 默认只塞 ICON_SMALL 单帧，高 DPI 下任务栏只能放大它 ⇒ 糊
             window_icon::apply_app_icon(&window);
-            // 单实例唤前守候（PATCH002.64）：第二实例双击 ⇒ 命名事件置信号 ⇒ 本线程把
-            // 主窗唤到前台（等价旧插件回调）；事件未建 / 等待失败则线程直接结束（不误唤）
+            // 单实例唤前守候（PATCH002.64 / FIX014.5）：第二实例双击 ⇒ 命名事件置信号 ⇒
+            // 本线程把主窗唤到前台（等价旧插件回调）。**循环守候**——一次唤前后继续等待，
+            // 隐藏到托盘后再次双击 exe 仍能唤出；事件未建 / 等待失败才退出（不误唤）。
             {
                 let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    if crate::single_instance::wait_for_wake() {
-                        if let Some(main) = handle.get_webview_window("main") {
-                            if let Err(err) = main.show() {
-                                crate::diag::warn_diag(&format!("单实例唤起 show 失败：{err}"));
-                            }
-                            if let Err(err) = main.set_focus() {
-                                crate::diag::warn_diag(&format!("单实例唤起聚焦失败：{err}"));
-                            }
-                        } else {
-                            crate::diag::warn_diag("单实例唤起失败：主窗不存在（异常态）");
-                        }
+                std::thread::spawn(move || loop {
+                    if !crate::single_instance::wait_for_wake() {
+                        break;
+                    }
+                    let Some(main) = handle.get_webview_window("main") else {
+                        crate::diag::warn_diag("单实例唤起失败：主窗不存在（异常态）");
+                        break;
+                    };
+                    if let Err(err) = main.show() {
+                        crate::diag::warn_diag(&format!("单实例唤起 show 失败：{err}"));
+                    }
+                    if let Err(err) = main.set_focus() {
+                        crate::diag::warn_diag(&format!("单实例唤起聚焦失败：{err}"));
                     }
                 });
             }

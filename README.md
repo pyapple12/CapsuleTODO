@@ -25,6 +25,7 @@
 - ⚡ **顺手捕获** —— 任意软件中按全局热键（默认 `Ctrl+Alt+C`），选中文字或图片直接捕获（自动复制），内容落为气泡并自动去重
 - 🖼️ **图片气泡** —— 截图 / 图片文件也能收进气泡；单击看大图、双击用系统程序开原图，复制回保真
 - 📝 **待办清单** —— 单击勾选入档、双击行内改名、拖拽排序、详情板写笔记（有笔记的行左上角红点提示）
+- 📏 **笔记边界** —— 单条详情笔记不超过约 10,000 字符、100 块；超出属非正常使用，不保证保存；粘贴内容会超过上限时会静默失败（Ctrl+V 无反应，原文保持不变）
 - 💬 **气泡便签** —— 单击看全文、双击复制回剪贴板、拖拽排序、满额提醒（默认 5 条可调）
 - 🧽 **白板** —— 随写随存的草稿板
 - 📌 **托盘常驻** —— 悬停托盘图标实时预览待办；双击标题缩回托盘
@@ -135,6 +136,7 @@ A glassmorphic desktop TODO board that lives in the corner of your screen — re
 - ⚡ **Frictionless capture** — press the global hotkey (default `Ctrl+Alt+C`) anywhere, even with text selected (auto-copy & capture); snippets land as bubbles, deduplicated automatically
 - 🖼️ **Image bubbles** — screenshots and image files land as bubbles too; click to view large, double-click to open the original, copy back faithfully
 - 📝 **Todo board** — one-click archive, inline rename (double-click), drag to reorder, per-item notes & detail panel (rows with a note show a red dot)
+- 📏 **Note limits** — keep a note under about 10,000 characters and 100 blocks; exceeding this is outside normal use and is not guaranteed to save; a paste that would exceed the limit fails silently (Ctrl+V does nothing and the original content is kept)
 - 💬 **Bubble tray** — full-text view, copy-back on double-click, drag to reorder, configurable capacity reminder (default 5)
 - 🧽 **Whiteboard** — a scratch pad that saves itself
 - 📌 **Tray-native** — hover the tray icon for a live todo preview; double-click the title to tuck the board back into the tray

@@ -181,6 +181,9 @@ function onRowDblClick(item: TodoItem): void {
   // FIX010.1：掐已武装拍子前置——条目已删早退发生在 clearTimeout 之后会留下
   // 未掐的开板拍子（同窗口同后果）
   clearTimeout(clickTimer);
+  // FIX014.10：勾选 300ms 主拍内双击该行不得进入编辑——否则行归档后 editingId
+  // 悬挂，后续单击被编辑态分支整片吞掉。只加这一道早退，不扩大状态机。
+  if (toggleTimers.has(item.id)) return;
   // FIX009.4：离场塌缩窗口双击防幽灵编辑——已删条目不进行内编辑态
   if (!props.items.some((it) => it.id === item.id)) return;
   // 已在编辑本条（含 pendingExit 态）= 双击选词/双击行内的原生行为，不重启
