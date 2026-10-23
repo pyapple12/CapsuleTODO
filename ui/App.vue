@@ -104,6 +104,27 @@ function onTabChange(key: string): void {
 
 const detailTodo = ref<TodoItem | null>(null);
 const detailBubble = ref<BubbleItem | null>(null);
+/** FIX015.9：清单行归档离场动画结束后的详情关板兜底（正常由 TodoList row-leave 触发）。 */
+const DETAIL_ARCHIVE_CLOSE_FALLBACK_MS = 600;
+let detailArchiveCloseTimer: number | undefined;
+
+/** 清掉待关闭详情板的兜底拍子。 */
+function clearDetailArchiveClose(): void {
+  if (detailArchiveCloseTimer !== undefined) {
+    window.clearTimeout(detailArchiveCloseTimer);
+    detailArchiveCloseTimer = undefined;
+  }
+}
+
+/** 详情条目已归档/消失：开始等行离场；正常路径由 row-leave 收口，超时才兜底关板。 */
+function scheduleDetailArchiveClose(id: number): void {
+  if (detailTodo.value?.id !== id) return;
+  if (detailArchiveCloseTimer !== undefined) return;
+  detailArchiveCloseTimer = window.setTimeout(() => {
+    detailArchiveCloseTimer = undefined;
+    if (detailTodo.value?.id === id) closeDetail();
+  }, DETAIL_ARCHIVE_CLOSE_FALLBACK_MS);
+}
 // 气泡全文板数据源（PL012.3）：与 detailTodo 互斥（一开一关）
 // 飞出原点（A3）：被点行中心视口坐标，DetailOverlay 开板时换算板内 origin
 const detailAnchor = ref<{ x: number; y: number } | null>(null);
@@ -113,6 +134,7 @@ const archiveRef = ref<InstanceType<typeof ArchiveOverlay> | null>(null);
 const settingsRef = ref<InstanceType<typeof SettingsOverlay> | null>(null);
 
 function closeDetail(): void {
+  clearDetailArchiveClose();
   detailTodo.value = null;
   detailBubble.value = null;
 }
@@ -133,6 +155,7 @@ async function onTitleDblClick(): Promise<void> {
 function onOpenDetail(item: TodoItem, anchor: { x: number; y: number }): void {
   const live = items.value.find((it) => it.id === item.id);
   if (!live) return;
+  clearDetailArchiveClose();
   archiveRef.value?.close();
   settingsRef.value?.close();
   detailAnchor.value = anchor;
@@ -149,9 +172,18 @@ function onOpenBubble(item: BubbleItem, anchor: { x: number; y: number }): void 
   detailBubble.value = item;
 }
 
-/** 勾选入档联动（A7 = design 勾选分支同款）：详情板正开着这条则随行收起 */
+/** 勾选入档联动（A7 = design 勾选分支同款）：详情板正开着这条则随行收起。
+ * FIX015.9：不再在 300ms 主拍时立刻关板，等 TodoList 行离场动画结束后由
+ * `onDetailRowLeave` 收口；若离场事件缺失，600ms 兜底。 */
 function onArchived(item: TodoItem): void {
-  if (detailTodo.value?.id === item.id) closeDetail();
+  if (detailTodo.value?.id === item.id) scheduleDetailArchiveClose(item.id);
+}
+
+/** 清单行离场动画结束：若正是详情当前条目，且该条已归档/消失，则关板。 */
+function onDetailRowLeave(id: number): void {
+  if (detailTodo.value?.id !== id) return;
+  const live = items.value.find((it) => it.id === id);
+  if (!live || live.done) closeDetail();
 }
 
 // —— 归档板（PL011）：数据源 + 变更重拉 —— 非清单页隐藏归档按钮（V0.015 定案：
@@ -271,6 +303,23 @@ async function refresh(): Promise<void> {
     console.error("todo_list 拉取失败", err);
   }
 }
+
+/** FIX015.9：托盘预览勾选走 todo-changed → 清单刷新，没有 TodoList 的 archived 事件；
+ * 这里按条目是否仍在活动集兜底，等行离场动画后关详情板；活动条目恢复则取消。 */
+watch(
+  items,
+  (list) => {
+    const current = detailTodo.value;
+    if (!current) return;
+    const live = list.find((it) => it.id === current.id);
+    if (!live || live.done) {
+      scheduleDetailArchiveClose(current.id);
+    } else {
+      clearDetailArchiveClose();
+    }
+  },
+  { deep: false },
+);
 
 // 切页编排（design tabs.js 同款）：回清单页重拉兜底 + 归档按钮出入场动画
 // （离清单页塌缩+粒子迸裂、回清单页粒子汇聚+回弹弹出——仅此处编排，与板开合解耦）；
@@ -454,6 +503,7 @@ onUnmounted(() => {
   window.clearTimeout(backdropOnTimer);
   window.clearTimeout(backdropOffTimer);
   window.clearTimeout(listRefreshTimer);
+  clearDetailArchiveClose();
   titleFXDestroy?.(); // FIX013.5：粒子/拖拽套件显式清理
   dragDestroy?.();
 });
@@ -479,6 +529,7 @@ onUnmounted(() => {
         @changed="onListChanged"
         @open-detail="onOpenDetail"
         @archived="onArchived"
+        @row-leave="onDetailRowLeave"
       />
     </div>
     <div v-if="activeTab === 'bubbles'" class="page" id="page-bubbles">

@@ -155,7 +155,10 @@ export function useBoardRead(
   let pinOverrideTimer: number | undefined;
   const syncPinned = (): void => {
     if (pinOverride) return; // 调用方已显式声明 ⇒ 本批变更加完前不接受滚动事件改写
-    const next = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    // FIX015.7：短/空内容天然满足“贴底”，不能把不可滚动容器初始化成 pinned=true；
+    // 否则第一次增长到可滚动时 RO 会把用户直接甩到底部。
+    const scrollable = el.scrollHeight > el.clientHeight + 1;
+    const next = scrollable && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
     if (next !== pinned) {
       if (__DIAG__) {
         opts.diag?.(
@@ -196,8 +199,9 @@ export function useBoardRead(
   const ro = new ResizeObserver(() => {
     const sh = el.scrollHeight;
     if (!el.clientHeight || !sh) return;
+    const scrollable = sh > el.clientHeight + 1;
     // 只在**真的要补**时打点（否则每次尺寸变化都记一条，日志噪声大）
-    if (pinned && el.scrollTop + el.clientHeight < sh - 1) {
+    if (pinned && scrollable && el.scrollTop + el.clientHeight < sh - 1) {
       if (__DIAG__) {
         opts.diag?.(`ro:fix st=${el.scrollTop.toFixed(1)} sh=${sh} ch=${el.clientHeight}`);
       }

@@ -579,8 +579,8 @@ function mergeWithNext(index: number): void {
 function splitBlockFromEnter(index: number, el: HTMLTextAreaElement): void {
   if (selRange.value) {
     pushUndo();
-    const at = removeSelectedRange(false);
-    if (at) splitBlock(at.index, at.offset, false);
+    const removed = removeSelectedRange(false);
+    if (removed) splitBlock(removed.at.index, removed.at.offset, false);
     if (DIAG) undoLog(`enter:sel afterSplit=${blocks.value.length}`);
     return;
   }
@@ -622,7 +622,7 @@ function repairTextBlockNewlines(index: number): void {
  * 下块图删掉；块中两键不拦截（原生删字符）；Ctrl+Enter 由**板级** window 监听处理；
  * 全程 IME 守卫 */
 function onBlockKeydown(index: number, e: KeyboardEvent): void {
-  if (e.isComposing) return;
+  if (e.isComposing || e.defaultPrevented) return;
   const el = e.target as HTMLTextAreaElement;
   const block = blocks.value[index];
   if (!block) return;
@@ -695,6 +695,14 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
   }
 }
 
+/** FIX015.3：板级快捷键只接管“块区/图片块/板面”，标题等输入面交原生。
+ * 块内 textarea 是板级 Ctrl+A 的合法目标；标题 input 不是。 */
+function isBoardShortcutTarget(active: HTMLElement | null): boolean {
+  if (!active) return true;
+  if (active.closest(".note-block-text")) return true;
+  return !active.closest("input, textarea, [contenteditable='true']");
+}
+
 /** 板级键位（PATCH002）：详情板**开着就响应**（焦点在标题框、或不在任何内容上也算）；
  * 板外一律不响应；输入法组合态守卫。Ctrl+Enter 保存关板；Ctrl+A 全选所有块；
  * Ctrl+Z 结构性撤销（栈空放行原生）；跨块选区在场时 Ctrl+C 复制 / Delete·Backspace 删除 */
@@ -707,6 +715,8 @@ function onWindowKeydown(e: KeyboardEvent): void {
     return;
   }
   if (isBubbleMode.value) return; // 气泡全文板只读：键位一律交原生
+  const active = document.activeElement as HTMLElement | null;
+  if (!isBoardShortcutTarget(active)) return; // 标题/其他输入面：交原生（FIX015.3）
   if (mod && !e.altKey && !e.shiftKey && (e.key === "a" || e.key === "A")) {
     e.preventDefault();
     selectAllBlocks();
@@ -730,9 +740,10 @@ function onWindowKeydown(e: KeyboardEvent): void {
   }
   if ((e.key === "Delete" || e.key === "Backspace") && selRange.value) {
     e.preventDefault();
+    e.stopPropagation(); // FIX015.3：板级已处理，禁止块级 handler 用陈旧 index 二次删除
     // PATCH002.73：**只删选区**，删后**光标落到选区起点**（整篇全选 ⇒ 正好是第一块开头 ✓）
-    const at = removeSelectedRange();
-    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    const removed = removeSelectedRange();
+    if (removed) focusBlock(blocks.value[removed.at.index]?._key ?? "", removed.at.offset);
     scheduleSave(); // 删除必须落库（原 `deleteSelection` 走 normalizeAndFlush，已随死代码移除）
     return;
   }
@@ -741,8 +752,8 @@ function onWindowKeydown(e: KeyboardEvent): void {
   // 才删，输入法**已接管 textarea 的 value** ⇒ `v-model` 写入落不到 DOM ⇒ **旧文本残留 +
   // 预编辑串插在行首** ✗（实证）。这里**不 preventDefault**：输入法照常起手 ✓
   if (selRange.value && !e.isComposing && (e.keyCode === 229 || e.key === "Process")) {
-    const at = removeSelectedRange();
-    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    const removed = removeSelectedRange();
+    if (removed) focusBlock(blocks.value[removed.at.index]?._key ?? "", removed.at.offset);
     armKeepUndo("ime");
     return;
   }
@@ -756,8 +767,21 @@ function onWindowKeydown(e: KeyboardEvent): void {
     !e.isComposing &&
     e.key.length === 1
   ) {
-    const at = removeSelectedRange();
-    if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+    const removed = removeSelectedRange();
+    if (removed) {
+      const block = blocks.value[removed.at.index];
+      if (removed.createdText && block?.kind === "Text") {
+        // FIX015.2：图块首块的选区替换没有可复用的 textarea，浏览器原生字符会落到
+        // 已移除的旧目标。这里显式在替换文本块插入首字符，保证不丢字。
+        e.preventDefault();
+        block.text =
+          block.text.slice(0, removed.at.offset) + e.key + block.text.slice(removed.at.offset);
+        focusBlock(block._key, removed.at.offset + e.key.length);
+        scheduleSave();
+      } else {
+        focusBlock(block?._key ?? "", removed.at.offset);
+      }
+    }
     armKeepUndo("char"); // 这一下输入不清栈：Ctrl+Z 要能回到"替换前" ✓
     return;
   }
@@ -773,6 +797,7 @@ function onWindowKeydown(e: KeyboardEvent): void {
     const target = e.key === "ArrowLeft" || e.key === "ArrowUp" ? r.from : r.to;
     clearSel();
     e.preventDefault();
+    e.stopPropagation(); // FIX015.3：同上，避免块级方向键再跑一遍
     focusBlock(blocks.value[target.index]?._key ?? "", target.offset);
     return;
   }
@@ -848,14 +873,16 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     const snapshot = blocks.value.map((b) => ({ ...b }));
     clearKeepUndo("paste"); // 粘贴开始：豁免一律失效 ✓
     pasteInFlight += 1; // C5：窗口内所有保存入口跳过（防"删完未插"的空中间态落库）
+    let removed: RemoveSelectionResult | null = null;
     let at: SelPoint | null = null;
     let pasteOk = false;
     try {
       pushUndo();
-      at = removeSelectedRange(false);
+      removed = removeSelectedRange(false);
       const html0 = htmlClip;
       const plain0 = plainClip;
-      if (!at) return;
+      if (!removed) return;
+      at = removed.at;
       // PATCH002.72 C6：图 / HTML 分支让 Rust 按"库里的块集"重建列表 ⇒ 本地删除必须先落库，
       // 否则服务端返回"未删的旧块 + 插入"（实证 len=6 ⇒ 旧内容跑到粘贴内容之后 ✗）
       if (html0.includes("<img") || hasImage) {
@@ -1163,7 +1190,7 @@ function onBlockContainerClick(block: LocalBlock, e: MouseEvent): void {
  * 文本块交给 textarea 自身处理器 */
 function onBlockContainerKeydown(index: number, e: KeyboardEvent): void {
   if (blocks.value[index]?.kind !== "Image") return;
-  if (e.isComposing) return;
+  if (e.isComposing || e.defaultPrevented) return;
   if (e.key === "Backspace" || e.key === "Delete") {
     e.preventDefault();
     void deleteBlock(index);
@@ -1297,8 +1324,8 @@ function focusAdjacent(index: number, edge: "start" | "end"): void {
  * ⇒ 用户定案走"乙"；若实测某输入法异常，退回"甲"（不插手，提交=插入）并把本条登记为已知边界 */
 function onBlocksCompositionStart(): void {
   if (!selRange.value) return;
-  const at = removeSelectedRange();
-  if (at) focusBlock(blocks.value[at.index]?._key ?? "", at.offset);
+  const removed = removeSelectedRange();
+  if (removed) focusBlock(blocks.value[removed.at.index]?._key ?? "", removed.at.offset);
   armKeepUndo("ime"); // 组字期间的连续 input 都不许清栈 ✓
 }
 
@@ -1320,6 +1347,9 @@ function onBlocksFocusOut(e: FocusEvent): void {
   // PATCH002.72 C5：粘贴"先删后插"期间，被删文本域的失焦会伪造一次 focusout ⇒
   // 此刻归一化落库 = 把"删完、还没插"的空中间态写进库（实证：`sig=36` 的空块被保存 ✗）
   if (pasteInFlight > 0 || editInFlight > 0) return;
+  // FIX015.3：键盘 Tab/点击标题离开块区时，自绘/原生选区必须收掉；否则标题按键
+  // 虽然已被 isBoardShortcutTarget 放行，画面上仍可能残留旧选区。
+  selection.clearAll();
   // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：焦点离开块区 → 会走保存点归一化
   if (DIAG) dragDiagDetailed("focusout:normalizeAndFlush");
   // PATCH002.84：失焦 flush 入链——拖图按下时的 force save 必须先于 reorder 收场
@@ -1582,11 +1612,21 @@ async function copySelection(): Promise<void> {
   }
 }
 
-/** 删除选区（三段拼接：起点块留前段 + 接终点块后段，中间块整体删除；起点块对象复用 →
- * 保 `_key` 不重挂）。**纯本地**：只改 `blocks` + 清选区，**不落库、不重算高度**，
+/** 选区删除结果：`at` = 删除后的插入点；`createdText` = 首块为图块、已新建文本块
+ * （图块首块不能复用，见 FIX015.2）；`replacementKey` = 应承接光标的文本块 key。 */
+interface RemoveSelectionResult {
+  at: SelPoint;
+  createdText: boolean;
+  replacementKey: string;
+}
+
+/** 删除选区（三段拼接：起点块留前段 + 接终点块后段，中间块整体删除）。
+ * 起点为文本块时复用原对象（保 `_key` 不重挂）；起点为图块时**绝不复用图块行**：
+ * 新建 `id=0` 文本块，让旧图块在落库时走软删除并保留文件（FIX015.2）。
+ * **纯本地**：只改 `blocks` + 清选区，**不落库、不重算高度**，
  * 供"键位删除"与"粘贴替换选区"两个入口各取所需（PATCH002.70）。
  * @returns 选区**起点**（= 删除后的插入位置；`offset` 取前段长度）；null = 无可删 */
-function removeSelectedRange(push = true): SelPoint | null {
+function removeSelectedRange(push = true): RemoveSelectionResult | null {
   const r = selRange.value;
   if (!r) return null;
   const first = blocks.value[r.from.index];
@@ -1595,13 +1635,33 @@ function removeSelectedRange(push = true): SelPoint | null {
   if (push) pushUndo();
   const head = first.kind === "Text" ? first.text.slice(0, r.from.offset) : "";
   const tail = last.kind === "Text" ? last.text.slice(r.to.offset) : "";
+  const at: SelPoint = { index: r.from.index, offset: head.length };
+  if (first.kind === "Image") {
+    const replacement: LocalBlock = {
+      id: 0,
+      kind: "Text",
+      text: head + tail,
+      image_path: null,
+      _key: localKey(),
+    };
+    blocks.value.splice(r.from.index, r.to.index - r.from.index + 1, replacement);
+    clearSel();
+    return {
+      at,
+      createdText: true,
+      replacementKey: replacement._key,
+    };
+  }
   first.kind = "Text";
   first.text = head + tail;
   first.image_path = null;
   blocks.value.splice(r.from.index + 1, r.to.index - r.from.index);
-  const at: SelPoint = { index: r.from.index, offset: head.length };
   clearSel();
-  return at;
+  return {
+    at,
+    createdText: false,
+    replacementKey: first._key,
+  };
 }
 
 /** 删除选区（键位入口：Backspace / Delete）：本地删除 + 重算高度 + 落库 */
@@ -2236,6 +2296,20 @@ let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
 /** 最近一次成功落库的标题基准（FIX007.5 基准机制 + FIX008.2 带条目 id） */
 let lastSavedText: { id: number; text: string } | null = null;
+
+/** 保存一次标题改名（标题不依赖块模型；失败只落 console，不阻断块/关板）。 */
+async function saveTitleRename(pending: { id: number; text: string }): Promise<void> {
+  try {
+    await invoke("todo_rename", { id: pending.id, text: pending.text });
+    if (props.todo?.id === pending.id) {
+      lastSavedText = { id: pending.id, text: pending.text };
+    }
+    emit("changed");
+  } catch (err) {
+    console.error("改名失败", err);
+  }
+}
+
 watch(titleDraft, (text) => {
   const todo = props.todo;
   const savedBase =
@@ -2253,16 +2327,7 @@ watch(titleDraft, (text) => {
     const pending = renamePending;
     renamePending = null;
     if (pending == null) return;
-    void invoke("todo_rename", { id: pending.id, text: pending.text })
-      .then(() => {
-        if (props.todo?.id === pending.id) {
-          lastSavedText = { id: pending.id, text: pending.text };
-        }
-        emit("changed");
-      })
-      .catch((err) => {
-        console.error("改名失败", err);
-      });
+    void saveTitleRename(pending);
   }, 300);
 });
 
@@ -2274,26 +2339,18 @@ async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }
   clearTimeout(renameTimer);
   clearTimeout(saveTimer);
   saveTimer = undefined;
-  // PATCH002.72 C5：粘贴窗口内不落库（此时 `blocks` 可能是"删完未插"的中间态 ✗）；
-  // 收尾的 `finally` 会把最终态按快照写回（板已切走时也能写，沿 `.47` 口径）
-  if (pasteInFlight > 0 || editInFlight > 0) return;
+  // FIX015.13：标题改名不依赖块模型，先从 block flush 守卫里拆出并保存。这样粘贴
+  // 进行中关板/切源不会再清掉 renameTimer 后直接丢掉标题；块中间态仍不落库。
   const rename = renamePending;
   renamePending = null;
-  const jobs: Array<Promise<void>> = [];
-  if (rename != null) {
-    jobs.push(
-      invoke("todo_rename", { id: rename.id, text: rename.text })
-        .then(() => {
-          if (props.todo?.id === rename.id) {
-            lastSavedText = { id: rename.id, text: rename.text };
-          }
-          emit("changed");
-        })
-        .catch((err) => {
-          console.error("改名失败", err);
-        }),
-    );
+  const renameJob = rename != null ? saveTitleRename(rename) : null;
+  // PATCH002.72 C5：粘贴窗口内不落库（此时 `blocks` 可能是"删完未插"的中间态 ✗）；
+  // 收尾的 `finally` 会把最终态按快照写回（板已切走时也能写，沿 `.47` 口径）
+  if (pasteInFlight > 0 || editInFlight > 0) {
+    if (renameJob) await renameJob;
+    return;
   }
+  const jobs: Array<Promise<void>> = renameJob ? [renameJob] : [];
   // 详情块未决保存（PL027）：有快照按快照落库；无快照按当前条目（须已载入本条目）
   const todoId = prev ? prev.todoId : (props.todo?.id ?? null);
   const list = prev ? prev.list : blocks.value;

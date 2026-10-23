@@ -66,6 +66,56 @@ describe("TodoList 组件级交互（FIX014.35）", () => {
     expect(wrapper.find(".t-edit").exists()).toBe(false);
   });
 
+  it("行离场事件透传条目 id", async () => {
+    // FIX015.9：App 依赖 rowLeave 在清单移除动画结束后关闭详情板。
+    wrapper = mount(TodoList, { props: { items: [ITEM] } });
+    const group = wrapper.findComponent({ name: "TransitionGroup" });
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "todo-row";
+    row.dataset.rowId = String(ITEM.id);
+    li.append(row);
+
+    group.vm.$emit("after-leave", li);
+    await flushPromises();
+
+    expect(wrapper.emitted("rowLeave")).toEqual([[ITEM.id]]);
+  });
+
+  it("编辑中经托盘归档：先提交草稿再清编辑态", async () => {
+    // FIX015.9：done 行仍在 props.items，不能沿用“列表找不到才清”的旧判断。
+    wrapper = mount(TodoList, { props: { items: [ITEM] } });
+    await flushPromises();
+    await wrapper.find(".todo-row").trigger("dblclick");
+    await flushPromises();
+
+    const edit = wrapper.find<HTMLInputElement>(".t-edit");
+    expect(edit.exists()).toBe(true);
+    await edit.setValue("编辑后的标题");
+
+    await wrapper.setProps({ items: [{ ...ITEM, done: true }] });
+    await flushPromises();
+
+    expect(wrapper.find(".t-edit").exists()).toBe(false);
+    expect(invokeMock).toHaveBeenCalledWith("todo_rename", {
+      id: ITEM.id,
+      text: "编辑后的标题",
+    });
+  });
+
+  it("全部已完成时显示清空空态", async () => {
+    // FIX015.8：空态必须按未完成显示集判断，不能按含 done 的 props.items.length。
+    wrapper = mount(TodoList, {
+      props: { items: [{ ...ITEM, done: true }] },
+    });
+    await flushPromises();
+    expect(wrapper.find(".empty").exists()).toBe(true);
+
+    await wrapper.setProps({ items: [{ ...ITEM, done: false }] });
+    await flushPromises();
+    expect(wrapper.find(".empty").exists()).toBe(false);
+  });
+
   it("勾选 300ms 主拍内双击不进入行内编辑", async () => {
     wrapper = mount(TodoList, { props: { items: [] } });
     await wrapper.setProps({ items: [ITEM] });

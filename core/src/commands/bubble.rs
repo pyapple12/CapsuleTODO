@@ -49,13 +49,16 @@ pub fn bubble_capture_image_core(
     crate::clipboard_image::validate_image_bytes(&captured.bytes)?;
     let label = image_label(captured.file_name.as_deref());
     let stamp = local_stamp();
+    // FIX015.6：预览解码在 storage 锁外完成，锁内只落盘/写库。
+    let preview = crate::clipboard_image::generate_preview(&captured.bytes);
     let storage = ctx.lock_storage()?;
-    match storage.add_image_bubble(
+    match storage.add_image_bubble_prepared(
         images_dir,
         &label,
         &captured.bytes,
         captured.file_name.as_deref(),
         &stamp,
+        preview.as_deref(),
     )? {
         BubbleAddOutcome::Added(item) => Ok(BubbleCaptureOutcome::Added { item }),
         BubbleAddOutcome::Duplicate => Ok(BubbleCaptureOutcome::Duplicate),
@@ -261,18 +264,23 @@ pub fn bubble_get_image_path_core(
 
 /// 双击详情图 → 系统默认程序打开**原图**（PL025）：解析原图绝对路径（非预览）→ ShellExecuteW
 #[tauri::command]
-pub fn bubble_open_image(id: i64, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+pub async fn bubble_open_image(id: i64, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    bubble_open_image_core(id, &images_dir, &ctx)
+    let abs = bubble_open_image_path_core(id, &images_dir, &ctx)?;
+    // FIX015.6：ShellExecuteW 不持 storage 锁。
+    tauri::async_runtime::spawn_blocking(move || open_path_with_default(&abs))
+        .await
+        .map_err(|err| CommandError::Bubble(format!("打开原图任务失败：{err}")))?
+        .map_err(CommandError::Bubble)
 }
 
-/// bubble_open_image 核心实现：原图绝对路径 → 系统默认程序打开（缺失严格报错）
-pub fn bubble_open_image_core(
+/// bubble_open_image 的路径解析核心：锁内只读并校验，返回原图绝对路径。
+pub fn bubble_open_image_path_core(
     id: i64,
     images_dir: &std::path::Path,
     ctx: &AppContext,
-) -> Result<(), CommandError> {
+) -> Result<std::path::PathBuf, CommandError> {
     let storage = ctx.lock_storage()?;
     let (rel, _source) = storage
         .get_bubble_image_file(id)?
@@ -283,6 +291,16 @@ pub fn bubble_open_image_core(
     if !abs.is_file() {
         return Err(CommandError::Bubble("图片文件已移动或删除".to_string()));
     }
+    Ok(abs)
+}
+
+/// bubble_open_image 的同步测试兼容入口（生产命令走 async + spawn_blocking）。
+pub fn bubble_open_image_core(
+    id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let abs = bubble_open_image_path_core(id, images_dir, ctx)?;
     open_path_with_default(&abs).map_err(CommandError::Bubble)
 }
 
@@ -384,8 +402,12 @@ pub fn bubble_remove_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
-    let storage = ctx.lock_storage()?;
-    if let Some(rel) = storage.remove_bubble(id)? {
+    let rel = {
+        let storage = ctx.lock_storage()?;
+        storage.remove_bubble(id)?
+    };
+    // FIX015.6：文件删除在 storage 锁外执行。
+    if let Some(rel) = rel {
         remove_image_folder(images_dir, &rel);
     }
     Ok(())
@@ -406,8 +428,11 @@ pub fn bubble_clear_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<usize, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let (removed, rels) = storage.clear_bubbles()?;
+    let (removed, rels) = {
+        let storage = ctx.lock_storage()?;
+        storage.clear_bubbles()?
+    };
+    // FIX015.6：文件删除在 storage 锁外执行。
     for rel in rels {
         remove_image_folder(images_dir, &rel);
     }

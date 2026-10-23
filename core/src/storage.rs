@@ -150,6 +150,38 @@ fn folder_of(rel: &str) -> String {
         .unwrap_or_else(|| rel.to_string())
 }
 
+/// FIX015.6：在 **storage 锁外**执行详情图孤儿目录扫描/删除。
+/// 引用集合由 `referenced_note_image_folders` 在锁内一次查出；本函数只碰 `note_*` 目录，
+/// 删除失败 best-effort 落日志，不阻断命令。
+pub(crate) fn sweep_orphan_note_folders(images_dir: &Path, referenced: &HashSet<String>) -> usize {
+    let entries = match std::fs::read_dir(images_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            crate::diag::warn_diag(&format!("详情图清扫跳过（目录不可读）：{err}"));
+            return 0;
+        }
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("note_") || !entry.path().is_dir() {
+            continue;
+        }
+        if referenced.contains(name) {
+            continue;
+        }
+        if let Err(err) = std::fs::remove_dir_all(entry.path()) {
+            crate::diag::warn_diag(&format!(
+                "详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}"
+            ));
+            continue;
+        }
+        removed += 1;
+    }
+    removed
+}
+
 /// FIX014.16：原图内层名与固定预览名 `preview.png` 冲突时改用 `original.png`。
 /// 预览文件仍固定写 `preview.png`，`image_file` 始终指向真正的原图。
 fn image_inner_name(orig_name: Option<&str>, stamp: &str, seq: &str) -> String {
@@ -900,45 +932,25 @@ impl Storage {
         Ok(deleted)
     }
 
-    /// 孤儿清扫式引用释放（PL027；供删条目 / 归档回收后调用）：删除 `images/` 下所有
-    /// **已无块引用**的 `note_*` 文件夹（与精确释放等价，且顺带清理崩溃遗留孤儿文件）；
-    /// **只扫 `note_` 前缀**（气泡 `bubble_*` 域一行不碰）。返回清理的文件夹数
-    pub fn sweep_orphan_note_images(&self, images_dir: &Path) -> Result<usize, StorageError> {
-        let entries = match std::fs::read_dir(images_dir) {
-            Ok(e) => e,
-            Err(err) => {
-                crate::diag::warn_diag(&format!("详情图清扫跳过（目录不可读）：{err}"));
-                return Ok(0);
-            }
-        };
-        // FIX014.13：一次 DISTINCT 查询构造已引用文件夹集合，替代每个文件夹一次 COUNT/LIKE。
-        let referenced: HashSet<String> = self
+    /// 查询当前所有被引用的详情图文件夹（锁内只做一次 DISTINCT 查询；FIX014.13）。
+    pub fn referenced_note_image_folders(&self) -> Result<HashSet<String>, StorageError> {
+        Ok(self
             .conn
             .prepare("SELECT DISTINCT image_file FROM note_blocks WHERE image_file IS NOT NULL")?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .map(|rel| folder_of(&rel))
-            .collect();
-        let mut removed = 0usize;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if !name.starts_with("note_") || !entry.path().is_dir() {
-                continue;
-            }
-            if referenced.contains(name) {
-                continue;
-            }
-            if let Err(err) = std::fs::remove_dir_all(entry.path()) {
-                crate::diag::warn_diag(&format!(
-                    "详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}"
-                ));
-                continue;
-            }
-            removed += 1;
-        }
-        Ok(removed)
+            .collect())
+    }
+
+    /// 孤儿清扫式引用释放（PL027；供删条目 / 归档回收后调用）：删除 `images/` 下所有
+    /// **已无块引用**的 `note_*` 文件夹（与精确释放等价，且顺带清理崩溃遗留孤儿文件）；
+    /// **只扫 `note_` 前缀**（气泡 `bubble_*` 域一行不碰）。返回清理的文件夹数。
+    /// FIX015.6：调用方可先取 `referenced_note_image_folders` 释放锁，再用 free helper 扫盘。
+    pub fn sweep_orphan_note_images(&self, images_dir: &Path) -> Result<usize, StorageError> {
+        let referenced = self.referenced_note_image_folders()?;
+        Ok(sweep_orphan_note_folders(images_dir, &referenced))
     }
 
     /// 目标块必须存在且属于该条目（PATCH002.46）：块 id 有三条路径会指向"库里不存在的
@@ -1065,6 +1077,18 @@ impl Storage {
                                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                                 )
                                 .optional()?;
+                            // FIX015.2：**本地图块**（无 source_url）id 不得原地降级为文本——
+                            // 那会清 image_file 并在提交后释放原图，撤销/粘贴失败恢复都无法找回。
+                            // 远端占位图（source_url 有值）保留既有“迟到占位保存/用户真改文本”
+                            // 语义：占位串/URL 走上面的 stale 守卫，真实编辑才允许降级。
+                            if current.as_ref().is_some_and(|(kind, _, source)| {
+                                kind == "image" && source.is_none()
+                            }) {
+                                return Err(StorageError::ReorderMismatch(format!(
+                                    "本地图块不能原地降级为文本块：{}",
+                                    block.id
+                                )));
+                            }
                             if let Some((kind, cur_text, Some(source))) = current {
                                 let stale = match kind.as_str() {
                                     "image" => {
@@ -1156,13 +1180,9 @@ impl Storage {
         self.note_blocks(todo_id)
     }
 
-    /// 粘贴插图（PL027）：图片字节 → **同 hash 复用同一文件**（域内引用计数，命中不写盘）
-    /// 或新落盘 `note_{stamp}_{n}/…`（内层名：截图 `snap_{stamp}_{n}.png` / 文件图净化原名；
-    /// 大图预览阈值同气泡）→ 事务内把 `block_id` 的文本按 `before` / `after` 切成两块 +
-    /// 中间插图块（保持 sort_order 连续）→ 返回新块列表。调用方须先 `validate_image_bytes`
-    /// 与 `validate_note_blocks`；`before`/`after` 由前端按光标/选区本地切好（免 UTF-16 换算）
-    #[allow(clippy::too_many_arguments)] // 粘贴操作的完整输入集（切分点/字节/来源名/时间戳），
-                                         // 打包成结构体只会把参数搬到别处、无实益
+    /// 粘贴插图兼容入口：旧调用方在 storage 锁内直接调用；生产热路径走
+    /// `add_note_image_block_prepared`（preview 在锁外预生成）。
+    #[allow(clippy::too_many_arguments)]
     pub fn add_note_image_block(
         &self,
         images_dir: &Path,
@@ -1174,17 +1194,51 @@ impl Storage {
         orig_name: Option<&str>,
         stamp: &str,
     ) -> Result<Vec<NoteBlock>, StorageError> {
+        let preview = crate::clipboard_image::generate_preview(bytes);
+        self.add_note_image_block_prepared(
+            images_dir,
+            todo_id,
+            block_id,
+            before,
+            after,
+            bytes,
+            orig_name,
+            stamp,
+            preview.as_deref(),
+        )
+    }
+
+    /// 粘贴插图（PL027）：图片字节 → **同 hash 复用同一文件**（域内引用计数，命中不写盘）
+    /// 或新落盘 `note_{stamp}_{n}/…`（内层名：截图 `snap_{stamp}_{n}.png` / 文件图净化原名；
+    /// 大图预览阈值同气泡）→ 事务内把 `block_id` 的文本按 `before` / `after` 切成两块 +
+    /// 中间插图块（保持 sort_order 连续）→ 返回新块列表。调用方须先 `validate_image_bytes`
+    /// 与 `validate_note_blocks`；`before`/`after` 由前端按光标/选区本地切好（免 UTF-16 换算）；
+    /// `preview` 由调用方在 storage 锁外预生成。
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_note_image_block_prepared(
+        &self,
+        images_dir: &Path,
+        todo_id: i64,
+        block_id: i64,
+        before: &str,
+        after: &str,
+        bytes: &[u8],
+        orig_name: Option<&str>,
+        stamp: &str,
+        preview: Option<&[u8]>,
+    ) -> Result<Vec<NoteBlock>, StorageError> {
         // ⓪ 目标块必须先存在（PATCH002.46，同 `insert_note_parts`）——校验先于任何落盘
         self.require_note_block(todo_id, block_id)?;
-        // ① 落盘或复用（与多段粘贴共用同一份 `write_note_image`：同 hash 复用同一文件、
-        // 命中不写盘；此处原内联实现逐字等价，抽出即免两份维护）
-        let (hash, rel) = match self.write_note_image(images_dir, bytes, orig_name, stamp) {
-            Ok(pair) => pair,
-            Err(err) => {
-                self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
-                return Err(err);
-            }
-        };
+        // ① 落盘或复用（与多段粘贴共用同一份 `write_note_image_prepared`：同 hash 复用
+        // 同一文件、命中不写盘；preview 由命令层在 storage 锁外预生成）
+        let (hash, rel) =
+            match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
+                    return Err(err);
+                }
+            };
         if let Err(err) = self.conn.execute_batch("BEGIN") {
             self.sweep_after_failed_write(images_dir);
             return Err(err.into());
@@ -1299,19 +1353,6 @@ impl Storage {
         self.note_blocks(todo_id)
     }
 
-    /// 落盘一张详情图（去重 + 命名 + 预览），返回 `(hash, rel)`；**不含块表操作**——
-    /// 单图插入与多段粘贴共用（PATCH002.25 抽取，语义与原先内联实现逐字一致）
-    fn write_note_image(
-        &self,
-        images_dir: &Path,
-        bytes: &[u8],
-        orig_name: Option<&str>,
-        stamp: &str,
-    ) -> Result<(String, String), StorageError> {
-        let preview = crate::clipboard_image::generate_preview(bytes);
-        self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview.as_deref())
-    }
-
     /// 落盘一张详情图（PATCH002.76 变体）：预览由调用方**在 storage 锁外**预生成，
     /// 锁内只做去重查询 + 写原图/预览，避免后台大图解码堵住 300ms 自动保存。
     fn write_note_image_prepared(
@@ -1349,15 +1390,9 @@ impl Storage {
         Ok((hash, format!("{folder}/{inner}")))
     }
 
-    /// 多段粘贴（PATCH002.25；PATCH002.76 扩展远端占位）：把 `block_id` 的文本按
-    /// `before` / `after` 切开，中间按序插入「文本段 / 图段 / 远端图占位段」（保持
-    /// sort_order 连续）→ 返回（新块列表, **与 parts 同序的块 id**）。
-    /// 建块规则沿单图插入同款：上段为空 → 原块**顶替**为序列首段；下段为空 → 不留尾块，
-    /// 但序列末段是图（含远端占位）且其后无块时补一个空文本块；保底 = 结果无文本块则补一个。
-    /// **远端占位按“升级后”口径算文本块**：`texts - pending_count <= 0` 时补空文本块，
-    /// 否则远程图全部成功后整条会变成零文本块。调用方须先校验各图字节与最终块集；
-    /// `parts` 文本段不得含换行
-    #[allow(clippy::too_many_arguments)] // 与 add_note_image_block 同款：粘贴输入集完整传递
+    /// 多段粘贴兼容入口：旧调用方在 storage 锁内直接调用；生产热路径走
+    /// `insert_note_parts_prepared`（preview 在锁外预生成）。
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_note_parts(
         &self,
         images_dir: &Path,
@@ -1368,6 +1403,40 @@ impl Storage {
         parts: &[NotePastePart],
         stamp: &str,
     ) -> Result<(Vec<NoteBlock>, Vec<i64>), StorageError> {
+        let previews: Vec<Option<Vec<u8>>> = parts
+            .iter()
+            .map(|part| match part {
+                NotePastePart::Image { bytes, .. } => {
+                    crate::clipboard_image::generate_preview(bytes)
+                }
+                NotePastePart::Text(_) | NotePastePart::PendingImage { .. } => None,
+            })
+            .collect();
+        self.insert_note_parts_prepared(
+            images_dir, todo_id, block_id, before, after, parts, stamp, &previews,
+        )
+    }
+
+    /// 多段粘贴（PATCH002.25；PATCH002.76 扩展远端占位）：把 `block_id` 的文本按
+    /// `before` / `after` 切开，中间按序插入「文本段 / 图段 / 远端图占位段」（保持
+    /// sort_order 连续）→ 返回（新块列表, **与 parts 同序的块 id**）。
+    /// 建块规则沿单图插入同款：上段为空 → 原块**顶替**为序列首段；下段为空 → 不留尾块，
+    /// 但序列末段是图（含远端占位）且其后无块时补一个空文本块；保底 = 结果无文本块则补一个。
+    /// **远端占位按“升级后”口径算文本块**：`texts - pending_count <= 0` 时补空文本块，
+    /// 否则远程图全部成功后整条会变成零文本块。调用方须先校验各图字节与最终块集；
+    /// `parts` 文本段不得含换行；`previews[i]` 与 `parts[i]` 对齐（非图段为 None）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_note_parts_prepared(
+        &self,
+        images_dir: &Path,
+        todo_id: i64,
+        block_id: i64,
+        before: &str,
+        after: &str,
+        parts: &[NotePastePart],
+        stamp: &str,
+        previews: &[Option<Vec<u8>>],
+    ) -> Result<(Vec<NoteBlock>, Vec<i64>), StorageError> {
         // ⓪ 目标块必须先存在（PATCH002.46）：幻影块 id=0 / 跨条目陈旧 id 此前都在**落盘
         // 之后**才失败 → 留下孤儿夹（PATCH002.41）；校验前移到任何文件写入之前
         self.require_note_block(todo_id, block_id)?;
@@ -1377,18 +1446,19 @@ impl Storage {
         let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
         let mut batch_images: HashMap<String, (String, String)> = HashMap::new();
         let written = (|| -> Result<(), StorageError> {
-            for part in parts {
+            for (i, part) in parts.iter().enumerate() {
                 match part {
                     NotePastePart::Image { bytes, orig_name } => {
                         let hash = fnv1a_hex(bytes);
                         let pair = match batch_images.get(&hash) {
                             Some(pair) => pair.clone(),
                             None => {
-                                let pair = self.write_note_image(
+                                let pair = self.write_note_image_prepared(
                                     images_dir,
                                     bytes,
                                     orig_name.as_deref(),
                                     stamp,
+                                    previews.get(i).and_then(|p| p.as_deref()),
                                 )?;
                                 batch_images.insert(hash, pair.clone());
                                 pair
@@ -1757,11 +1827,8 @@ impl Storage {
         }))
     }
 
-    /// 新增图片气泡（PL025 落盘化）：算内容哈希（FNV-1a）→ 查重（同 hash 已在库返
-    /// Duplicate）→ 事务内 INSERT 取 id → 写盘 `bubble_{stamp}_{n}/{内层名}` + 生成
-    /// 大图预览 → UPDATE image_file（**相对路径含子目录**）。排头插入同 add_bubble。
-    /// `orig_name` = 文件来源原名（None = 截图）；bytes 须先过
-    /// clipboard_image::validate_image_bytes（格式嗅探执行点在命令层）
+    /// 新增图片气泡兼容入口：旧调用方在 storage 锁内直接调用；生产热路径走
+    /// `add_image_bubble_prepared`（preview 在锁外预生成）。
     pub fn add_image_bubble(
         &self,
         images_dir: &Path,
@@ -1769,6 +1836,31 @@ impl Storage {
         bytes: &[u8],
         orig_name: Option<&str>,
         stamp: &str,
+    ) -> Result<BubbleAddOutcome, StorageError> {
+        let preview = crate::clipboard_image::generate_preview(bytes);
+        self.add_image_bubble_prepared(
+            images_dir,
+            text,
+            bytes,
+            orig_name,
+            stamp,
+            preview.as_deref(),
+        )
+    }
+
+    /// 新增图片气泡（PL025 落盘化）：算内容哈希（FNV-1a）→ 查重（同 hash 已在库返
+    /// Duplicate）→ 事务内 INSERT 取 id → 写盘 `bubble_{stamp}_{n}/{内层名}` +
+    /// 写入锁外预生成的预览 → UPDATE image_file（**相对路径含子目录**）。排头插入同 add_bubble。
+    /// `orig_name` = 文件来源原名（None = 截图）；bytes 须先过
+    /// clipboard_image::validate_image_bytes（格式嗅探执行点在命令层）。
+    pub fn add_image_bubble_prepared(
+        &self,
+        images_dir: &Path,
+        text: &str,
+        bytes: &[u8],
+        orig_name: Option<&str>,
+        stamp: &str,
+        preview: Option<&[u8]>,
     ) -> Result<BubbleAddOutcome, StorageError> {
         let hash = fnv1a_hex(bytes);
         let dup: i64 = self.conn.query_row(
@@ -1799,9 +1891,9 @@ impl Storage {
             let id = self.conn.last_insert_rowid();
             std::fs::create_dir_all(&dir)?;
             std::fs::write(dir.join(&inner), bytes)?;
-            // 大图预览（失败降级不阻断——详情退回原图）
-            if let Some(preview) = crate::clipboard_image::generate_preview(bytes) {
-                if let Err(err) = std::fs::write(dir.join("preview.png"), &preview) {
+            // 大图预览（失败降级不阻断——详情退回原图；preview 已由调用方在锁外生成）
+            if let Some(preview) = preview {
+                if let Err(err) = std::fs::write(dir.join("preview.png"), preview) {
                     crate::diag::warn_diag(&format!("图片预览写入失败（降级用原图）：{err}"));
                 }
             }
@@ -3474,6 +3566,48 @@ mod tests {
             1
         );
         assert_eq!(note_folder_count(&dir), 0, "关板后原图释放");
+    }
+
+    #[test]
+    fn set_note_blocks_rejects_image_to_text_downgrade() {
+        // FIX015.2：图块 id 不得原地降级为文本——否则 image_file 被清空且文件释放，
+        // 撤销/粘贴失败恢复都无法找回。异常载荷必须在存储层拒绝。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "原文")])
+            .expect("写块必须成功");
+        let after = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "原文",
+                "",
+                &png_bytes(),
+                None,
+                "261023000000",
+            )
+            .expect("插图必须成功");
+        let image = after
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("必须有图块");
+        let rel = image.image_file.clone().expect("图块必须有文件");
+        assert!(dir.join(&rel).is_file());
+
+        let err = st
+            .set_note_blocks(
+                &dir,
+                item.id,
+                &[nb_text(base[0].id, "原文"), nb_text(image.id, "错误降级")],
+            )
+            .expect_err("图块转文本必须拒绝");
+        assert!(matches!(err, StorageError::ReorderMismatch(_)));
+        assert!(dir.join(&rel).is_file(), "拒绝后原图必须保留");
+        let current = st.note_blocks(item.id).expect("读块必须成功");
+        assert!(current.iter().any(|b| b.kind == NoteBlockKind::Image));
     }
 
     /// 图片块入参夹具（`set_note_blocks` 对 Image 只改 sort_order，故只需 id/kind）

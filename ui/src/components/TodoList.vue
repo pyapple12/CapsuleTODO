@@ -35,6 +35,8 @@ const emit = defineEmits<{
   openDetail: [item: TodoItem, anchor: { x: number; y: number }];
   /** 勾选入档成功（A7：详情板若正开着这条随行收起——design 勾选分支同款联动） */
   archived: [item: TodoItem];
+  /** 行离场动画结束（detail 在归档动画后再关板；FIX015.9） */
+  rowLeave: [id: number];
 }>();
 
 const listEl = ref<HTMLElement | null>(null);
@@ -429,18 +431,35 @@ watch(
 watch(
   () => props.items,
   (list) => {
-    // 勾选主拍与清单刷新之间有短暂窗口：若该行已不在列表，编辑态必须立即退出，
-    // 否则 editingId 悬挂会把后续所有行的单击/勾选吞掉（FIX014.10 残余窗口）。
-    if (editingId.value != null && !list.some((t) => t.id === editingId.value)) {
+    // FIX014.10 / FIX015.9：编辑中的条目可能被托盘预览勾选归档。判断“已离开显示集”
+    // 必须用 !done，而不是 props.items 是否存在（done 行仍在 props 里）。
+    const editing =
+      editingId.value != null ? list.find((t) => t.id === editingId.value) : undefined;
+    if (editingId.value != null && (!editing || editing.done)) {
+      // 行已归档：先把尚未提交的行内标题落库，再清编辑态；不能让 watcher 静默丢草稿。
+      if (editing) {
+        const draft = editDraft.value.trim();
+        if (draft && draft !== editing.text) {
+          void invoke("todo_rename", { id: editing.id, text: draft })
+            .then(() => emit("changed"))
+            .catch((err) => console.error("归档时提交行内编辑失败", err));
+        }
+      }
       editingId.value = null;
+      pendingExitId.value = null;
+      if (pendingExitTimer !== undefined) {
+        window.clearTimeout(pendingExitTimer);
+        pendingExitTimer = undefined;
+      }
     }
     if (pendingExitId.value === null) return;
     const it = list.find((t) => t.id === pendingExitId.value);
-    if (it && it.text === editDraft.value.trim()) {
+    if (!it || it.done) {
       pendingExitId.value = null;
       editingId.value = null;
-    } else if (!it) {
+    } else if (it.text === editDraft.value.trim()) {
       pendingExitId.value = null;
+      editingId.value = null;
     }
   },
   { deep: true },
@@ -449,9 +468,17 @@ watch(
 // —— 空态显隐（FIX005.24 收敛至 useEmptyState，与归档/气泡同款共存渲染）——
 const {
   showEmpty,
-  onAfterLeave,
+  onAfterLeave: onEmptyAfterLeave,
   dispose: disposeEmptyState,
-} = useEmptyState(() => props.items.length);
+} = useEmptyState(() => active.value.length);
+
+/** TransitionGroup 行离场结束：透传 id，App 据此在动画结束后关闭对应详情板。 */
+function onAfterLeave(el: Element): void {
+  onEmptyAfterLeave();
+  const row = (el as HTMLElement).querySelector<HTMLElement>(".todo-row");
+  const id = Number(row?.dataset.rowId);
+  if (Number.isInteger(id) && id > 0) emit("rowLeave", id);
+}
 
 // v-else 切换重建 ul 兜底（items 长度不变但 ul 换元素的场景）：观测 section.list
 // 子树替换即重挂

@@ -106,11 +106,10 @@ pub fn todo_remove_core(
 ) -> Result<(), CommandError> {
     let storage = ctx.lock_storage()?;
     storage.remove(id)?;
-    if let Err(err) = storage.sweep_orphan_note_images(images_dir) {
-        crate::diag::warn_diag(&format!(
-            "删条目后详情图清扫失败（best-effort 不阻断）：{err}"
-        ));
-    }
+    // FIX015.6：锁内只查引用集合；目录扫描/删除在 drop guard 后执行。
+    let referenced = storage.referenced_note_image_folders()?;
+    drop(storage);
+    crate::storage::sweep_orphan_note_folders(images_dir, &referenced);
     Ok(())
 }
 
@@ -430,6 +429,8 @@ pub fn note_insert_image_core(
     ctx: &AppContext,
 ) -> Result<NotePasteOutcome, CommandError> {
     crate::clipboard_image::validate_image_bytes(&captured.bytes)?;
+    // FIX015.6：大图解码/预览生成在 storage 锁外完成，锁内只落盘/写库。
+    let preview = crate::clipboard_image::generate_preview(&captured.bytes);
     let stamp = crate::util::local_stamp();
     let storage = ctx.lock_storage()?;
     // FIX014.52：单图与 HTML 共用最终块集校验（块数 / 总长 / 换行 / 至少一个文本块），
@@ -448,7 +449,7 @@ pub fn note_insert_image_core(
         after,
         std::slice::from_ref(&image_part),
     )?;
-    let blocks = storage.add_note_image_block(
+    let blocks = storage.add_note_image_block_prepared(
         images_dir,
         todo_id,
         block_id,
@@ -457,6 +458,7 @@ pub fn note_insert_image_core(
         &captured.bytes,
         captured.file_name.as_deref(),
         &stamp,
+        preview.as_deref(),
     )?;
     Ok(NotePasteOutcome::Image {
         blocks: blocks
@@ -488,19 +490,26 @@ pub fn note_reorder_core(todo_id: i64, ids: &[i64], ctx: &AppContext) -> Result<
 
 /// 双击图块 → 系统默认程序打开**原图**（跳过预览）
 #[tauri::command]
-pub fn note_open_image(block_id: i64, ctx: State<'_, AppContext>) -> Result<(), CommandError> {
+pub async fn note_open_image(
+    block_id: i64,
+    ctx: State<'_, AppContext>,
+) -> Result<(), CommandError> {
     let images_dir = crate::paths::images_dir()
         .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-    note_open_image_core(block_id, &images_dir, &ctx)
+    let abs = note_open_image_path_core(block_id, &images_dir, &ctx)?;
+    // FIX015.6：ShellExecuteW 不持 storage 锁；锁内只解析路径，外部进程调用移到阻塞线程。
+    tauri::async_runtime::spawn_blocking(move || crate::util::open_path_with_default(&abs))
+        .await
+        .map_err(|err| CommandError::Todo(format!("打开原图任务失败：{err}")))?
+        .map_err(CommandError::Todo)
 }
 
-/// note_open_image 核心实现：块 → 原图绝对路径（**跳过 preview.png**）→ 系统默认程序打开；
-/// 文本块 / 文件缺失严格报错
-pub fn note_open_image_core(
+/// note_open_image 的路径解析核心：锁内只读块并校验文件存在，返回原图绝对路径。
+pub fn note_open_image_path_core(
     block_id: i64,
     images_dir: &std::path::Path,
     ctx: &AppContext,
-) -> Result<(), CommandError> {
+) -> Result<std::path::PathBuf, CommandError> {
     let storage = ctx.lock_storage()?;
     let block = storage.get_note_block(block_id)?;
     let rel = block
@@ -510,6 +519,16 @@ pub fn note_open_image_core(
     if !abs.is_file() {
         return Err(CommandError::Todo("图片文件已移动或删除".to_string()));
     }
+    Ok(abs)
+}
+
+/// note_open_image 的同步测试兼容入口（生产命令走 async + spawn_blocking）。
+pub fn note_open_image_core(
+    block_id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+) -> Result<(), CommandError> {
+    let abs = note_open_image_path_core(block_id, images_dir, ctx)?;
     crate::util::open_path_with_default(&abs).map_err(CommandError::Todo)
 }
 
@@ -869,6 +888,17 @@ pub fn note_paste_html_core(
         });
     }
     let stamp = crate::util::local_stamp();
+    // FIX015.6：图片预览在 storage 锁外预生成，避免大图解码堵住自动保存。
+    let previews: Vec<Option<Vec<u8>>> = parts
+        .iter()
+        .map(|part| match part {
+            crate::storage::NotePastePart::Image { bytes, .. } => {
+                crate::clipboard_image::generate_preview(bytes)
+            }
+            crate::storage::NotePastePart::Text(_)
+            | crate::storage::NotePastePart::PendingImage { .. } => None,
+        })
+        .collect();
     let storage = ctx.lock_storage()?;
     // FIX014.6 / FIX014.52：在写文件/写库前按最终块集统一校验（总长 / 块数 / 换行）；
     // 超限直接拒绝，前端静默中止，不留下任何半成品。远端占位按升级后的图块口径。
@@ -891,8 +921,9 @@ pub fn note_paste_html_core(
         })
         .collect();
     validate_final_blocks(&storage, todo_id, block_id, before, after, &preview_parts)?;
-    let (blocks, part_ids) =
-        storage.insert_note_parts(images_dir, todo_id, block_id, before, after, &parts, &stamp)?;
+    let (blocks, part_ids) = storage.insert_note_parts_prepared(
+        images_dir, todo_id, block_id, before, after, &parts, &stamp, &previews,
+    )?;
     let pending = parts
         .iter()
         .zip(part_ids)
