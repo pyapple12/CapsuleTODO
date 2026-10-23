@@ -46,11 +46,10 @@ pub fn bubble_capture_image_core(
     captured: &crate::clipboard_image::CapturedImage,
     ctx: &AppContext,
 ) -> Result<BubbleCaptureOutcome, CommandError> {
-    crate::clipboard_image::validate_image_bytes(&captured.bytes)?;
+    // FIX016.2：一次解码同时完成校验与预览，大图不再 validate + preview 解码两次。
+    let preview = crate::clipboard_image::prepare_captured_image(&captured.bytes)?;
     let label = image_label(captured.file_name.as_deref());
     let stamp = local_stamp();
-    // FIX015.6：预览解码在 storage 锁外完成，锁内只落盘/写库。
-    let preview = crate::clipboard_image::generate_preview(&captured.bytes);
     let storage = ctx.lock_storage()?;
     match storage.add_image_bubble_prepared(
         images_dir,
@@ -96,7 +95,8 @@ fn finish_quiet_capture_image(app: &AppHandle, captured: &crate::clipboard_image
 fn capture_quiet_windows(app: &AppHandle) {
     let before_text = app.clipboard().read_text().ok();
     let before_image = crate::clipboard_image::read_clipboard_image();
-    let before_image_bytes = before_image.as_ref().map(|c| c.bytes.clone());
+    // FIX016.9：快照只借用字节，避免开头再复制一整张图。
+    let before_image_bytes = before_image.as_ref().map(|c| c.bytes.as_slice());
     // 终端边界守卫（PL016.4）：conhost/Windows Terminal 无选区时 Ctrl+C =
     // 中断信号（SIGINT），不能合成——但快照已有图（终端里截图）仍可直接收
     if crate::capture::foreground_is_console() {
@@ -107,12 +107,13 @@ fn capture_quiet_windows(app: &AppHandle) {
     }
     crate::capture::synthesize_ctrl_c();
     let start = std::time::Instant::now();
-    let picked = crate::capture::wait_clipboard_capture(
+    let picked = crate::capture::wait_clipboard_capture_with_sequence(
         before_text.as_deref(),
-        before_image_bytes.as_deref(),
+        before_image_bytes,
         crate::capture::WAIT_TIMEOUT_MS,
         crate::capture::POLL_INTERVAL_MS,
         || start.elapsed().as_millis() as u64,
+        crate::capture::clipboard_sequence,
         || app.clipboard().read_text().ok(),
         crate::clipboard_image::read_clipboard_image,
     );
@@ -184,20 +185,24 @@ impl BubbleCaptureOutcome {
 /// 文本链路；文本无/空文本严格报错，重复内容返回 Duplicate 不入库——PL015.5
 /// 去重与热键路径同规）
 #[tauri::command]
-pub fn bubble_capture(
-    app: AppHandle,
-    ctx: State<'_, AppContext>,
-) -> Result<BubbleCaptureOutcome, CommandError> {
-    if let Some(captured) = crate::clipboard_image::read_clipboard_image() {
-        let images_dir = crate::paths::images_dir()
-            .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
-        return bubble_capture_image_core(&images_dir, &captured, &ctx);
-    }
-    let text = app
-        .clipboard()
-        .read_text()
-        .map_err(|err| CommandError::Clipboard(format!("剪贴板读取失败：{err}")))?;
-    bubble_capture_core(&text, &ctx)
+pub async fn bubble_capture(app: AppHandle) -> Result<BubbleCaptureOutcome, CommandError> {
+    // FIX016.2：读剪贴板 / 解码 / 预览 / 落盘全部移到阻塞线程，命令壳不再冻结 UI。
+    let task_app = app;
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = task_app.state::<AppContext>();
+        if let Some(captured) = crate::clipboard_image::read_clipboard_image() {
+            let images_dir = crate::paths::images_dir()
+                .map_err(|err| CommandError::Storage(format!("图片目录解析失败：{err}")))?;
+            return bubble_capture_image_core(&images_dir, &captured, &ctx);
+        }
+        let text = task_app
+            .clipboard()
+            .read_text()
+            .map_err(|err| CommandError::Clipboard(format!("剪贴板读取失败：{err}")))?;
+        bubble_capture_core(&text, &ctx)
+    })
+    .await
+    .map_err(|err| CommandError::Storage(format!("气泡捕获任务失败：{err}")))?
 }
 
 /// bubble_capture 核心实现：校验 + 去重裁决 + 入库
@@ -311,8 +316,8 @@ pub enum BubbleCopyPayload {
     Text(String),
     /// 文件图（来源 'file'）→ 把落盘副本放剪贴板（CF_HDROP）
     ImageFile(std::path::PathBuf),
-    /// 截图（来源 'screenshot'）→ PNG 字节（写回三格式由剪贴板 FFI 层裁决）
-    ImagePng(Vec<u8>),
+    /// 截图（来源 'screenshot'）→ PNG 文件路径（读盘在锁外阻塞线程执行）
+    ImagePng(std::path::PathBuf),
 }
 
 /// 复制回取数路由核心（直测面；写剪贴板动作留命令薄壳不直测）：文本回原文；
@@ -340,9 +345,8 @@ pub fn bubble_copy_payload_core(
             if source == "file" {
                 Ok(BubbleCopyPayload::ImageFile(abs))
             } else {
-                let bytes = std::fs::read(&abs)
-                    .map_err(|err| CommandError::Storage(format!("图片读取失败：{err}")))?;
-                Ok(BubbleCopyPayload::ImagePng(bytes))
+                // FIX016.5：锁内只返回路径，实际读盘交给锁外阻塞线程。
+                Ok(BubbleCopyPayload::ImagePng(abs))
             }
         }
     }
@@ -377,8 +381,12 @@ fn write_bubble_copy(payload: BubbleCopyPayload, app: &AppHandle) -> Result<(), 
             crate::clipboard_image::write_clipboard_files(&[path.as_path()])
                 .map_err(|err| CommandError::Clipboard(format!("文件写回剪贴板失败：{err}")))
         }
-        BubbleCopyPayload::ImagePng(bytes) => crate::clipboard_image::write_clipboard_image(&bytes)
-            .map_err(|err| CommandError::Clipboard(format!("图片写回剪贴板失败：{err}"))),
+        BubbleCopyPayload::ImagePng(path) => {
+            let bytes = std::fs::read(&path)
+                .map_err(|err| CommandError::Storage(format!("图片读取失败：{err}")))?;
+            crate::clipboard_image::write_clipboard_image(&bytes)
+                .map_err(|err| CommandError::Clipboard(format!("图片写回剪贴板失败：{err}")))
+        }
     }
 }
 
@@ -653,10 +661,15 @@ mod tests {
         let img = bubble_capture_image_core(&dir, &screenshot_capture(fixture_png()), &ctx)
             .expect("图片捕获必须成功")
             .added_item();
-        assert!(matches!(
-            bubble_copy_payload_core(img.id, &dir, &ctx).expect("取图必须成功"),
-            BubbleCopyPayload::ImagePng(ref png) if png == &fixture_png()
-        ));
+        match bubble_copy_payload_core(img.id, &dir, &ctx).expect("取图必须成功") {
+            BubbleCopyPayload::ImagePng(path) => {
+                assert_eq!(
+                    std::fs::read(path).expect("截图路径必须可读"),
+                    fixture_png()
+                );
+            }
+            other => panic!("截图应返回路径，实际：{other:?}"),
+        }
         let err = bubble_copy_payload_core(99, &dir, &ctx).expect_err("不存在必须报错");
         assert!(matches!(err, CommandError::Storage(_)));
     }

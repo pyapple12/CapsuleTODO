@@ -13,12 +13,15 @@
   z-index: 3;
   color: var(--ink);
   visibility: hidden;
+  /* FIX016.15：收起态立刻退出命中面；visibility 的 0.4s 只负责视觉退场。 */
+  pointer-events: none;
   transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
 }
 
 .archive-overlay.open,
 .settings-overlay.open {
   visibility: visible;
+  pointer-events: auto;
   transition: none;
 }
 

@@ -15,7 +15,7 @@ const DRAG_THRESHOLD = 5;
  * 标记，屏蔽系统背板 / 纱态被误摘（"磨砂闪烁"）。 */
 export function useThresholdDrag(
   handle: HTMLElement,
-  options?: { onDragStart?: () => void },
+  options?: { onDragStart?: () => void; onDragStartError?: (err: unknown) => void },
 ): () => void {
   let startX = 0;
   let startY = 0;
@@ -34,16 +34,16 @@ export function useThresholdDrag(
     options?.onDragStart?.();
     void getCurrentWindow()
       .startDragging()
-      .catch((err) => console.error("窗口拖拽启动失败", err));
+      .catch((err) => {
+        options?.onDragStartError?.(err);
+        console.error("窗口拖拽启动失败", err);
+      });
   };
   const onUp = (): void => {
     stop();
   };
   const onBlur = (): void => {
     stop();
-  };
-  const onLeave = (): void => {
-    if (tracking) stop();
   };
   const onDown = (e: MouseEvent): void => {
     if (e.button !== 0) return;
@@ -55,13 +55,11 @@ export function useThresholdDrag(
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     window.addEventListener("blur", onBlur);
-    handle.addEventListener("mouseleave", onLeave);
   };
   const detach = (): void => {
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
     window.removeEventListener("blur", onBlur);
-    handle.removeEventListener("mouseleave", onLeave);
   };
   const stop = (): void => {
     tracking = false;

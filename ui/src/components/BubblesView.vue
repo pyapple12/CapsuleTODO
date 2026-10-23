@@ -34,6 +34,8 @@ const items = ref<BubbleItem[]>([]);
 const { message: error, show: showError, hide: clearError } = useAutoHideError(5_000);
 /** 占字态（PL025.6 单态 + 判别）："" 空闲 / "capture" 已捕获 / "copy" 已复制 / "duplicate" 重复捕获 */
 const feedback = ref<"" | "capture" | "copy" | "duplicate">("");
+/** FIX016.2：捕获在飞锁，防重复点击叠加解码/入库请求 */
+const capturing = ref(false);
 const confirmingClear = ref(false);
 
 // 空态显隐（删末条动画定案 2026-09-30）：TransitionGroup 恒挂载（不再与空态
@@ -207,6 +209,8 @@ const CLIPBOARD_X_ICON =
 /** 捕获剪贴板（Rust 真链路 bubble_capture）：成功播占字反馈；重复内容切
  * "重复捕获，无效！"占字态（PL015.5 去重，手动与热键两入口同规） */
 async function capture(): Promise<void> {
+  if (capturing.value) return;
+  capturing.value = true;
   cancelClearConfirm();
   try {
     const outcome = await invoke<BubbleCaptureOutcome>("bubble_capture");
@@ -220,6 +224,8 @@ async function capture(): Promise<void> {
   } catch (err) {
     console.error("捕获失败", err);
     showError("捕获失败");
+  } finally {
+    capturing.value = false;
   }
 }
 
@@ -470,7 +476,7 @@ onUnmounted(() => {
     <div class="actions">
       <!-- 捕获钮：占字态单态 + 判别（PL025.6）——已捕获 / 已复制 / 重复捕获，无效！，
            均换图标 + 50% 紫禁点（文案定案 2026-09-28；复制判别 2026-10-10） -->
-      <button class="capture" :disabled="feedback !== ''" @click="capture">
+      <button class="capture" :disabled="capturing || feedback !== ''" @click="capture">
         <span v-if="feedback === 'duplicate'" class="cap-idle">
           <span class="cap-icon" v-html="CLIPBOARD_X_ICON"></span>重复捕获，无效！
         </span>

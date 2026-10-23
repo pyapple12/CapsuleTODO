@@ -260,6 +260,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(err) = storage.sweep_orphan_note_images(&images) {
         crate::diag::warn_diag(&format!("启动详情图清扫失败（best-effort 不阻断）：{err}"));
     }
+    // FIX016.22：气泡图片同样清理无引用文件夹（删除失败/崩溃残留自愈）。
+    if let Err(err) = storage.sweep_orphan_bubble_images(&images) {
+        crate::diag::warn_diag(&format!("启动气泡图清扫失败（best-effort 不阻断）：{err}"));
+    }
     // 运行时设置（PL014.2）：config.json 缺失回默认（白名单③）；损坏 JSON 严格报错；
     // 载入规范化（上限钳制 + 热键回默认）收敛在 settings::load 单点（FIX004.17）
     let app_settings = settings::load(&paths::settings_path()?)?.unwrap_or_default();

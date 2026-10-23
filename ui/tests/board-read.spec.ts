@@ -45,6 +45,7 @@ describe("useBoardRead 贴底状态（FIX015.7）", () => {
     kit?.destroy();
     kit = undefined;
     board.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -75,5 +76,25 @@ describe("useBoardRead 贴底状态（FIX015.7）", () => {
     );
 
     expect(scroller.scrollTop).toBe(320);
+  });
+
+  it("pin 覆盖期结束后按用户当前滚动位置重算", () => {
+    vi.useFakeTimers();
+    setGeometry(scroller, 100, 300);
+    scroller.scrollTop = 200;
+    kit = useBoardRead(scroller);
+    kit.setPinned(true);
+
+    // 覆盖期内用户上滚：syncPinned 被暂时屏蔽。
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event("scroll"));
+    setGeometry(scroller, 100, 400);
+    vi.advanceTimersByTime(300);
+    CapturingResizeObserver.latest?.callback(
+      [],
+      CapturingResizeObserver.latest as unknown as ResizeObserver,
+    );
+
+    expect(scroller.scrollTop).toBe(0);
   });
 });

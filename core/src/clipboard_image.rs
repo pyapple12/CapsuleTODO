@@ -108,7 +108,6 @@ pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), BubbleError> {
 pub fn generate_preview(bytes: &[u8]) -> Option<Vec<u8>> {
     const WIDTH_THRESHOLD: u32 = 2000;
     const BYTES_THRESHOLD: usize = 2 * 1024 * 1024;
-    const MAX_EDGE: u32 = 1600;
     // 只读头取尺寸（不整图解码）——廉价判阈值
     let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -119,12 +118,36 @@ pub fn generate_preview(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let img = image::load_from_memory(bytes).ok()?;
+    preview_from_image(&img, bytes.len())
+}
+
+/// 已解码图 → 降采样预览（FIX016.2：气泡捕获复用同一次解码结果，不再二次 load）。
+fn preview_from_image(img: &image::DynamicImage, byte_len: usize) -> Option<Vec<u8>> {
+    const WIDTH_THRESHOLD: u32 = 2000;
+    const BYTES_THRESHOLD: usize = 2 * 1024 * 1024;
+    const MAX_EDGE: u32 = 1600;
+    if img.width() <= WIDTH_THRESHOLD && byte_len <= BYTES_THRESHOLD {
+        return None;
+    }
     let resized = img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Triangle);
     let mut out = Vec::new();
     resized
         .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
         .ok()?;
     Some(out)
+}
+
+/// 气泡捕获专用：一次完整解码同时完成可用性校验与预览生成（FIX016.2）。
+/// 校验口径与 `validate_image_bytes` 一致（格式 + PNG 结构 + 完整解码）。
+pub(crate) fn prepare_captured_image(bytes: &[u8]) -> Result<Option<Vec<u8>>, BubbleError> {
+    let Some(ext) = image_extension(bytes) else {
+        return Err(BubbleError::UnsupportedFormat);
+    };
+    if ext == "png" && !png_structure_usable(bytes) {
+        return Err(BubbleError::UnsupportedFormat);
+    }
+    let img = image::load_from_memory(bytes).map_err(|_| BubbleError::UnsupportedFormat)?;
+    Ok(preview_from_image(&img, bytes.len()))
 }
 
 /// 构造 CF_HDROP 数据块（DROPFILES 头 + 宽字符路径表 + 双 NUL 终止，PL025 文件图复制回）：
@@ -1115,6 +1138,41 @@ mod tests {
             validate_image_bytes(b"definitely not an image"),
             Err(BubbleError::UnsupportedFormat)
         ));
+    }
+
+    #[test]
+    fn prepare_captured_image_validates_once_and_small_has_no_preview() {
+        // FIX016.2：捕获路径一次解码；小图不生成预览，坏字节仍严格拒绝。
+        assert!(prepare_captured_image(&fixture_png())
+            .expect("合法小图必须通过")
+            .is_none());
+        assert!(matches!(
+            prepare_captured_image(b"<html>not an image</html>"),
+            Err(BubbleError::UnsupportedFormat)
+        ));
+    }
+
+    #[test]
+    fn prepare_captured_image_large_generates_preview() {
+        // FIX016.2：宽超阈值时复用同一次解码生成预览，长边 ≤1600。
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2001,
+            1,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .expect("大图夹具编码必须成功");
+        let preview = prepare_captured_image(&out)
+            .expect("合法大图必须通过")
+            .expect("大图必须生成预览");
+        let dims = image::ImageReader::new(std::io::Cursor::new(&preview))
+            .with_guessed_format()
+            .expect("预览格式必须可猜")
+            .into_dimensions()
+            .expect("预览尺寸必须可读");
+        assert_eq!(dims.0, 1600);
+        assert_eq!(dims.1, 1);
     }
 
     #[test]

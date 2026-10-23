@@ -149,6 +149,21 @@ static THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::n
 #[cfg(target_os = "windows")]
 static SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// FIX016.8：热键线程 Drop guard——正常退出、WM_QUIT、panic 展开都执行注销与
+/// THREAD_ID 清理，避免回调 panic 后 stop_thread 等满 500ms、热键整会话失效。
+#[cfg(target_os = "windows")]
+struct HotkeyThreadGuard;
+
+#[cfg(target_os = "windows")]
+impl Drop for HotkeyThreadGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        unsafe { win::UnregisterHotKey(0, HOTKEY_ID) };
+        let tid = unsafe { win::GetCurrentThreadId() };
+        let _ = THREAD_ID.compare_exchange(tid, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
 /// 注册代际计数（FIX009.1 替代 FIX008.13 的 bool 放弃标志）：reregister 进入即
 /// fetch_add 捕获本轮代际，线程双查比对"世界是否还是我那一轮"——不等 = 父侧已
 /// 超时放弃或已被后续轮（含回滚轮）取代，自行 Unregister 退出。代际只增不减，
@@ -295,6 +310,9 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                     return;
                 }
                 let _ = tx.send(Ok(()));
+                // FIX016.8：CAS 成功后即挂 Drop guard；后续 return / WM_QUIT / panic
+                // 都会注销热键并清 THREAD_ID。
+                let _guard = HotkeyThreadGuard;
                 // FIX009.1 双查之二：覆盖"send 与父超时交错"的微秒窗——tid 已
                 // 落位须自清（对齐消息循环退出路径的 CAS 形态）
                 if REREGISTER_GEN.load(Ordering::SeqCst) != my_gen {
@@ -317,7 +335,10 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
                     if msg.message == WM_HOTKEY && (msg.w_param & 0xFFFF) as i32 == HOTKEY_ID {
                         let slot = ON_HOTKEY.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(cb) = slot.as_ref() {
-                            cb();
+                            // FIX016.8：回调 panic 不得穿透消息循环；guard 负责清理。
+                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(cb)).is_err() {
+                                crate::diag::warn_diag("热键回调 panic（已隔离，线程继续）");
+                            }
                         }
                     }
                 }

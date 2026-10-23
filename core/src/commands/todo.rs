@@ -97,19 +97,32 @@ pub fn todo_remove(
     Ok(())
 }
 
-/// todo_remove 核心实现：删除条目 + PL027 连带释放其详情图文件（块行随删，清扫按
-/// 引用归零删 `note_*` 夹；失败落日志不阻断——文件残留代价小于阻断删除）
+/// todo_remove 核心实现：删除条目 + PL027 连带释放其详情图文件。FIX016.1：只收集
+/// 本条目涉及的 `note_*` 夹，锁外逐个复核当前引用后精确删除；不再按旧引用集扫全目录。
 pub fn todo_remove_core(
     id: i64,
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
     let storage = ctx.lock_storage()?;
-    storage.remove(id)?;
-    // FIX015.6：锁内只查引用集合；目录扫描/删除在 drop guard 后执行。
-    let referenced = storage.referenced_note_image_folders()?;
+    // FIX016.1：只收集被删条目的图片文件夹；不再按删除后的旧引用集做整目录清扫。
+    let folders = storage.remove_and_collect_note_folders(id)?;
     drop(storage);
-    crate::storage::sweep_orphan_note_folders(images_dir, &referenced);
+    for folder in folders {
+        // 每个文件夹重新取锁复核当前引用；新目录不在本列表，永不进入删除面。
+        let storage = match ctx.lock_storage() {
+            Ok(storage) => storage,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("删除条目后图片目录复核锁失败（跳过释放）：{err}"));
+                continue;
+            }
+        };
+        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
+            crate::diag::warn_diag(&format!(
+                "删除条目后详情图释放失败（best-effort 不阻断）：{err}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -161,17 +174,30 @@ pub fn todo_archive_list_core(
     ctx: &AppContext,
     images_dir: &std::path::Path,
 ) -> Result<Vec<TodoItem>, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let cutoff = storage.now_ms() - ARCHIVE_RETENTION_MS;
-    let purged = storage.purge_expired_done(cutoff)?;
+    let (purged, folders) = {
+        let storage = ctx.lock_storage()?;
+        let cutoff = storage.now_ms() - ARCHIVE_RETENTION_MS;
+        // FIX016.5：锁内回收并收集图片夹，锁外逐个短锁复核释放。
+        storage.purge_expired_done_and_collect_note_folders(cutoff)?
+    };
     if purged > 0 {
         crate::diag::console(&format!("归档回收：清理 {purged} 条超期条目"));
-        if let Err(err) = storage.sweep_orphan_note_images(images_dir) {
+    }
+    for folder in folders {
+        let storage = match ctx.lock_storage() {
+            Ok(storage) => storage,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("归档回收后图片复核锁失败（跳过释放）：{err}"));
+                continue;
+            }
+        };
+        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
             crate::diag::warn_diag(&format!(
-                "归档回收后详情图清扫失败（best-effort 不阻断）：{err}"
+                "归档回收后详情图释放失败（best-effort 不阻断）：{err}"
             ));
         }
     }
+    let storage = ctx.lock_storage()?;
     Ok(storage.list_done()?)
 }
 
@@ -343,8 +369,25 @@ pub fn note_blocks_save_core(
         })
         .collect();
     validate_note_blocks(&model)?;
-    let storage = ctx.lock_storage()?;
-    let saved = storage.set_note_blocks(images_dir, todo_id, &model)?;
+    // FIX016.5：保存只收集待释放图片夹，锁外逐个复核释放。
+    let (saved, folders) = {
+        let storage = ctx.lock_storage()?;
+        storage.set_note_blocks_collecting(todo_id, &model)?
+    };
+    for folder in folders {
+        let storage = match ctx.lock_storage() {
+            Ok(storage) => storage,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("详情保存后图片复核锁失败（跳过释放）：{err}"));
+                continue;
+            }
+        };
+        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
+            crate::diag::warn_diag(&format!(
+                "详情保存后图片释放失败（best-effort 不阻断）：{err}"
+            ));
+        }
+    }
     Ok(saved
         .into_iter()
         .map(|b| to_block_view(b, images_dir))
@@ -368,8 +411,24 @@ pub fn note_blocks_purge_deleted_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<(), CommandError> {
-    let storage = ctx.lock_storage()?;
-    storage.purge_deleted_note_blocks(images_dir, Some(todo_id))?;
+    // FIX016.5：事务内只收集待释放文件夹；锁外逐个复核释放。
+    let folders = {
+        let storage = ctx.lock_storage()?;
+        let (_, folders) = storage.purge_deleted_note_blocks_collecting(Some(todo_id))?;
+        folders
+    };
+    for folder in folders {
+        let storage = match ctx.lock_storage() {
+            Ok(storage) => storage,
+            Err(err) => {
+                crate::diag::warn_diag(&format!("软删除图片复核锁失败（跳过释放）：{err}"));
+                continue;
+            }
+        };
+        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
+            crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort 不阻断）：{err}"));
+        }
+    }
     Ok(())
 }
 
@@ -1201,6 +1260,61 @@ mod tests {
         let item = todo_add_core("任务一", &ctx).expect("合法文本必须成功");
         todo_remove_core(item.id, &dir, &ctx).expect("刚添加的条目必须存在");
         assert!(todo_list_core(&ctx).expect("读命令必须成功").is_empty());
+    }
+
+    #[test]
+    fn remove_does_not_sweep_unrelated_note_folder() {
+        // FIX016.1：删除路径只能释放本条目的图片，不得按旧引用集扫全目录。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let unrelated = dir.join("note_261024_1");
+        std::fs::create_dir_all(&unrelated).expect("无关图片目录必须可建");
+        let item = todo_add_core("无图任务", &ctx).expect("合法文本必须成功");
+        todo_remove_core(item.id, &dir, &ctx).expect("删除必须成功");
+        assert!(unrelated.is_dir(), "无关的 note_* 目录不得被删除");
+    }
+
+    #[test]
+    fn remove_releases_only_deleted_todo_image_folder() {
+        // FIX016.1：命令层走精确释放，删条目后其图片夹消失。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("带图任务", &ctx).expect("合法文本必须成功");
+        let storage = ctx.lock_storage().expect("锁必须可用");
+        let base = storage
+            .set_note_blocks(
+                &dir,
+                item.id,
+                &[NoteBlock {
+                    id: 0,
+                    kind: NoteBlockKind::Text,
+                    text: "文字".to_string(),
+                    image_file: None,
+                }],
+            )
+            .expect("写块必须成功");
+        let with_img = storage
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &fixture_png(),
+                None,
+                "261024000000",
+            )
+            .expect("插图必须成功");
+        let rel = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .and_then(|b| b.image_file.clone())
+            .expect("图块必须有文件");
+        let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        drop(storage);
+
+        todo_remove_core(item.id, &dir, &ctx).expect("删除必须成功");
+        assert!(!folder.is_dir(), "被删条目的图片夹必须释放");
     }
 
     // —— PL010.3 新命令 ——

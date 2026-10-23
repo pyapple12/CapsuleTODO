@@ -108,6 +108,18 @@ describe("mock 命令覆盖（FIX014.27）", () => {
     expect(pasted.blocks.filter((block) => block.kind === "Image")).toHaveLength(1);
   });
 
+  it("设置 mock 与 Rust 规范化/钳制一致", async () => {
+    // FIX016.19：主键不能被修饰键排序带偏；0 必须钳到 1。
+    expect(await mockInvoke("settings_set_bubble_hotkey", { combo: "Ctrl+Alt+C" })).toBe(
+      "Ctrl+Alt+C",
+    );
+    await expect(
+      mockInvoke("settings_set_bubble_hotkey", { combo: "Ctrl+Ctrl+A" }),
+    ).rejects.toBeTruthy();
+    await mockInvoke("settings_set_max_bubbles", { value: 0 });
+    expect(await mockInvoke("settings_get_max_bubbles")).toBe(1);
+  });
+
   it("HTML 多图粘贴按真实 img 数建块，不降级为单图", async () => {
     const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock HTML" });
     const saved = await mockInvoke<Array<{ id: number }>>("note_blocks_save", {

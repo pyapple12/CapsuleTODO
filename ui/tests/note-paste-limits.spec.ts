@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { notePasteFitsLimits, projectPasteLimits } from "../src/composables/notePasteLimits";
+import {
+  normalizePasteNewlines,
+  notePasteFitsLimits,
+  projectPasteLimits,
+} from "../src/composables/notePasteLimits";
 import { UI_NOTE_MAX_BLOCKS, UI_NOTE_MAX_LEN } from "../types";
 
 const textBlock = (text: string) => ({ kind: "Text" as const, text });
@@ -45,5 +49,10 @@ describe("notePasteFitsLimits（FIX014.6）：粘贴前静默闸门", () => {
     // FIX015.36：plainText 缺席时不能只数图片，否则超长正文会绕过前端闸门。
     const blocks = [textBlock("a".repeat(UI_NOTE_MAX_LEN - 1))];
     expect(notePasteFitsLimits(blocks, null, "", `<p>${"字".repeat(2)}</p>`, false)).toBe(false);
+  });
+
+  it("CR-only / 混合换行统一归一为 LF", () => {
+    // FIX016.3：粘贴路径与预检共用同一入口，不能把裸 CR 留进文本块。
+    expect(normalizePasteNewlines("a\rb\r\nc\nd")).toBe("a\nb\nc\nd");
   });
 });

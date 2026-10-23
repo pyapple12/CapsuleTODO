@@ -495,7 +495,10 @@ onMounted(async () => {
   // 标题阈值拖拽：单击不吞 click（浮板可点标题关闭），按住移动才拖窗；
   // onDragStart（PATCH002.61）在 `startDragging()` 前触发 ⇒ 置"拖拽中"标记屏蔽焦点抖动
   if (topbarEl.value) {
-    dragDestroy = useThresholdDrag(topbarEl.value, { onDragStart: markWindowDragStart });
+    dragDestroy = useThresholdDrag(topbarEl.value, {
+      onDragStart: markWindowDragStart,
+      onDragStartError: clearWindowDragging,
+    });
   }
 });
 

@@ -536,6 +536,11 @@ export function useDragReorder(): void {
   const onMouseMove = (e: MouseEvent): void => {
     const ctx = dragCtx;
     if (!ctx) return;
+    // FIX016.17：mouseup 丢失但窗口未失焦时，无左键移动按收场处理，不能让行跟手。
+    if ((e.buttons & 1) === 0) {
+      onMouseUp();
+      return;
+    }
     if (!ctx.engaged) {
       // 长按等待期：移动超阈值 = 不是长按拖拽，取消本次手势（松手仍是点击）
       if (
@@ -601,7 +606,21 @@ export function useDragReorder(): void {
   document.addEventListener("mouseup", onMouseUp);
   window.addEventListener("blur", onBlur);
 
+  /** FIX016.17：卸载/重挂时无提交地收掉拖拽残留（ghost/timer/RAF/body 选择）。 */
+  const abortDrag = (): void => {
+    const ctx = dragCtx;
+    dragCtx = null;
+    if (!ctx) return;
+    window.clearTimeout(ctx.timer);
+    if (ctx.raf) cancelAnimationFrame(ctx.raf);
+    document.body.style.userSelect = "";
+    ctx.listEl.classList.remove("drag-live");
+    ctx.rows.forEach((row) => row.el.classList.remove("shifting"));
+    ctx.ghost.remove();
+  };
+
   onUnmounted(() => {
+    abortDrag();
     document.removeEventListener("mousedown", onMouseDown);
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);

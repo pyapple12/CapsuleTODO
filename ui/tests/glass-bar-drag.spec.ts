@@ -66,4 +66,17 @@ describe("useGlassBar 拖拽收尾（FIX015.31）", () => {
     window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientY: 90 }));
     expect(scroller.scrollTop).toBe(moved);
   });
+
+  it("pointercancel / lostpointercapture 都停止在飞拖拽", () => {
+    const thumb = board.querySelector<HTMLElement>(".glass-thumb")!;
+    thumb.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientY: 10 }));
+    thumb.dispatchEvent(new Event("pointercancel", { bubbles: true }));
+    window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientY: 80 }));
+    expect(scroller.scrollTop).toBe(0);
+
+    thumb.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientY: 10 }));
+    thumb.dispatchEvent(new Event("lostpointercapture", { bubbles: true }));
+    window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientY: 80 }));
+    expect(scroller.scrollTop).toBe(0);
+  });
 });

@@ -173,6 +173,7 @@ defineExpose({ toggle, close, setArchiveVisible });
 
 /** 点板空白收板（与再点按钮双出口；行内交互 stop 传播不误触） */
 function onOverlayDown(e: MouseEvent): void {
+  if (!isOpen.value) return; // FIX016.15：收起态透明根不得翻回开板
   if ((e.target as HTMLElement).closest(".board-glass") === null) toggle();
 }
 

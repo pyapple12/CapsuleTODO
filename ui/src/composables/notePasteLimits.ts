@@ -62,6 +62,11 @@ function htmlTextUpperBound(html: string): number {
   return charCount(html.replace(/<[^>]*>/g, ""));
 }
 
+/** FIX016.3：剪贴板多行文本唯一换行归一化入口（CRLF / 裸 CR → LF）。 */
+export function normalizePasteNewlines(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
 /** 按 HTML 中的 `<img>` 数量计图块（大小写不敏感；srcset 不会额外增加） */
 function htmlImageCount(html: string): number {
   const lower = html.toLowerCase();
@@ -92,7 +97,7 @@ export function projectPasteLimits(
     0,
   );
   const removedChars = range ? selectedChars(blocks, range) : 0;
-  const normalized = plainText.replace(/\r\n?/g, "\n");
+  const normalized = normalizePasteNewlines(plainText);
   // HTML-only 剪贴板（无 text/plain）不能把正文长度漏算；仅此时用 HTML 去标签上界。
   const incomingChars =
     charCount(normalized.replace(/\n/g, "")) +

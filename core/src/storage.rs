@@ -150,14 +150,17 @@ fn folder_of(rel: &str) -> String {
         .unwrap_or_else(|| rel.to_string())
 }
 
-/// FIX015.6：在 **storage 锁外**执行详情图孤儿目录扫描/删除。
-/// 引用集合由 `referenced_note_image_folders` 在锁内一次查出；本函数只碰 `note_*` 目录，
-/// 删除失败 best-effort 落日志，不阻断命令。
-pub(crate) fn sweep_orphan_note_folders(images_dir: &Path, referenced: &HashSet<String>) -> usize {
+/// FIX016.22：通用画像目录孤儿扫描（note_* / bubble_* 共用）。调用方负责提供
+/// 当前引用文件夹集合；只处理指定前缀，删除失败 best-effort 不阻断。
+pub(crate) fn sweep_orphan_image_folders(
+    images_dir: &Path,
+    prefix: &str,
+    referenced: &HashSet<String>,
+) -> usize {
     let entries = match std::fs::read_dir(images_dir) {
         Ok(e) => e,
         Err(err) => {
-            crate::diag::warn_diag(&format!("详情图清扫跳过（目录不可读）：{err}"));
+            crate::diag::warn_diag(&format!("图片清扫跳过（目录不可读）：{err}"));
             return 0;
         }
     };
@@ -165,7 +168,7 @@ pub(crate) fn sweep_orphan_note_folders(images_dir: &Path, referenced: &HashSet<
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("note_") || !entry.path().is_dir() {
+        if !name.starts_with(prefix) || !entry.path().is_dir() {
             continue;
         }
         if referenced.contains(name) {
@@ -173,13 +176,18 @@ pub(crate) fn sweep_orphan_note_folders(images_dir: &Path, referenced: &HashSet<
         }
         if let Err(err) = std::fs::remove_dir_all(entry.path()) {
             crate::diag::warn_diag(&format!(
-                "详情图孤儿文件夹删除失败（best-effort 不阻断）：{err}"
+                "图片孤儿文件夹删除失败（best-effort 不阻断）：{err}"
             ));
             continue;
         }
         removed += 1;
     }
     removed
+}
+
+/// 详情图孤儿扫描兼容入口。
+pub(crate) fn sweep_orphan_note_folders(images_dir: &Path, referenced: &HashSet<String>) -> usize {
+    sweep_orphan_image_folders(images_dir, "note_", referenced)
 }
 
 /// FIX014.16：原图内层名与固定预览名 `preview.png` 冲突时改用 `original.png`。
@@ -218,6 +226,8 @@ pub(crate) fn is_safe_image_folder(name: &str, prefix: &str) -> bool {
 }
 
 /// FIX014.17：详情 `image_file` 必须是安全的 `note_* / 文件名` 两段路径。
+/// FIX016.5 后生产释放走文件夹精确 helper；本精确路径 helper 仅供历史测试夹具。
+#[cfg(test)]
 fn safe_note_folder(rel: &str) -> Option<&str> {
     let (folder, file) = rel.split_once('/')?;
     if file.is_empty()
@@ -716,12 +726,27 @@ impl Storage {
             })
     }
 
-    /// 删除条目；零行删除返回 NotFound。PL027：**连带删除该条目的详情块行**（其图片
-    /// 文件由调用方经 `sweep_orphan_note_images` 释放——此时引用已归零）
+    /// 删除条目；零行删除返回 NotFound。内部收口到
+    /// `remove_and_collect_note_folders`，兼容只需删除结果的旧调用/测试。
     pub fn remove(&self, id: i64) -> Result<(), StorageError> {
-        // FIX014.11：块删除与条目删除必须同事务——第二步失败时不得留下“块没了、条目还在”。
+        self.remove_and_collect_note_folders(id).map(|_| ())
+    }
+
+    /// 删除条目并返回该条目图片所在的 `note_*` 文件夹（去重，事务提交后才返回）。
+    /// 调用方在锁外逐个复核当前引用后释放；删除路径不再按旧引用集扫整目录。
+    /// FIX016.1：保留软删除图块的 image_file，避免删除前漏掉待撤销文件。
+    pub fn remove_and_collect_note_folders(&self, id: i64) -> Result<Vec<String>, StorageError> {
         self.conn.execute_batch("BEGIN")?;
-        let result = (|| -> Result<(), StorageError> {
+        let result = (|| -> Result<Vec<String>, StorageError> {
+            let paths = self.note_image_paths(id)?;
+            let mut folders = Vec::new();
+            let mut seen = HashSet::new();
+            for rel in paths {
+                let folder = folder_of(&rel);
+                if seen.insert(folder.clone()) {
+                    folders.push(folder);
+                }
+            }
             self.conn.execute(
                 "DELETE FROM note_blocks WHERE todo_id = ?1",
                 rusqlite::params![id],
@@ -732,12 +757,12 @@ impl Storage {
             if changed == 0 {
                 return Err(StorageError::NotFound(id));
             }
-            Ok(())
+            Ok(folders)
         })();
         match result {
-            Ok(()) => {
+            Ok(folders) => {
                 self.commit_transaction("删除条目")?;
-                Ok(())
+                Ok(folders)
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
@@ -746,6 +771,28 @@ impl Storage {
                 Err(err)
             }
         }
+    }
+
+    /// FIX016.1：在持有 storage 锁时复核文件夹当前引用；无引用才删精确的 `note_*`
+    /// 文件夹。新目录不进入调用方列表，整目录扫描不再参与删条目路径。
+    pub(crate) fn release_note_folder_if_unreferenced(
+        &self,
+        images_dir: &Path,
+        folder: &str,
+    ) -> Result<(), StorageError> {
+        if !is_safe_image_folder(folder, "note_") {
+            return Err(StorageError::InvalidImagePath(folder.to_string()));
+        }
+        if self.referenced_note_image_folders()?.contains(folder) {
+            return Ok(());
+        }
+        let dir = images_dir.join(folder);
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            crate::diag::warn_diag(&format!(
+                "详情图文件夹删除失败（best-effort 不阻断）：{err}"
+            ));
+        }
+        Ok(())
     }
 
     /// 清单排序视图：未完成在前按 sort_order 升序（拖拽序）、已完成在后按 sort_order
@@ -780,11 +827,37 @@ impl Storage {
     /// 先例）；未完成条目（done = 0）不在谓词内。cutoff 由调用方按业务常量
     /// todo::ARCHIVE_RETENTION_MS 计算——存储层不持保留期策略。
     pub fn purge_expired_done(&self, cutoff: i64) -> Result<usize, StorageError> {
-        // PL027：连带删除待回收条目的详情块行（先删块再删条目——子查询须在条目还在时求值）；
-        // 其图片文件由调用方经 sweep_orphan_note_images 释放（此时引用已归零）。
+        self.purge_expired_done_and_collect_note_folders(cutoff)
+            .map(|(count, _)| count)
+    }
+
+    /// FIX016.5：归档回收与图片夹收集同一事务；调用方锁外按精确文件夹释放。
+    pub fn purge_expired_done_and_collect_note_folders(
+        &self,
+        cutoff: i64,
+    ) -> Result<(usize, Vec<String>), StorageError> {
+        // PL027：连带删除待回收条目的详情块行（先删块再删条目——子查询须在条目还在时求值）。
         // FIX014.11：两次 DELETE 必须同事务，失败不得留下“块删了、条目还在”的半态。
         self.conn.execute_batch("BEGIN")?;
-        let result = (|| -> Result<usize, StorageError> {
+        let result = (|| -> Result<(usize, Vec<String>), StorageError> {
+            let mut stmt = self.conn.prepare(
+                "SELECT image_file FROM note_blocks
+                 WHERE image_file IS NOT NULL AND todo_id IN (
+                     SELECT id FROM todos WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1
+                 )",
+            )?;
+            let paths: Vec<String> = stmt
+                .query_map([cutoff], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut folders = Vec::new();
+            let mut seen = HashSet::new();
+            for rel in paths {
+                let folder = folder_of(&rel);
+                if seen.insert(folder.clone()) {
+                    folders.push(folder);
+                }
+            }
             self.conn.execute(
                 "DELETE FROM note_blocks WHERE todo_id IN (
                      SELECT id FROM todos WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1
@@ -796,12 +869,12 @@ impl Storage {
                  WHERE done = 1 AND done_at IS NOT NULL AND done_at < ?1",
                 rusqlite::params![cutoff],
             )?;
-            Ok(changed)
+            Ok((changed, folders))
         })();
         match result {
-            Ok(changed) => {
+            Ok((changed, folders)) => {
                 self.commit_transaction("归档回收")?;
-                Ok(changed)
+                Ok((changed, folders))
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
@@ -865,6 +938,7 @@ impl Storage {
 
     /// 释放详情图引用（PL027 域内引用计数）：该文件**已无任何块引用**才递归删其
     /// `note_{…}` 文件夹；删除失败 best-effort 落日志不阻断（文件残留代价小于阻断用户操作）
+    #[cfg(test)]
     fn release_note_image(&self, images_dir: &Path, rel: &str) -> Result<(), StorageError> {
         // FIX014.17：DB 路径异常时绝不 join/remove——空串会指向 images 根，
         // `../` 会跳出 images 目录。校验失败保留文件、向上报可读错误。
@@ -896,6 +970,20 @@ impl Storage {
         images_dir: &Path,
         todo_id: Option<i64>,
     ) -> Result<usize, StorageError> {
+        let (deleted, folders) = self.purge_deleted_note_blocks_collecting(todo_id)?;
+        for folder in folders {
+            if let Err(err) = self.release_note_folder_if_unreferenced(images_dir, &folder) {
+                crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort）：{err}"));
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// FIX016.5：软删除收口只返回待释放文件夹；生产调用方锁外复核释放。
+    pub fn purge_deleted_note_blocks_collecting(
+        &self,
+        todo_id: Option<i64>,
+    ) -> Result<(usize, Vec<String>), StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT image_file FROM note_blocks
              WHERE deleted_at IS NOT NULL
@@ -924,12 +1012,15 @@ impl Storage {
                 return Err(StorageError::Sqlite(err));
             }
         };
+        let mut folders = Vec::new();
+        let mut seen = HashSet::new();
         for rel in paths {
-            if let Err(err) = self.release_note_image(images_dir, &rel) {
-                crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort）：{err}"));
+            let folder = folder_of(&rel);
+            if seen.insert(folder.clone()) {
+                folders.push(folder);
             }
         }
-        Ok(deleted)
+        Ok((deleted, folders))
     }
 
     /// 查询当前所有被引用的详情图文件夹（锁内只做一次 DISTINCT 查询；FIX014.13）。
@@ -951,6 +1042,31 @@ impl Storage {
     pub fn sweep_orphan_note_images(&self, images_dir: &Path) -> Result<usize, StorageError> {
         let referenced = self.referenced_note_image_folders()?;
         Ok(sweep_orphan_note_folders(images_dir, &referenced))
+    }
+
+    /// FIX016.22：气泡图片引用文件夹集合（只读气泡图块）。
+    pub fn referenced_bubble_image_folders(&self) -> Result<HashSet<String>, StorageError> {
+        Ok(self
+            .conn
+            .prepare(
+                "SELECT DISTINCT image_file FROM bubbles
+                 WHERE kind = 'image' AND image_file IS NOT NULL",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|rel| folder_of(&rel))
+            .collect())
+    }
+
+    /// FIX016.22：启动期清扫无引用的 `bubble_*` 文件夹（崩溃残留 / 删除失败自愈）。
+    pub fn sweep_orphan_bubble_images(&self, images_dir: &Path) -> Result<usize, StorageError> {
+        let referenced = self.referenced_bubble_image_folders()?;
+        Ok(sweep_orphan_image_folders(
+            images_dir,
+            "bubble_",
+            &referenced,
+        ))
     }
 
     /// 目标块必须存在且属于该条目（PATCH002.46）：块 id 有三条路径会指向"库里不存在的
@@ -990,6 +1106,23 @@ impl Storage {
         todo_id: i64,
         blocks: &[NoteBlock],
     ) -> Result<Vec<NoteBlock>, StorageError> {
+        let (saved, folders) = self.set_note_blocks_collecting(todo_id, blocks)?;
+        for folder in folders {
+            if let Err(err) = self.release_note_folder_if_unreferenced(images_dir, &folder) {
+                crate::diag::warn_diag(&format!(
+                    "详情块提交后释放图片失败（best-effort 不阻断）：{err}"
+                ));
+            }
+        }
+        Ok(saved)
+    }
+
+    /// FIX016.5：详情保存只返回旧图片待释放文件夹；生产调用方锁外复核释放。
+    pub fn set_note_blocks_collecting(
+        &self,
+        todo_id: i64,
+        blocks: &[NoteBlock],
+    ) -> Result<(Vec<NoteBlock>, Vec<String>), StorageError> {
         // FIX014.12：正 id 重复会让同一行被多次更新，最终块数与内容可能静默丢失；
         // id=0 是新块占位，允许重复，不参与去重。
         let mut seen_ids = HashSet::new();
@@ -1175,20 +1308,20 @@ impl Storage {
         }
         // PATCH002.56 口径改定（2026-10-19）：storage **不自行补块** —— 末块不变量由**前端在保存点**
         // 唯一负责（两边都管会导致"补 → 下次保存被差分删"的来回抖动）
-        // 释放不再被引用的图文件（旧路径 − **落库后仍存的**路径；引用数归零才删）。
-        // 用落库后查询而非入参推断：入参只带 {id, kind, text}，图块文件信息在库内。
-        // 事务已提交，释放失败只能 best-effort 落日志——不能让已成功写入返回 Err。
+        // FIX016.5：提交后只收集不再被引用的文件夹，生产调用方锁外复核释放。
+        let saved = self.note_blocks(todo_id)?;
         let surviving = self.note_image_paths(todo_id)?;
+        let mut folders = Vec::new();
+        let mut seen = HashSet::new();
         for rel in old_paths {
             if !surviving.contains(&rel) {
-                if let Err(err) = self.release_note_image(images_dir, &rel) {
-                    crate::diag::warn_diag(&format!(
-                        "详情块提交后释放图片失败（best-effort 不阻断）：{err}"
-                    ));
+                let folder = folder_of(&rel);
+                if seen.insert(folder.clone()) {
+                    folders.push(folder);
                 }
             }
         }
-        self.note_blocks(todo_id)
+        Ok((saved, folders))
     }
 
     /// 粘贴插图兼容入口：旧调用方在 storage 锁内直接调用；生产热路径走
@@ -1428,6 +1561,11 @@ impl Storage {
         )
     }
 
+    /// # 性能边界（FIX016.5）
+    /// 本函数仍在**调用方 storage 锁内**写多图文件（依赖目标块快照、批内 hash 去重和
+    /// 同一事务的排序原子性；两阶段拆分会扩大竞态面）。单次输入受 HTML 2MB / 100 块上限
+    /// 约束，锁内 I/O 是有界成本；此处不拆事务，作为已登记的性能取舍。
+    ///
     /// 多段粘贴（PATCH002.25；PATCH002.76 扩展远端占位）：把 `block_id` 的文本按
     /// `before` / `after` 切开，中间按序插入「文本段 / 图段 / 远端图占位段」（保持
     /// sort_order 连续）→ 返回（新块列表, **与 parts 同序的块 id**）。
@@ -2400,6 +2538,39 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
         dir
+    }
+
+    #[test]
+    fn sweep_orphan_bubble_images_keeps_referenced() {
+        // FIX016.22：只清无气泡引用的 bubble_* 文件夹。
+        let st = storage();
+        let dir = temp_images_dir();
+        let added = st
+            .add_image_bubble_prepared(
+                &dir,
+                "🖼️ 图片",
+                b"fake-bubble-image",
+                None,
+                "261024000000",
+                None,
+            )
+            .expect("气泡入库必须成功")
+            .added_item();
+        let (rel, _) = st
+            .get_bubble_image_file(added.id)
+            .expect("读图路径必须成功")
+            .expect("图片必须有路径");
+        let referenced_folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+        let orphan = dir.join("bubble_261024_999");
+        std::fs::create_dir_all(&orphan).expect("孤儿目录必须可建");
+
+        assert_eq!(
+            st.sweep_orphan_bubble_images(&dir)
+                .expect("气泡清扫必须成功"),
+            1
+        );
+        assert!(referenced_folder.is_dir(), "有引用的气泡图片夹必须保留");
+        assert!(!orphan.is_dir(), "无引用的气泡图片夹必须清理");
     }
 
     #[test]
@@ -4178,6 +4349,53 @@ mod tests {
     }
 
     #[test]
+    fn remove_and_collect_note_folders_does_not_delete_before_release() {
+        // FIX016.1：删除只收集文件夹；释放由调用方在复核当前引用后精确执行。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let rel = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("应有图块")
+            .image_file
+            .clone()
+            .expect("有文件");
+        let folder_name = rel.rsplit_once('/').expect("含子目录").0.to_string();
+        let folder = dir.join(&folder_name);
+        assert!(folder.is_dir(), "落盘文件夹在");
+
+        let folders = st
+            .remove_and_collect_note_folders(item.id)
+            .expect("删除并收集必须成功");
+        assert_eq!(folders, vec![folder_name.clone()]);
+        assert!(folder.is_dir(), "收集阶段不得提前删文件");
+
+        // 收集之后新建的 note_* 目录不在本次列表，释放旧目录不得触碰它。
+        let later = dir.join("note_261018_999");
+        std::fs::create_dir_all(&later).expect("后建目录必须可建");
+        st.release_note_folder_if_unreferenced(&dir, &folder_name)
+            .expect("释放必须成功");
+        assert!(!folder.is_dir(), "引用归零后精确文件夹消失");
+        assert!(later.is_dir(), "后建目录不得被本次释放删除");
+    }
+
+    #[test]
     fn remove_todo_sweeps_orphan_note_images() {
         let st = storage();
         let dir = temp_images_dir();
@@ -4208,6 +4426,53 @@ mod tests {
         st.remove(item.id).expect("删条目必须成功");
         assert_eq!(st.sweep_orphan_note_images(&dir).expect("清扫必须成功"), 1);
         assert!(!folder.is_dir(), "删条目后图片文件夹消失");
+    }
+
+    #[test]
+    fn purge_expired_collects_note_folders_without_sweep() {
+        // FIX016.5：归档回收只收集文件夹；释放由调用方锁外复核执行。
+        let (st, clock) = stepped_storage();
+        let dir = temp_images_dir();
+        let t0 = clock.load(Ordering::SeqCst);
+        let item = st.add("老条目").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "文字")])
+            .expect("写块必须成功");
+        let with_img = st
+            .add_note_image_block(
+                &dir,
+                item.id,
+                base[0].id,
+                "",
+                "",
+                &png_bytes(),
+                None,
+                "261018000000",
+            )
+            .expect("插图必须成功");
+        let rel = with_img
+            .iter()
+            .find(|b| b.kind == NoteBlockKind::Image)
+            .expect("应有图块")
+            .image_file
+            .clone()
+            .expect("有文件");
+        let folder_name = rel.rsplit_once('/').expect("含子目录").0.to_string();
+        let folder = dir.join(&folder_name);
+        st.toggle(item.id).expect("勾选必须成功");
+        clock.store(t0 + crate::todo::ARCHIVE_RETENTION_MS + 1, Ordering::SeqCst);
+        let cutoff = clock.load(Ordering::SeqCst) - crate::todo::ARCHIVE_RETENTION_MS;
+
+        let (purged, folders) = st
+            .purge_expired_done_and_collect_note_folders(cutoff)
+            .expect("回收必须成功");
+        assert_eq!(purged, 1);
+        assert_eq!(folders, vec![folder_name.clone()]);
+        assert!(folder.is_dir(), "收集阶段不得提前删文件");
+
+        st.release_note_folder_if_unreferenced(&dir, &folder_name)
+            .expect("释放必须成功");
+        assert!(!folder.is_dir(), "引用归零后文件夹消失");
     }
 
     #[test]

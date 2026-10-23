@@ -254,7 +254,7 @@ const handlers: Record<string, CommandHandler> = {
   note_blocks_list: (args) => {
     const todoId = Number(args.todoId);
     // FIX015.35：Rust `note_blocks` 对不存在 todo 返回空数组，mock 不再抛错。
-    return state.noteBlocks.get(todoId) ?? [];
+    return (state.noteBlocks.get(todoId) ?? []).map((block) => ({ ...block }));
   },
   note_blocks_save: (args) => {
     const todoId = Number(args.todoId);
@@ -266,8 +266,26 @@ const handlers: Record<string, CommandHandler> = {
     }>;
     const validationError = validateMockNoteBlocks(input);
     if (validationError) throw validationError;
-    // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
     const old = state.noteBlocks.get(todoId) ?? [];
+    const seen = new Set<number>();
+    for (const block of input) {
+      if (block.id > 0 && !seen.add(block.id)) throw `详情块 id 重复：${block.id}`;
+      if (block.id > 0) {
+        const owner = state.noteBlocks;
+        const ownerTodo = [...owner.entries()].find(([, list]) =>
+          list.some((item) => item.id === block.id),
+        )?.[0];
+        if (ownerTodo != null && ownerTodo !== todoId) throw `详情块 id 属于其他条目：${block.id}`;
+      }
+      if (block.kind === "Image" && block.id <= 0) {
+        throw "图块必须来自已落盘图块（id > 0）";
+      }
+      if (block.kind === "Image") {
+        const prev = old.find((item) => item.id === block.id);
+        if (!prev || prev.kind !== "Image") throw `图块 id 不是有效图块：${block.id}`;
+      }
+    }
+    // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
     const saved: MockNoteBlock[] = input.map((b) => {
       const prev = old.find((x) => x.id === b.id);
       return {
@@ -279,7 +297,7 @@ const handlers: Record<string, CommandHandler> = {
     });
     state.noteBlocks.set(todoId, saved);
     recomputeHasNote(todoId);
-    return saved;
+    return saved.map((block) => ({ ...block }));
   },
   note_blocks_purge_deleted: (): void => {
     // DEV mock 无真实文件引用；软删除收口为 no-op
@@ -292,6 +310,7 @@ const handlers: Record<string, CommandHandler> = {
     if (idx < 0) throw `详情块不存在：${blockId}`;
     const before = String(args.before ?? "");
     const after = String(args.after ?? "");
+    const keepAfter = after.trim() !== "";
     const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
     next[idx].text = before;
     next.splice(idx + 1, 0, {
@@ -300,7 +319,7 @@ const handlers: Record<string, CommandHandler> = {
       text: "",
       image_path: MOCK_NOTE_IMAGE,
     });
-    if (after !== "") {
+    if (keepAfter) {
       next.splice(idx + 2, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
@@ -335,6 +354,7 @@ const handlers: Record<string, CommandHandler> = {
     }
     const before = String(args.before ?? "");
     const after = String(args.after ?? "");
+    const keepAfter = after.trim() !== "";
     const imageCount = (html.match(/<img\b/gi) ?? []).length || 1;
     const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
     next[idx].text = before;
@@ -346,7 +366,7 @@ const handlers: Record<string, CommandHandler> = {
         image_path: MOCK_NOTE_IMAGE,
       });
     }
-    if (after !== "") {
+    if (keepAfter) {
       next.splice(idx + 1 + imageCount, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
@@ -514,7 +534,10 @@ const handlers: Record<string, CommandHandler> = {
   settings_get_max_bubbles: () => MAX_BUBBLES,
   settings_get_bubble_max_limit: () => BUBBLE_MAX_LIMIT,
   settings_set_max_bubbles: (args) => {
-    MAX_BUBBLES = Math.min(BUBBLE_MAX_LIMIT, Math.max(1, Number(args.value) || 5));
+    const value = Number(args.value);
+    MAX_BUBBLES = Number.isFinite(value)
+      ? Math.min(BUBBLE_MAX_LIMIT, Math.max(1, Math.trunc(value)))
+      : 5;
     return null;
   },
   // 窗口偏好（PL017）：置顶与贴边吸附开关（内存态，设置板 toggle 断言用）
@@ -545,16 +568,17 @@ const handlers: Record<string, CommandHandler> = {
       .toUpperCase()
       .split("+")
       .map((p) => p.trim());
-    const modOk = parts.filter((p) => mods.includes(p)).length >= 1;
+    const modParts = parts.filter((p) => mods.includes(p));
     const main = parts.filter((p) => !mods.includes(p));
+    if (new Set(modParts).size !== modParts.length) throw `热键组合含重复修饰键：${combo}`;
+    const modOk = modParts.length >= 1;
     const mainOk =
       main.length === 1 && (/^[A-Z0-9]$/.test(main[0]) || /^F([1-9]|1[0-2])$/.test(main[0]));
     if (!modOk || !mainOk) throw `热键组合不合法：${combo}`;
     if (mockBubbleHotkeyBusy) throw "热键注册失败（热键可能被其它程序占用）";
-    MOCK_BUBBLE_HOTKEY = parts
-      // FIX008.14：升序 = Ctrl→Alt→Shift→Win，对齐 Rust to_display 固定序（有测试
-      // 断言锚定）——回显序漂移会让 IAB 断言锁死与真机不同的假形态
-      .sort((a, b) => mods.indexOf(a) - mods.indexOf(b) || (a < b ? -1 : 1))
+    // FIX016.19：只排序修饰键，主键单独追加；主键不能参与 mods.indexOf 排序。
+    const ordered = [...mods.filter((mod) => modParts.includes(mod)), ...main];
+    MOCK_BUBBLE_HOTKEY = ordered
       .map((p) => (p === "CTRL" ? "Ctrl" : p.charAt(0) + p.slice(1).toLowerCase()))
       .join("+");
     return MOCK_BUBBLE_HOTKEY;

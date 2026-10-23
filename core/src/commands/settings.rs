@@ -93,6 +93,8 @@ pub fn settings_set_bubble_hotkey(
     combo: String,
     ctx: State<'_, AppContext>,
 ) -> Result<String, CommandError> {
+    // FIX016.21：old 仅 Windows 回滚路径使用；非 Windows 不生成未使用变量。
+    #[cfg(target_os = "windows")]
     let old = settings_get_bubble_hotkey_core(&ctx)?;
     let path = match settings_path_or_err() {
         Ok(path) => path,
@@ -112,6 +114,7 @@ pub fn settings_set_bubble_hotkey(
             return Err(err);
         }
     };
+    #[cfg(target_os = "windows")]
     let normalized_display = crate::hotkey::to_display(&normalized);
     #[cfg(target_os = "windows")]
     if let Err(err) = crate::hotkey::reregister(normalized) {

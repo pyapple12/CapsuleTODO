@@ -77,6 +77,7 @@ defineExpose({ close });
 
 /** 点板空白收板；点板外任何位置收板（panels.js 同款 document 级） */
 function onOverlayDown(e: MouseEvent): void {
+  if (!isOpen.value) return; // FIX016.15：收起态透明根不得翻回开板
   if ((e.target as HTMLElement).closest(".board-glass") === null) toggle();
 }
 

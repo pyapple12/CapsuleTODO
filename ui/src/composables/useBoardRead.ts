@@ -169,6 +169,13 @@ export function useBoardRead(
     pinned = next;
   };
 
+  /** FIX016.18：覆盖期结束必须按当前滚动位置重算 pinned，不能保留旧 true。 */
+  const releasePinOverride = (): void => {
+    if (!pinOverride) return;
+    pinOverride = false;
+    syncPinned();
+  };
+
   const onScroll = (): void => {
     // 到底判定实时化：滚动途中贴底就地抬带；未到底清值回落默认带
     const dragging = opts.skipDuringDrag && dragEngagedProbe();
@@ -207,7 +214,7 @@ export function useBoardRead(
       }
       el.scrollTop = sh;
     }
-    pinOverride = false; // 本批增长已结算 ⇒ 交回滚动判定
+    releasePinOverride(); // 本批增长已结算 ⇒ 交回滚动判定并按当前 scrollTop 重算
   });
   /** 重绑观察目标（**增量**：只 observe 新增、unobserve 移除——整体 disconnect 会丢同帧回调 ✗） */
   const observed = new Set<Element>();
@@ -250,7 +257,8 @@ export function useBoardRead(
     if (pinOverrideTimer) window.clearTimeout(pinOverrideTimer);
     // 安全阀：增长一直没来（无 RO 命中）时最多挡 300ms，之后交回滚动判定
     pinOverrideTimer = window.setTimeout(() => {
-      pinOverride = false;
+      pinOverrideTimer = undefined;
+      releasePinOverride();
     }, 300);
   };
 

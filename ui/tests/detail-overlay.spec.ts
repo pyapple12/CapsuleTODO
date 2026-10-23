@@ -90,6 +90,7 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     wrapper = undefined;
     document.getElementById("board")?.remove();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -112,6 +113,94 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(after).toHaveLength(3);
     expect(after.map((el) => el.element.value)).toEqual(["a", "bc", "def"]);
     expect(after.some((el) => el.element.value.includes("\n"))).toBe(false);
+  });
+
+  it("大写 IMG 的 HTML-only 粘贴仍进入 HTML 分支", async () => {
+    // FIX016.6：前端图片判定必须大小写不敏感。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_paste_html") {
+        return { outcome: { status: "no_image" }, pending: [] };
+      }
+      return undefined;
+    });
+
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/html"],
+        getData: (type: string) => (type === "text/html" ? "<IMG SRC='x.png'>" : ""),
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(true);
+  });
+
+  it("CR-only 多行粘贴归一为 LF 并落库", async () => {
+    // FIX016.3：裸 CR 不能进入文本块，否则 Rust 校验会拒绝整条保存。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    textarea.element.focus();
+    textarea.element.setSelectionRange(0, 0);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? "a\rb" : ""),
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["a", "babc", "def"]);
+    expect(values.some((value) => value.includes("\r"))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    const last = saved[saved.length - 1];
+    expect(last.map((block) => block.text)).toEqual(["a", "babc", "def"]);
+    expect(last.every((block) => !block.text.includes("\r"))).toBe(true);
+  });
+
+  it("方向键落到图块后焦点交给图块容器，可继续返回文本", async () => {
+    // FIX016.10：只 selectImage 不聚焦会让图块 keydown 永远收不到。
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    first.element.focus();
+    first.element.setSelectionRange(first.element.value.length, first.element.value.length);
+
+    await first.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+
+    const image = wrapper.find<HTMLElement>('.note-block[data-row-id="2"]');
+    expect(document.activeElement).toBe(image.element);
+
+    await image.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+    const textareas = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    expect(document.activeElement).toBe(textareas[textareas.length - 1].element);
   });
 
   it("图块首块选区删除新建文本块，撤销恢复原图块", async () => {
@@ -591,6 +680,39 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
       "def",
     ]);
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(false);
+  });
+
+  it("图片路径已返回、解码仍挂起时关板，第二道代际守卫仍拦截", async () => {
+    let resolveDecode!: () => void;
+    const decodeGate = new Promise<void>((resolve) => {
+      resolveDecode = resolve;
+    });
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        decode(): Promise<void> {
+          return decodeGate;
+        }
+      },
+    );
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "bubble_get_image_path" ? Promise.resolve("asset://localhost/a.png") : undefined,
+    );
+    const bubble: BubbleItem = { id: 8, text: "🖼️ 图片", kind: "Image" };
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+
+    await wrapper.setProps({ todo: null, bubble, anchor: null });
+    await flushPromises();
+    await wrapper.setProps({ todo: null, bubble: null, anchor: null });
+    await flushPromises();
+    resolveDecode();
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.find(".detail-overlay").classes()).not.toContain("open");
   });
 
   it("图片气泡解码中关板，晚到结果不得重新开板", async () => {

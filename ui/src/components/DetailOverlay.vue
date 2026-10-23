@@ -20,7 +20,7 @@ import {
 import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
-import { notePasteFitsLimits } from "../composables/notePasteLimits";
+import { normalizePasteNewlines, notePasteFitsLimits } from "../composables/notePasteLimits";
 import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection";
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
 import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
@@ -928,7 +928,7 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   // PATCH002.25：剪贴板带 text/html 且含 <img> → 走多段粘贴（唯一能带**多图 + 段落结构**
   // 的载体；应用内复制经 PATCH002.24 内联 data: 图，此处免联网直取）
   const html = htmlClip;
-  if (html.includes("<img")) {
+  if (/<img\b/i.test(html)) {
     e.preventDefault();
     const pasteTodoId = props.todo?.id ?? null;
     pasteInFlight += 1;
@@ -1124,7 +1124,8 @@ function pasteTextLines(
   if (push) pushUndo();
   const head = block.text.slice(0, start);
   const tail = block.text.slice(end);
-  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
+  // FIX016.3：CR-only / 混合换行统一为 LF，绝不让 \r 进入文本块（Rust 会拒绝保存）。
+  const lines = normalizePasteNewlines(text).split("\n");
   // 首行并入当前块；其余行各成一块；末行接尾段
   block.text = head + (lines[0] ?? "");
   const created: LocalBlock[] = [];
@@ -1314,9 +1315,16 @@ function focusAdjacent(index: number, edge: "start" | "end"): void {
   if (!block) return;
   if (block.kind === "Image") {
     selection.selectImage(block._key);
+    focusImageBlock(index);
     return;
   }
   focusBlock(block._key, edge === "start" ? 0 : block.text.length);
+}
+
+/** FIX016.10：图块选中后必须把 DOM 焦点交给容器，键盘方向/删除才命中。 */
+function focusImageBlock(index: number): void {
+  const el = overlay.value?.querySelector<HTMLElement>(`.note-block[data-row-id="${index + 1}"]`);
+  el?.focus({ preventScroll: true });
 }
 
 /** 组字开始（PATCH002.73 乙）：先把自绘选区**删掉**、光标落到选区起点 ⇒ 输入法提交的文字
@@ -1550,6 +1558,7 @@ function selectAllBlocks(): void {
       }
     } else {
       selection.selectImage(only._key); // 单图块：走图块选中态（Ctrl+C 可复制）
+      focusImageBlock(0);
       if (DIAG) dragDiagDetailed("ctrlA:single image");
     }
     return;

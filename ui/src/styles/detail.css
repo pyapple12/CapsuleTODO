@@ -15,11 +15,14 @@
   --sel-bg: color-mix(in srgb, var(--accent) 32%, transparent);
   color: var(--ink);
   visibility: hidden;
+  /* FIX016.15：收起态立刻退出命中面；0.4s visibility 只负责视觉退场。 */
+  pointer-events: none;
   transition: visibility 0s linear 0.4s; /* 收板时等玻璃缩完再隐 */
 }
 
 .detail-overlay.open {
   visibility: visible;
+  pointer-events: auto;
   transition: none;
 }
 

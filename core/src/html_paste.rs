@@ -44,7 +44,7 @@ pub fn parse(html: &str) -> Vec<HtmlPart> {
     let mut rest = cleaned.as_str();
     loop {
         // 找下一个 <img …>：之前的文本先切段，再产出图块
-        let Some(start) = find_ci(rest, "<img") else {
+        let Some(start) = find_img_tag(rest) else {
             push_text(&mut parts, rest);
             break;
         };
@@ -97,6 +97,32 @@ fn is_tag_boundary(bytes: &[u8], at: usize) -> bool {
         .get(at)
         .map(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
         .unwrap_or(true)
+}
+
+/// FIX016.6：查找真正的 `<img` / `<image>` 标签起点；跳过 `<img-foo>`、
+/// `<imgsomething>` 等同前缀自定义标签。`<image>` 是 HTML 的 `<img` 别名。
+fn find_img_tag(haystack: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let mut from = 0usize;
+    while from < haystack.len() {
+        let img = find_ci(&haystack[from..], "<img").map(|rel| from + rel);
+        let image = find_ci(&haystack[from..], "<image").map(|rel| from + rel);
+        let at = match (img, image) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => return None,
+        };
+        // 同一位置优先尝试更长的 <image> 别名；失败后再按 <img 边界判断。
+        if haystack[at..].len() >= 6 && is_tag_boundary(bytes, at + 6) {
+            return Some(at);
+        }
+        if haystack[at..].len() >= 4 && is_tag_boundary(bytes, at + 4) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
 }
 
 /// FIX015.17：查找带标签名边界的闭合标签起点（`</script` / `</style`）。
@@ -543,6 +569,27 @@ mod tests {
                 HtmlPart::Text("后".to_string()),
             ],
             "脚本/样式/注释里的 img 不得成图，正文也不得混入"
+        );
+    }
+
+    #[test]
+    fn parse_does_not_match_img_custom_tag_prefixes() {
+        // FIX016.6：<img-foo>/<imgsomething> 不是图片；<image> 是合法别名。
+        assert_eq!(
+            parse("<p>前<img-foo src='x.png'>后</p>"),
+            vec![HtmlPart::Text("前后".to_string())]
+        );
+        assert_eq!(
+            parse("<p>前<imgsomething src='x.png'>后</p>"),
+            vec![HtmlPart::Text("前后".to_string())]
+        );
+        assert_eq!(
+            parse("<image src='x.png'>"),
+            vec![HtmlPart::Image("x.png".to_string())]
+        );
+        assert_eq!(
+            parse("<IMG SRC='x.png'>"),
+            vec![HtmlPart::Image("x.png".to_string())]
         );
     }
 

@@ -49,18 +49,53 @@ pub fn wait_clipboard_capture(
     before_image: Option<&[u8]>,
     timeout_ms: u64,
     step_ms: u64,
+    now_ms: impl FnMut() -> u64,
+    read_text: impl FnMut() -> Option<String>,
+    read_image: impl FnMut() -> Option<CapturedImage>,
+) -> Option<CaptureHit> {
+    // 兼容既有纯逻辑测试：无平台序号时保持“每轮读图”的旧语义。
+    wait_clipboard_capture_with_sequence(
+        before_text,
+        before_image,
+        timeout_ms,
+        step_ms,
+        now_ms,
+        || None,
+        read_text,
+        read_image,
+    )
+}
+
+/// FIX016.9：带剪贴板序号的捕获轮询。序号未变时不重复完整读图/读文件；
+/// Windows 用 `GetClipboardSequenceNumber`，无序号平台回落旧语义。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wait_clipboard_capture_with_sequence(
+    before_text: Option<&str>,
+    before_image: Option<&[u8]>,
+    timeout_ms: u64,
+    step_ms: u64,
     mut now_ms: impl FnMut() -> u64,
+    mut read_sequence: impl FnMut() -> Option<u32>,
     mut read_text: impl FnMut() -> Option<String>,
     mut read_image: impl FnMut() -> Option<CapturedImage>,
 ) -> Option<CaptureHit> {
     let deadline = now_ms() + timeout_ms;
+    let mut last_sequence = read_sequence();
     loop {
-        if let Some(img) = read_image() {
-            if before_image != Some(img.bytes.as_slice()) {
-                return Some(CaptureHit::Image {
-                    bytes: img.bytes,
-                    file_name: img.file_name,
-                });
+        let sequence = read_sequence();
+        let image_changed = match (last_sequence, sequence) {
+            (None, _) | (_, None) => true,
+            (Some(prev), Some(curr)) => prev != curr,
+        };
+        last_sequence = sequence;
+        if image_changed {
+            if let Some(img) = read_image() {
+                if before_image != Some(img.bytes.as_slice()) {
+                    return Some(CaptureHit::Image {
+                        bytes: img.bytes,
+                        file_name: img.file_name,
+                    });
+                }
             }
         }
         if let Some(text) = read_text() {
@@ -141,6 +176,12 @@ mod win {
         }
     }
 
+    /// FIX016.9：剪贴板内容序号（每次 SetClipboardData/EmptyClipboard 递增）；
+    /// 轮询只比这个 u32，不复制图片字节。
+    pub fn clipboard_sequence() -> Option<u32> {
+        Some(unsafe { GetClipboardSequenceNumber() })
+    }
+
     #[link(name = "user32")]
     extern "system" {
         /// 合成键盘事件（SendInput 兼容封装；全局影响 = 向前台窗口投递按键）
@@ -149,11 +190,19 @@ mod win {
         fn GetForegroundWindow() -> isize;
         /// 前台窗口类名（返回拷入字符数，0 = 失败）
         fn GetClassNameW(hwnd: isize, buf: *mut u16, max_count: i32) -> i32;
+        /// 剪贴板内容序号（快速、无内存分配）
+        fn GetClipboardSequenceNumber() -> u32;
     }
 }
 
 #[cfg(target_os = "windows")]
-pub use win::{foreground_is_console, synthesize_ctrl_c};
+pub use win::{clipboard_sequence, foreground_is_console, synthesize_ctrl_c};
+
+/// FIX016.9：非 Windows 无剪贴板序号，保持旧轮询语义。
+#[cfg(not(target_os = "windows"))]
+pub fn clipboard_sequence() -> Option<u32> {
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -311,6 +360,54 @@ mod tests {
             || Some(cap(vec![1, 2, 3])),
         );
         assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn clipboard_sequence_skips_repeated_image_reads() {
+        // FIX016.9：序号不变时不得每轮复制整图。
+        let mut clock = Clock(0);
+        let mut reads = 0u32;
+        let got = super::wait_clipboard_capture_with_sequence(
+            None,
+            None,
+            100,
+            0,
+            || clock.tick(50),
+            || Some(7),
+            || None,
+            || {
+                reads += 1;
+                Some(cap(vec![1, 2, 3]))
+            },
+        );
+        assert!(got.is_none());
+        assert_eq!(reads, 0, "序号未变化时不应调用完整图片读取");
+    }
+
+    #[test]
+    fn clipboard_sequence_change_reads_image_once() {
+        let mut clock = Clock(0);
+        let mut sequence = 0u32;
+        let mut reads = 0u32;
+        let got = super::wait_clipboard_capture_with_sequence(
+            None,
+            None,
+            100,
+            0,
+            || clock.tick(50),
+            || {
+                let current = sequence;
+                sequence += 1;
+                Some(current)
+            },
+            || None,
+            || {
+                reads += 1;
+                Some(cap(vec![9]))
+            },
+        );
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![9]));
+        assert_eq!(reads, 1);
     }
 
     #[test]
