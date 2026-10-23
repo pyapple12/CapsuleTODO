@@ -8,7 +8,7 @@
 /// 解析片段
 #[derive(Debug, PartialEq, Eq)]
 pub enum HtmlPart {
-    /// 文本段落（已去标签、解实体、trim；空段落不产出）
+    /// 文本段落（已去标签、解实体；行首/行尾空白保留，纯空白行不产出）
     Text(String),
     /// 图片 src 原样（`data:` / `http(s)` / 其他 scheme 分流在命令层）
     Image(String),
@@ -90,6 +90,32 @@ fn find_tag_end(tag: &str) -> Option<usize> {
     None
 }
 
+/// FIX015.17：标签名边界——后面只能是空白、`>`、`/` 或输入结束。
+/// 防止 `<scripture>` / `</picture>` 命中 `<script` / `</p` 前缀。
+fn is_tag_boundary(bytes: &[u8], at: usize) -> bool {
+    bytes
+        .get(at)
+        .map(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+        .unwrap_or(true)
+}
+
+/// FIX015.17：查找带标签名边界的闭合标签起点（`</script` / `</style`）。
+/// 跳过 `</scripture>` 这类同前缀自定义标签，避免脚本正文提前结束。
+fn find_closing_tag(haystack: &str, name: &str) -> Option<usize> {
+    let needle = format!("</{name}");
+    let bytes = haystack.as_bytes();
+    let mut from = 0usize;
+    while from < haystack.len() {
+        let rel = find_ci(&haystack[from..], &needle)?;
+        let at = from + rel;
+        if is_tag_boundary(bytes, at + needle.len()) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
 /// 非正文块类型（注释 / 脚本 / 样式）。
 #[derive(Clone, Copy)]
 enum NonContent {
@@ -110,10 +136,16 @@ fn find_non_content(html: &str) -> Option<(usize, NonContent)> {
         if tail.starts_with(b"<!--") {
             return Some((i, NonContent::Comment));
         }
-        if tail.len() >= 7 && tail[..7].eq_ignore_ascii_case(b"<script") {
+        if tail.len() >= 7
+            && tail[..7].eq_ignore_ascii_case(b"<script")
+            && is_tag_boundary(bytes, i + 7)
+        {
             return Some((i, NonContent::Script));
         }
-        if tail.len() >= 6 && tail[..6].eq_ignore_ascii_case(b"<style") {
+        if tail.len() >= 6
+            && tail[..6].eq_ignore_ascii_case(b"<style")
+            && is_tag_boundary(bytes, i + 6)
+        {
             return Some((i, NonContent::Style));
         }
     }
@@ -140,7 +172,7 @@ fn strip_non_content(html: &str) -> String {
                 rest = &after[end + 3..];
             }
             NonContent::Script => {
-                let Some(end) = find_ci(&rest[start..], "</script") else {
+                let Some(end) = find_closing_tag(&rest[start..], "script") else {
                     break;
                 };
                 let tail = &rest[start + end..];
@@ -151,7 +183,7 @@ fn strip_non_content(html: &str) -> String {
                 rest = &tail[close + 1..];
             }
             NonContent::Style => {
-                let Some(end) = find_ci(&rest[start..], "</style") else {
+                let Some(end) = find_closing_tag(&rest[start..], "style") else {
                     break;
                 };
                 let tail = &rest[start + end..];
@@ -165,12 +197,14 @@ fn strip_non_content(html: &str) -> String {
     out
 }
 
-/// 文本段 → 去标签 + 解实体 + 按块级标签与换行切段（trim 后非空的才产出）
+/// 文本段 → 去标签 + 解实体 + 按块级标签与换行切段。
+/// FIX015.23：空白是内容（代码块/缩进粘贴）；只用 `trim().is_empty()` 判空，
+/// 入块保留行首/行尾空格，不再二次 trim。
 fn push_text(parts: &mut Vec<HtmlPart>, chunk: &str) {
     for line in split_blocks(chunk) {
         let text = unescape(&strip_tags(&line));
-        let text = text.trim();
-        if !text.is_empty() {
+        let text = text.trim_end_matches('\r');
+        if !text.trim().is_empty() {
             parts.push(HtmlPart::Text(text.to_string()));
         }
     }
@@ -225,7 +259,10 @@ fn find_next_block_tag(chunk: &str) -> Option<usize> {
         let tail = &bytes[i + 2..];
         for tag in BLOCK_TAGS {
             let name = &tag.as_bytes()[2..];
-            if tail.len() >= name.len() && tail[..name.len()].eq_ignore_ascii_case(name) {
+            if tail.len() >= name.len()
+                && tail[..name.len()].eq_ignore_ascii_case(name)
+                && is_tag_boundary(bytes, i + 2 + name.len())
+            {
                 return Some(i);
             }
         }
@@ -507,6 +544,46 @@ mod tests {
             ],
             "脚本/样式/注释里的 img 不得成图，正文也不得混入"
         );
+    }
+
+    #[test]
+    fn parse_does_not_match_custom_tag_prefixes() {
+        // FIX015.17：<scripture>/<stylex> 不是 script/style，</picture> 不是 </p>。
+        assert_eq!(
+            parse("<scripture>正文</scripture>"),
+            vec![HtmlPart::Text("正文".to_string())]
+        );
+        assert_eq!(
+            parse("<stylex>样式</stylex>"),
+            vec![HtmlPart::Text("样式".to_string())]
+        );
+        assert_eq!(
+            parse("<p>前</picture>后</p>"),
+            vec![HtmlPart::Text("前后".to_string())],
+            "自定义闭合标签不得被当成 </p> 分段"
+        );
+        assert_eq!(
+            parse("<script>var x='</scripture>';</script><p>正文</p>"),
+            vec![HtmlPart::Text("正文".to_string())],
+            "脚本内 </scripture> 不得提前结束 script"
+        );
+    }
+
+    #[test]
+    fn parse_preserves_indentation_and_spaces() {
+        // FIX015.23：HTML 文本行不再 trim，缩进/行尾空格按原样进入块。
+        assert_eq!(
+            parse("<p>  缩进  </p>"),
+            vec![HtmlPart::Text("  缩进  ".to_string())]
+        );
+        assert_eq!(
+            parse("<pre>  code\n    next</pre>"),
+            vec![
+                HtmlPart::Text("  code".to_string()),
+                HtmlPart::Text("    next".to_string()),
+            ]
+        );
+        assert!(parse("<p>   \n   </p>").is_empty(), "纯空白行不产出");
     }
 
     #[test]

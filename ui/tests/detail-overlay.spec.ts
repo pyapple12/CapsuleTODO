@@ -1,7 +1,7 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { NoteBlock, TodoItem } from "../types";
+import type { BubbleItem, NoteBlock, TodoItem } from "../types";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -591,5 +591,31 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
       "def",
     ]);
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(false);
+  });
+
+  it("图片气泡解码中关板，晚到结果不得重新开板", async () => {
+    // FIX015.33：切页/关板后旧异步 get/decode 必须失效。
+    let releasePath!: (path: string) => void;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "bubble_get_image_path") {
+        return new Promise<string>((resolve) => {
+          releasePath = resolve;
+        });
+      }
+      return undefined;
+    });
+    const bubble: BubbleItem = { id: 7, text: "🖼️ 图片", kind: "Image" };
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+
+    await wrapper.setProps({ todo: null, bubble, anchor: null });
+    await flushPromises();
+    await wrapper.setProps({ todo: null, bubble: null, anchor: null });
+    await flushPromises();
+    releasePath("C:/tmp/mock.png");
+    await flushPromises();
+
+    expect(wrapper.find(".detail-overlay").classes()).not.toContain("open");
   });
 });

@@ -57,6 +57,11 @@ function selectedChars(blocks: readonly PasteLimitBlock[], range: PasteLimitRang
   return total;
 }
 
+/** HTML 纯文本上界（仅 plainText 缺席时使用）：去标签后按字符计，保守拦截。 */
+function htmlTextUpperBound(html: string): number {
+  return charCount(html.replace(/<[^>]*>/g, ""));
+}
+
 /** 按 HTML 中的 `<img>` 数量计图块（大小写不敏感；srcset 不会额外增加） */
 function htmlImageCount(html: string): number {
   const lower = html.toLowerCase();
@@ -88,7 +93,10 @@ export function projectPasteLimits(
   );
   const removedChars = range ? selectedChars(blocks, range) : 0;
   const normalized = plainText.replace(/\r\n?/g, "\n");
-  const incomingChars = charCount(normalized.replace(/\n/g, ""));
+  // HTML-only 剪贴板（无 text/plain）不能把正文长度漏算；仅此时用 HTML 去标签上界。
+  const incomingChars =
+    charCount(normalized.replace(/\n/g, "")) +
+    (normalized.length === 0 ? htmlTextUpperBound(html) : 0);
   const textLines = normalized.length === 0 ? 0 : normalized.split("\n").length;
   const imageCount = htmlImageCount(html) || (hasImage ? 1 : 0);
   // 图粘贴会切出 before / after 两段；文本行按每行一块计——都取保守上界

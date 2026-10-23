@@ -24,34 +24,52 @@ export function useThresholdDrag(
   /** 位移超阈值 → 启动系统拖拽并解绑（本次手势只触发一次） */
   const onMove = (e: MouseEvent): void => {
     if (!tracking) return;
+    // FIX015.31：窗外松手/失焦后残留的 tracking 不能在下一次无按键移动时启动拖窗。
+    if ((e.buttons & 1) === 0) {
+      stop();
+      return;
+    }
     if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_THRESHOLD) return;
-    tracking = false;
-    detach();
+    stop();
     options?.onDragStart?.();
     void getCurrentWindow()
       .startDragging()
       .catch((err) => console.error("窗口拖拽启动失败", err));
   };
   const onUp = (): void => {
-    tracking = false;
-    detach();
+    stop();
+  };
+  const onBlur = (): void => {
+    stop();
+  };
+  const onLeave = (): void => {
+    if (tracking) stop();
   };
   const onDown = (e: MouseEvent): void => {
     if (e.button !== 0) return;
+    stop(); // 幂等清掉上一次可能残留的手势
     e.preventDefault();
     startX = e.clientX;
     startY = e.clientY;
     tracking = true;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onBlur);
+    handle.addEventListener("mouseleave", onLeave);
   };
   const detach = (): void => {
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
+    window.removeEventListener("blur", onBlur);
+    handle.removeEventListener("mouseleave", onLeave);
+  };
+  const stop = (): void => {
+    tracking = false;
+    detach();
   };
   const destroy = (): void => {
     handle.removeEventListener("mousedown", onDown);
-    detach();
+    stop();
   };
 
   handle.addEventListener("mousedown", onDown);

@@ -266,6 +266,10 @@ async function saveHotkey(combo: string): Promise<void> {
   } catch (err) {
     console.error("热键注册失败", err);
     hotkeyError.value = "热键注册失败";
+    // FIX015.26：后端 parse/save 早退恢复失败时的幂等兜底（后端已恢复则 no-op）。
+    void invoke("settings_resume_bubble_hotkey").catch((resumeErr) =>
+      console.error("热键失败后恢复失败", resumeErr),
+    );
   }
 }
 

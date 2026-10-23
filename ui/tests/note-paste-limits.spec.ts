@@ -40,4 +40,10 @@ describe("notePasteFitsLimits（FIX014.6）：粘贴前静默闸门", () => {
     expect(projection.textChars).toBe(5);
     expect(projection.blockCount).toBe(3);
   });
+
+  it("HTML-only 剪贴板也计入正文长度", () => {
+    // FIX015.36：plainText 缺席时不能只数图片，否则超长正文会绕过前端闸门。
+    const blocks = [textBlock("a".repeat(UI_NOTE_MAX_LEN - 1))];
+    expect(notePasteFitsLimits(blocks, null, "", `<p>${"字".repeat(2)}</p>`, false)).toBe(false);
+  });
 });

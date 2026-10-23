@@ -106,25 +106,57 @@ export function useGlassBar(
   const observer = new MutationObserver(onScroll);
   observer.observe(scroller, { childList: true });
 
-  // 浮钮拖拽：按住上下平移即滚动（比例换算 1:1 design）
+  // 浮钮拖拽：按住上下平移即滚动（比例换算 1:1 design）。
+  // FIX015.31：pointer capture + cancel/lost 收尾；move 判按键；destroy 清在飞监听。
+  let stopThumbDrag: (() => void) | null = null;
   thumb.addEventListener("pointerdown", (e: PointerEvent) => {
+    if (e.button !== 0 || stopThumbDrag) return;
     const thumbH = thumb.getBoundingClientRect().height; // 比例化时浮钮更高 → 行程随之收窄
     const trackH = bar.getBoundingClientRect().height - thumbH;
     if (trackH <= 0) return;
     const startY = e.clientY;
     const startScroll = scroller.scrollTop;
     const range = scroller.scrollHeight - scroller.clientHeight;
+    const pointerId = e.pointerId;
+    let active = true;
+    const end = (): void => {
+      if (!active) return;
+      active = false;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      thumb.removeEventListener("pointercancel", end);
+      thumb.removeEventListener("lostpointercapture", end);
+      try {
+        if (typeof thumb.hasPointerCapture === "function" && thumb.hasPointerCapture(pointerId)) {
+          thumb.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // 指针已释放/环境不支持 capture：无需补偿
+      }
+      stopThumbDrag = null;
+    };
     const move = (ev: PointerEvent): void => {
+      // 窗外松手（尤其丢失 pointerup）后，后续无按键移动不得继续滚动。
+      if ((ev.buttons & 1) === 0) {
+        end();
+        return;
+      }
       scroller.scrollTop = startScroll + ((ev.clientY - startY) / trackH) * range;
       // textarea 程序赋值不派发 scroll（Chromium 固有），补发合成事件驱动同步
       scroller.dispatchEvent(new Event("scroll"));
     };
-    const up = (): void => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
+    stopThumbDrag = end;
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    window.addEventListener("pointerup", end);
+    thumb.addEventListener("pointercancel", end);
+    thumb.addEventListener("lostpointercapture", end);
+    try {
+      if (typeof thumb.setPointerCapture === "function") {
+        thumb.setPointerCapture(pointerId);
+      }
+    } catch {
+      // capture 不可用：window 监听仍覆盖普通路径
+    }
     e.preventDefault();
   });
 
@@ -134,6 +166,7 @@ export function useGlassBar(
 
   /** 显式清理（异步上下文挂载时 onUnmounted 拿不到组件实例，调用方手动调） */
   const destroy = (): void => {
+    stopThumbDrag?.();
     scroller.removeEventListener("scroll", onScroll);
     scroller.removeEventListener("input", sync);
     observer.disconnect();

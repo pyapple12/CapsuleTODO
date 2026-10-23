@@ -182,6 +182,25 @@ function validateText(text: string): string | null {
   return null;
 }
 
+/** FIX015.35：与 Rust `validate_note_blocks` 同步的最小 mock 校验（块数/文本/形态）。 */
+function validateMockNoteBlocks(
+  blocks: ReadonlyArray<{ kind: "Text" | "Image"; text: string }>,
+): string | null {
+  if (blocks.length > 100) return "详情块数超限（上限 100 块）";
+  if (!blocks.some((b) => b.kind === "Text")) return "详情块为空（至少保留一个文本块）";
+  if (blocks.some((b) => b.kind === "Text" && /[\n\r]/.test(b.text))) {
+    return "文本块不允许含换行";
+  }
+  if (blocks.some((b) => b.kind === "Image" && b.text !== "")) {
+    return "详情块形态非法：图块 text 必须为空";
+  }
+  const totalChars = blocks
+    .filter((b) => b.kind === "Text")
+    .reduce((sum, b) => sum + Array.from(b.text).length, 0);
+  if (totalChars > 10_000) return "笔记超长（上限 10000 字符）";
+  return null;
+}
+
 /** 排序视图（PL013 起对齐 Rust：未完成按 sort_order、已完成按 sort_order 殿后；
  * sort_order 缺省（未迁移种子行）回退 id 序） */
 function sortedTodos(): MockTodo[] {
@@ -211,7 +230,7 @@ const handlers: Record<string, CommandHandler> = {
       has_note: false,
     };
     state.todos.push(item);
-    state.noteBlocks.set(item.id, splitLines(""));
+    // FIX015.35：Rust 新建 todo 没有 note_blocks 行；mock 不再预置空文本块。
     return item;
   },
   todo_toggle: (args) => {
@@ -234,7 +253,7 @@ const handlers: Record<string, CommandHandler> = {
   },
   note_blocks_list: (args) => {
     const todoId = Number(args.todoId);
-    if (!state.todos.some((x) => x.id === todoId)) throw `待办条目不存在：${todoId}`;
+    // FIX015.35：Rust `note_blocks` 对不存在 todo 返回空数组，mock 不再抛错。
     return state.noteBlocks.get(todoId) ?? [];
   },
   note_blocks_save: (args) => {
@@ -245,14 +264,8 @@ const handlers: Record<string, CommandHandler> = {
       kind: "Text" | "Image";
       text: string;
     }>;
-    // 不变量（镜像 Rust todo::validate_note_blocks）
-    if (input.length > 100) throw "详情块数超限（上限 100 块）";
-    if (!input.some((b) => b.kind === "Text")) throw "详情块为空（至少保留一个文本块）";
-    if (input.some((b) => b.kind === "Text" && /[\n\r]/.test(b.text))) throw "文本块不允许含换行";
-    const totalChars = input
-      .filter((b) => b.kind === "Text")
-      .reduce((sum, b) => sum + Array.from(b.text).length, 0);
-    if (totalChars > 10_000) throw "笔记超长（上限 10000 字符）";
+    const validationError = validateMockNoteBlocks(input);
+    if (validationError) throw validationError;
     // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
     const old = state.noteBlocks.get(todoId) ?? [];
     const saved: MockNoteBlock[] = input.map((b) => {
@@ -277,21 +290,37 @@ const handlers: Record<string, CommandHandler> = {
     const list = state.noteBlocks.get(todoId) ?? [];
     const idx = list.findIndex((b) => b.id === blockId);
     if (idx < 0) throw `详情块不存在：${blockId}`;
-    list[idx].text = String(args.before ?? "");
-    list.splice(
-      idx + 1,
-      0,
-      { id: ++state.noteBlockSeq, kind: "Image", text: "", image_path: MOCK_NOTE_IMAGE },
-      {
+    const before = String(args.before ?? "");
+    const after = String(args.after ?? "");
+    const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
+    next[idx].text = before;
+    next.splice(idx + 1, 0, {
+      id: ++state.noteBlockSeq,
+      kind: "Image",
+      text: "",
+      image_path: MOCK_NOTE_IMAGE,
+    });
+    if (after !== "") {
+      next.splice(idx + 2, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
-        text: String(args.after ?? ""),
+        text: after,
         image_path: null,
-      },
-    );
-    state.noteBlocks.set(todoId, list);
+      });
+    } else if (!next.some((block) => block.kind === "Text")) {
+      // 镜像 Rust 末图补空文本块：不能因 mock 把合法图粘贴误拒。
+      next.push({
+        id: ++state.noteBlockSeq,
+        kind: "Text",
+        text: "",
+        image_path: null,
+      });
+    }
+    const validationError = validateMockNoteBlocks(next);
+    if (validationError) throw validationError;
+    state.noteBlocks.set(todoId, next);
     recomputeHasNote(todoId);
-    return { status: "image", blocks: list };
+    return { status: "image", blocks: next };
   },
   note_paste_html: (args) => {
     // FIX014.27：DEV 最小镜像——只处理单图 + 前后文本；远端图不入 mock 下载链。
@@ -306,24 +335,37 @@ const handlers: Record<string, CommandHandler> = {
     }
     const before = String(args.before ?? "");
     const after = String(args.after ?? "");
-    list[idx].text = before;
-    list.splice(idx + 1, 0, {
-      id: ++state.noteBlockSeq,
-      kind: "Image",
-      text: "",
-      image_path: MOCK_NOTE_IMAGE,
-    });
-    if (after.trim()) {
-      list.splice(idx + 2, 0, {
+    const imageCount = (html.match(/<img\b/gi) ?? []).length || 1;
+    const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
+    next[idx].text = before;
+    for (let i = 0; i < imageCount; i += 1) {
+      next.splice(idx + 1 + i, 0, {
+        id: ++state.noteBlockSeq,
+        kind: "Image",
+        text: "",
+        image_path: MOCK_NOTE_IMAGE,
+      });
+    }
+    if (after !== "") {
+      next.splice(idx + 1 + imageCount, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
         text: after,
         image_path: null,
       });
+    } else if (!next.some((block) => block.kind === "Text")) {
+      next.push({
+        id: ++state.noteBlockSeq,
+        kind: "Text",
+        text: "",
+        image_path: null,
+      });
     }
-    state.noteBlocks.set(todoId, list);
+    const validationError = validateMockNoteBlocks(next);
+    if (validationError) throw validationError;
+    state.noteBlocks.set(todoId, next);
     recomputeHasNote(todoId);
-    return { outcome: { status: "image", blocks: list }, pending: [] };
+    return { outcome: { status: "image", blocks: next }, pending: [] };
   },
   note_copy_selection: () => null,
   note_fetch_pending_images: () => null,
@@ -539,7 +581,7 @@ const handlers: Record<string, CommandHandler> = {
  * plugin:* 命令（event|listen / window|is_focused 等）= Tauri 官方插件 IPC——
  * 一律安全假响应（unlistenId / false），防组件 onMounted 链路被拒中断（实测教训：
  * App.vue 的 await listen 抛错后 refresh 永不执行，页面恒空态） */
-async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (cmd.startsWith("plugin:")) {
     if (cmd.includes("listen") || cmd.includes("register")) return ++callbackSeq as T;
     if (cmd.includes("is_focused")) return false as T;

@@ -23,6 +23,7 @@ import { syncGlassBars } from "./src/composables/useGlassBar";
 import { syncHints } from "./src/composables/useBoardRead";
 import { latestOnly } from "./src/composables/latestOnly";
 import { boardOpen } from "./src/composables/useVeils";
+import { isEffectivelyFocused } from "./src/composables/focusState";
 
 const titleEl = ref<HTMLHeadingElement | null>(null);
 const topbarEl = ref<HTMLElement | null>(null);
@@ -46,6 +47,10 @@ let unlistenFocus: UnlistenFn | undefined;
 // 拖拽中标记（PATCH002.61）：原生窗口拖拽循环会给出**成对** `Focused(false/true)` 抖动——
 // 拖拽期间把它视作"仍聚焦"，避免系统背板 / 纱态被误摘再挂（"磨砂闪烁"）
 const windowDragging = ref(false);
+/** FIX015.34：原生拖拽的 Focused(false/true) 抖动期间仍按聚焦绘纱，统一 CSS/背板语义。 */
+const effectiveFocused = computed(() =>
+  isEffectivelyFocused(windowFocused.value, windowDragging.value),
+);
 /** 安全阀（ms）：`drag-end` 因故未到（事件丢失 / 异常路径）时最多屏蔽焦点这么久 */
 const DRAG_SAFETY_MS = 10_000;
 let dragSafetyTimer: number | undefined;
@@ -325,6 +330,8 @@ watch(
 // （离清单页塌缩+粒子迸裂、回清单页粒子汇聚+回弹弹出——仅此处编排，与板开合解耦）；
 // 切页收口未决删除确认（A2 = design tabs.js rollbackDelConfirms）
 watch(activeTab, (tab) => {
+  // FIX015.33：切页即收详情（含仍在解码的图片气泡，由 DetailOverlay 代际守卫兜底）。
+  closeDetail();
   rollbackAllDelConfirms();
   if (tab === "todos") {
     void refresh();
@@ -513,7 +520,7 @@ onUnmounted(() => {
   <!-- PL008.3 骨架 Vue 化（design/index.html 对应）：id=board 保留为卡片层锚点——
        浮板/滑杆/三角/拖拽重挂全部以它为宿主（useVeils/useGlassBar/useBoardRead 依赖）；
        拖动收敛 topbar：交互区（页签/行/输入）不再依赖白名单排除，误触面归零 -->
-  <main id="board" class="glass-card" :class="{ focused: windowFocused }">
+  <main id="board" class="glass-card" :class="{ focused: effectiveFocused }">
     <header ref="topbarEl" class="topbar">
       <h1 ref="titleEl" class="title" @dblclick="onTitleDblClick">
         CapsuleTODO<canvas class="title-canvas" aria-hidden="true"></canvas>

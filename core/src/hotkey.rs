@@ -144,6 +144,11 @@ const WM_QUIT: u32 = 0x0012;
 #[cfg(target_os = "windows")]
 static THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 热键是否处于“录制挂起”状态（FIX015.26）：resume 据此幂等，避免后端恢复后
+/// 前端兜底再次 stop/start 注册线程。
+#[cfg(target_os = "windows")]
+static SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// 注册代际计数（FIX009.1 替代 FIX008.13 的 bool 放弃标志）：reregister 进入即
 /// fetch_add 捕获本轮代际，线程双查比对"世界是否还是我那一轮"——不等 = 父侧已
 /// 超时放弃或已被后续轮（含回滚轮）取代，自行 Unregister 退出。代际只增不减，
@@ -246,6 +251,8 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     // 1. 停旧线程（挂起/替换共用的 stop_thread；FIX007.3 退出等待与 FIX009.1
     //    代际推进原样保留）
     let my_gen = stop_thread()?;
+    // 从旧线程停止到新线程确认成功之间都视为挂起：中途失败可被 resume 重试。
+    SUSPENDED.store(true, Ordering::SeqCst);
 
     // 2. 新线程：注册 → tid 落位 → 回传结果（FIX004.7-①：tid 先登记再回传，防
     //    "成功已返回而 tid 未登记"窗口被并发 reregister 击穿）→ 消息循环
@@ -330,14 +337,27 @@ pub fn reregister(combo: HotkeyCombo) -> Result<(), String> {
     //    显式通知线程（FIX009.1）：回滚路径的下一轮 reregister fetch_add 会令
     //    本轮代际失配，stall 线程双查命中自行注销——bool 版"置放弃标志"在此
     //    被回滚轮复位抹掉的缺陷（A009 P3-1）随代际计数根除
-    rx.recv_timeout(Duration::from_millis(500))
-        .map_err(|_| "热键注册结果等待超时".to_string())?
+    let result = rx
+        .recv_timeout(Duration::from_millis(500))
+        .map_err(|_| "热键注册结果等待超时".to_string())?;
+    if result.is_ok() {
+        SUSPENDED.store(false, Ordering::SeqCst);
+    }
+    result
 }
 
 /// 挂起全局热键（设置录制期间）：只停线程/注销，不启动新线程；恢复走 reregister。
 #[cfg(target_os = "windows")]
 pub fn suspend() -> Result<(), String> {
-    stop_thread().map(|_| ())
+    stop_thread()?;
+    SUSPENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// 当前热键是否已挂起（FIX015.26：resume 幂等守卫；未挂起时无需重注册）。
+#[cfg(target_os = "windows")]
+pub fn is_suspended() -> bool {
+    SUSPENDED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 // —— 非 Windows 空桩（PL026：调用点零 cfg；行为等价现状"跳过热键注册、不报错"）——
@@ -356,6 +376,12 @@ pub fn reregister(_combo: HotkeyCombo) -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 pub fn suspend() -> Result<(), String> {
     Ok(())
+}
+
+/// 当前热键是否已挂起（非 Windows 无全局热键：恒 false）
+#[cfg(not(target_os = "windows"))]
+pub fn is_suspended() -> bool {
+    false
 }
 
 #[cfg(test)]

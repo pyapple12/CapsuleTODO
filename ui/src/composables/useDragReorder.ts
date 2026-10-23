@@ -34,6 +34,13 @@ function isLeavingRow(el: Element): boolean {
   return el.matches(".leaving, .todo-leave-active, .note-block-leaving");
 }
 
+/** FIX015.32：详情图块可拖区域——必须命中 `.note-block-image`，且不得命中删除按钮。
+ * 抽成纯判定供 note `onDown` 与回归测试共用。 */
+export function isNoteDragTarget(target: HTMLElement): boolean {
+  if (target.closest(".note-block-del")) return false;
+  return !!target.closest(".note-block-image");
+}
+
 /** 拖拽上下文（重挂模型的在飞状态体） */
 export interface DragCtx {
   t: DragTarget;
@@ -257,7 +264,7 @@ export const DRAG_TARGETS: DragTarget[] = [
     onDown(_row, e) {
       // PATCH002.77：Shift+点击 = 跨块扩选——不起拖、也不许清掉刚提升的选区锚点
       if (e.shiftKey) return false;
-      if (!(e.target as HTMLElement).closest(".note-block-image")) return false;
+      if (!isNoteDragTarget(e.target as HTMLElement)) return false;
       noteHooks.onDown?.(); // 轻量：只清选区；全量保存延到 onEngage（FIX014.34）
       return true;
     },

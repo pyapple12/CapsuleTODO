@@ -2093,6 +2093,8 @@ async function onDeleteImageBubble(): Promise<void> {
 }
 
 const isOpen = ref(false);
+/** FIX015.33：气泡异步取图/解码代际；切页/关板/换源都会使旧异步结果失效。 */
+let bubbleOpenGen = 0;
 
 // 帘联动注册（FIX003.7）：详情开合进 useVeils 全局读取器（按容器 id=detail-note 特判）
 bindOverlayState("detail", () => isOpen.value);
@@ -2179,6 +2181,7 @@ function open(): void {
 
 /** 关板：flush 未决保存 + 软删除收口 + 摘 open 类 + 帘布复位 + 卸套件 */
 function close(): void {
+  bubbleOpenGen += 1; // 使仍在取图/解码的旧气泡任务失效
   if (!isOpen.value) return; // 幂等守卫：已关再调不重复 flush/emit（FIX003.10⑧）
   const closeTodoId = props.todo?.id ?? savedTodoId;
   const prev = closeTodoId != null ? { todoId: closeTodoId, list: blocks.value.slice() } : null;
@@ -2223,6 +2226,7 @@ watch(
 watch(
   () => props.bubble,
   (b) => {
+    const gen = ++bubbleOpenGen;
     if (b) {
       // 切源快照（同 todo watch，PATCH002.47）：todo→气泡切换时 `props.todo` 已为 null，
       // 必须按快照把未决编辑写回旧条目 id（否则这段编辑丢失）
@@ -2244,16 +2248,17 @@ watch(
         void (async () => {
           try {
             const path = await invoke<string>("bubble_get_image_path", { id: b.id });
-            if (props.bubble?.id !== b.id) return;
+            if (gen !== bubbleOpenGen || props.bubble?.id !== b.id) return;
             const src = resolveImageSrc(path);
             await decodeImageSrc(src);
-            if (props.bubble?.id !== b.id) return;
+            if (gen !== bubbleOpenGen || props.bubble?.id !== b.id) return;
             bubbleImgSrc.value = src;
           } catch (err) {
             console.error("气泡图片取数失败", err);
-            if (props.bubble?.id !== b.id) return;
+            if (gen !== bubbleOpenGen || props.bubble?.id !== b.id) return;
             imageError.value = "文件已移动或删除，请删除气泡";
           }
+          if (gen !== bubbleOpenGen) return;
           open();
           setVeilHeight(); // PATCH002.51：揭纱距离按视口高
         })();

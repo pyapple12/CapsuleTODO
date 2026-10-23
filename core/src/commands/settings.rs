@@ -74,16 +74,44 @@ pub fn settings_get_bubble_hotkey_core(ctx: &AppContext) -> Result<String, Comma
     Ok(settings.bubble_hotkey.clone())
 }
 
+/// 按当前落库组合重新注册热键（FIX015.26）：parse/save 等早退路径恢复录制前热键。
+fn resume_current_hotkey(ctx: &AppContext) -> Result<(), CommandError> {
+    let combo = settings_get_bubble_hotkey_core(ctx)?;
+    let parsed = crate::hotkey::parse(&combo)?;
+    #[cfg(target_os = "windows")]
+    crate::hotkey::reregister(parsed).map_err(CommandError::Hotkey)?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = parsed;
+    Ok(())
+}
+
 /// 写入气泡捕获热键（PL015）：parse 校验非法拒 → 落库 → 重注册全局热键；
-/// 重注册失败（热键被占等）回滚落库旧热键并上抛——前端红字提示旧值已恢复
+/// 重注册失败（热键被占等）回滚落库旧热键并上抛——前端红字提示旧值已恢复。
+/// FIX015.26：path / parse / save 早退也必须恢复录制前热键，否则 suspend 后热键死。
 #[tauri::command]
 pub fn settings_set_bubble_hotkey(
     combo: String,
     ctx: State<'_, AppContext>,
 ) -> Result<String, CommandError> {
-    let path = settings_path_or_err()?;
     let old = settings_get_bubble_hotkey_core(&ctx)?;
-    let normalized = settings_set_bubble_hotkey_core(&combo, &path, &ctx)?;
+    let path = match settings_path_or_err() {
+        Ok(path) => path,
+        Err(err) => {
+            if let Err(resume_err) = resume_current_hotkey(&ctx) {
+                crate::diag::warn_diag(&format!("热键设置早退恢复失败：{resume_err}"));
+            }
+            return Err(err);
+        }
+    };
+    let normalized = match settings_set_bubble_hotkey_core(&combo, &path, &ctx) {
+        Ok(normalized) => normalized,
+        Err(err) => {
+            if let Err(resume_err) = resume_current_hotkey(&ctx) {
+                crate::diag::warn_diag(&format!("热键设置早退恢复失败：{resume_err}"));
+            }
+            return Err(err);
+        }
+    };
     let normalized_display = crate::hotkey::to_display(&normalized);
     #[cfg(target_os = "windows")]
     if let Err(err) = crate::hotkey::reregister(normalized) {
@@ -133,13 +161,11 @@ pub fn settings_suspend_bubble_hotkey() -> Result<(), CommandError> {
 /// 恢复当前气泡热键（录制取消/超时；保存成功由 settings_set_bubble_hotkey 接管）。
 #[tauri::command]
 pub fn settings_resume_bubble_hotkey(ctx: State<'_, AppContext>) -> Result<(), CommandError> {
-    let combo = settings_get_bubble_hotkey_core(&ctx)?;
-    let parsed = crate::hotkey::parse(&combo)?;
-    #[cfg(target_os = "windows")]
-    crate::hotkey::reregister(parsed).map_err(CommandError::Hotkey)?;
-    #[cfg(not(target_os = "windows"))]
-    let _ = parsed;
-    Ok(())
+    // FIX015.26：后端成功恢复后，前端 catch 的兜底调用直接 no-op，避免重复 stop/start。
+    if !crate::hotkey::is_suspended() {
+        return Ok(());
+    }
+    resume_current_hotkey(&ctx)
 }
 
 /// settings_set_bubble_hotkey 核心实现：parse 校验 + 规范化落库（不含重注册，

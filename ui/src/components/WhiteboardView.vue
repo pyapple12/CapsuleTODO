@@ -56,15 +56,24 @@ async function load(): Promise<void> {
  * PATCH002.66：失败短句“白板保存失败”，完整错误 console；10s 自动重试；内容不锁。 */
 async function flush(): Promise<boolean> {
   window.clearTimeout(debounceTimer);
-  if (content.value === savedContent.value) {
+  // FIX015.27：保存值必须在 await 前捕获；请求飞行期间的新输入不能被标记为已保存。
+  const text = content.value;
+  if (text === savedContent.value) {
     return true;
   }
   try {
-    await invoke("whiteboard_save", { content: content.value });
-    savedContent.value = content.value;
+    await invoke("whiteboard_save", { content: text });
+    savedContent.value = text;
     error.value = "";
     window.clearTimeout(retryTimer);
     retryTimer = 0;
+    // 保存期间继续输入 → 保留脏态并重新排一次防抖，不能把新输入吞掉。
+    if (content.value !== text) {
+      window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        void flush();
+      }, DEBOUNCE_MS);
+    }
     return true;
   } catch (err) {
     console.error("whiteboard_save 保存失败", err);

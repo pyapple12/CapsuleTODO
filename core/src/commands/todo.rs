@@ -591,7 +591,11 @@ pub struct NoteCopyPayload {
 /// 首图 → 三格式数据：**1 次解码**（PNG 源直通；其余解码后按旧口径重编码，
 /// 与原 `to_png` 逐字节一致）——PATCH002.71 的核心省时点
 fn first_image_formats(bytes: &[u8]) -> Result<NoteCopyFirstImage, CommandError> {
-    crate::clipboard_image::validate_image_bytes(bytes)?;
+    // FIX015.14：仅做廉价格式确认；真正的像素解码在本函数内只发生一次，
+    // 不再先走 `validate_image_bytes` 完整解码、随后又解码取像素。
+    if crate::clipboard_image::image_extension(bytes).is_none() {
+        return Err(CommandError::Clipboard("不支持的图片格式".to_string()));
+    }
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         let (w, h, rgba) = crate::clipboard_image::decode_to_rgba(bytes)
             .map_err(|err| CommandError::Clipboard(format!("图片解码失败：{err}")))?;
@@ -661,7 +665,15 @@ pub fn note_copy_payload(
             continue;
         };
         if first.is_none() {
-            first = Some(first_image_formats(&bytes)?);
+            // FIX015.14：首图坏只降级该图，不把整条复制（文本/HTML）一起报错。
+            match first_image_formats(&bytes) {
+                Ok(image) => first = Some(image),
+                Err(err) => {
+                    crate::diag::warn_diag(&format!("复制首图解码失败（降级占位）：{err}"));
+                    htmls.push("🖼 图片".to_string());
+                    continue;
+                }
+            }
         }
         let len = bytes.len() as u64;
         if len > COPY_INLINE_MAX_ONE || inline_total + len > COPY_INLINE_MAX_ALL {
@@ -850,8 +862,9 @@ pub fn note_paste_html_core(
         match part {
             crate::html_paste::HtmlPart::Text(text) => {
                 for line in text.split('\n') {
-                    let line = line.trim();
-                    if !line.is_empty() {
+                    // FIX015.23：只判空，不 trim；保留行首缩进与行尾空格。
+                    let line = line.trim_end_matches('\r');
+                    if !line.trim().is_empty() {
                         parts.push(crate::storage::NotePastePart::Text(line.to_string()));
                     }
                 }
@@ -1016,6 +1029,10 @@ fn run_pending_image_jobs(
             degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容不是受支持图片");
             continue;
         };
+        if !crate::clipboard_image::image_is_usable(&bytes) {
+            degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容图片损坏");
+            continue;
+        }
         // 预览在 storage 锁外生成（PATCH002.76：锁内只落盘，别堵 300ms 自动保存）
         let preview = crate::clipboard_image::generate_preview(&bytes);
         let orig_name = format!("pasted.{ext}");
@@ -1582,6 +1599,29 @@ mod tests {
     }
 
     #[test]
+    fn paste_html_preserves_leading_spaces() {
+        // FIX015.23：解析层与命令层都不能再次 trim 行首缩进。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved =
+            note_blocks_save_core(item.id, &[input(0, NoteBlockKind::Text, "")], &dir, &ctx)
+                .expect("保存必须成功");
+        let out = note_paste_html_core(item.id, saved[0].id, "", "", "<p>  缩进  </p>", &dir, &ctx)
+            .expect("带缩进的 HTML 粘贴必须成功");
+        let NotePasteOutcome::Image { blocks } = out.outcome else {
+            panic!("必须命中文本块插入");
+        };
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b.kind == NoteBlockKind::Text && b.text == "  缩进  "),
+            "行首/行尾空格必须保留：{:?}",
+            blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn paste_html_rejects_overlong_note_before_write() {
         // FIX014.6：总长超限必须在写库前拒绝；原块保持不动
         let ctx = test_context();
@@ -1729,6 +1769,33 @@ mod tests {
         let first = payload.first.expect("首图必须解码");
         assert_eq!(first.png, png, "PNG 源必须原样直通");
         assert_eq!((first.rgba.0, first.rgba.1), (1, 1), "像素尺寸对");
+    }
+
+    #[test]
+    fn copy_payload_bad_first_image_keeps_text_and_degrades() {
+        // FIX015.14：首图只有 PNG 签名/无 IDAT → 不得用 `?` 把整条复制升格为失败。
+        let dir = temp_images_dir();
+        let sub = dir.join("note_bad_1");
+        std::fs::create_dir_all(&sub).expect("子目录必须可建");
+        let bad = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0];
+        std::fs::write(sub.join("bad.png"), bad).expect("坏图夹具必须可写");
+        let blocks = [
+            NoteCopyBlock {
+                kind: NoteBlockKind::Text,
+                text: "文本仍要复制".to_string(),
+                block_id: 0,
+            },
+            NoteCopyBlock {
+                kind: NoteBlockKind::Image,
+                text: String::new(),
+                block_id: 7,
+            },
+        ];
+        let rels = [None, Some("note_bad_1/bad.png".to_string())];
+        let payload = note_copy_payload(&blocks, &rels, &dir).expect("坏图不得阻断文本复制");
+        assert!(payload.text.contains("文本仍要复制"), "文本不得丢失");
+        assert!(payload.first.is_none(), "坏首图不得成为剪贴板图片格式");
+        assert!(payload.html.contains("🖼 图片"), "坏图降级占位");
     }
 
     #[test]

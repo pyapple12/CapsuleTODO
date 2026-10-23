@@ -1038,12 +1038,15 @@ impl Storage {
                     }
                 }
             }
-            let existing: Vec<(i64, String)> = self
+            let existing: HashMap<i64, (String, Option<String>)> = self
                 .conn
-                .prepare("SELECT id, kind FROM note_blocks WHERE todo_id = ?1")?
-                .query_map([todo_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for (id, kind) in existing {
+                .prepare("SELECT id, kind, image_file FROM note_blocks WHERE todo_id = ?1")?
+                .query_map([todo_id], |row| {
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+                })?
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            for (id, (kind, _)) in &existing {
+                let id = *id;
                 if keep_ids.contains(&id) {
                     continue;
                 }
@@ -1138,16 +1141,24 @@ impl Storage {
                         }
                     }
                     NoteBlockKind::Image => {
-                        // 图块只可能来自粘贴命令（落盘 + hash 已就位）——此处只改序
-                        let changed = self.conn.execute(
+                        // FIX015.18：图块只可能来自粘贴命令（落盘 + hash 已就位）——
+                        // 必须命中原生图块行（kind=image 且 image_file 非空），
+                        // 禁止把文本行改 kind 成幽灵图块，也禁止复用无文件图块。
+                        let Some((kind, image_file)) = existing.get(&block.id) else {
+                            return Err(StorageError::NotFound(block.id));
+                        };
+                        if kind != "image" || image_file.is_none() {
+                            return Err(StorageError::ReorderMismatch(format!(
+                                "图块 id 不是有效图块：{}",
+                                block.id
+                            )));
+                        }
+                        self.conn.execute(
                             "UPDATE note_blocks SET sort_order = ?2, kind = 'image',
                                  deleted_at = NULL
                              WHERE id = ?1 AND todo_id = ?3",
                             rusqlite::params![block.id, i as i64, todo_id],
                         )?;
-                        if changed == 0 {
-                            return Err(StorageError::NotFound(block.id));
-                        }
                     }
                 }
             }
@@ -3281,6 +3292,47 @@ mod tests {
             2,
             "拒绝后原块集不得改变"
         );
+    }
+
+    #[test]
+    fn set_note_blocks_rejects_image_from_text_row() {
+        // FIX015.18：文本行不得被一条 Image 入参原地改成无文件图块。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "正文")])
+            .expect("写块必须成功");
+        let err = st
+            .set_note_blocks(&dir, item.id, &[nb_image(saved[0].id)])
+            .expect_err("文本 id 伪装图块必须拒绝");
+        assert!(matches!(err, StorageError::ReorderMismatch(_)));
+        let current = st.note_blocks(item.id).expect("读块必须成功");
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].kind, NoteBlockKind::Text);
+        assert_eq!(current[0].text, "正文");
+    }
+
+    #[test]
+    fn set_note_blocks_rejects_image_row_without_file() {
+        // FIX015.18：库内已有 kind=image/image_file=NULL 的幽灵行也必须拒绝保存。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let saved = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "正文")])
+            .expect("写块必须成功");
+        st.conn
+            .execute(
+                "UPDATE note_blocks SET kind = 'image', text = '', image_file = NULL
+                 WHERE id = ?1",
+                [saved[0].id],
+            )
+            .expect("构造幽灵图块必须成功");
+        let err = st
+            .set_note_blocks(&dir, item.id, &[nb_image(saved[0].id)])
+            .expect_err("无文件图块必须拒绝");
+        assert!(matches!(err, StorageError::ReorderMismatch(_)));
     }
 
     #[test]

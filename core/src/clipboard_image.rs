@@ -35,13 +35,13 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// FIX014.45：PNG 载荷可用性校验。仅看 `image_extension` 的 8 字节魔数会把
-/// “只有签名/截断 IHDR”的坏字节放行；这里再读一次头部尺寸，失败即回退 DIB/HDROP。
+/// FIX014.45 / FIX015.14：PNG 载荷可用性校验。仅看 `image_extension` 的 8 字节魔数会把
+/// “只有签名 / 截断 IHDR / 缺 IDAT”的坏字节放行；这里进一步检查结构并读头部尺寸。
 fn png_payload_is_valid(bytes: &[u8]) -> bool {
     if image_extension(bytes) != Some("png") {
         return false;
     }
-    if !png_has_iend(bytes) {
+    if !png_structure_usable(bytes) {
         return false;
     }
     image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -51,20 +51,24 @@ fn png_payload_is_valid(bytes: &[u8]) -> bool {
         .is_some()
 }
 
-/// FIX014.50：按 PNG chunk 结构检查 IEND 是否存在且完整，拦住“签名 + 截断 IDAT”
-/// 这类 `into_dimensions` 仍能通过头部的坏载荷（不引入新依赖）。
-fn png_has_iend(bytes: &[u8]) -> bool {
+/// FIX015.14：PNG chunk 结构检查——必须至少有一个**非空 IDAT**，且以完整 IEND 结束。
+/// 这是“完整解码”前的廉价结构闸门，拦住签名 + IHDR + IEND 的伪 PNG。
+fn png_structure_usable(bytes: &[u8]) -> bool {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     if !bytes.starts_with(&SIGNATURE) {
         return false;
     }
     let mut pos = SIGNATURE.len();
+    let mut saw_idat = false;
     while pos + 8 <= bytes.len() {
         let len = u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
             as usize;
         let kind = &bytes[pos + 4..pos + 8];
+        if kind == b"IDAT" && len > 0 {
+            saw_idat = true;
+        }
         if kind == b"IEND" {
-            return len == 0 && pos + 12 <= bytes.len();
+            return len == 0 && pos + 12 <= bytes.len() && saw_idat;
         }
         let Some(next) = pos.checked_add(12).and_then(|base| base.checked_add(len)) else {
             return false;
@@ -77,12 +81,26 @@ fn png_has_iend(bytes: &[u8]) -> bool {
     false
 }
 
-/// 图片字节格式校验（PL025 取代 PNG 魔数校验）：image crate 嗅探受支持格式，不认即
-/// UnsupportedFormat；**无大小上限**（落盘无 DB 上限；文件读盘闸口见 source_file_within_limit）
+/// FIX015.14：图片字节是否真的可用——受支持格式 + 完整解码成功；PNG 额外要求非空
+/// IDAT 与完整 IEND。所有入库 / 远端完成路径共用此判据，坏图不再只靠魔数放行。
+pub fn image_is_usable(bytes: &[u8]) -> bool {
+    let Some(ext) = image_extension(bytes) else {
+        return false;
+    };
+    if ext == "png" && !png_structure_usable(bytes) {
+        return false;
+    }
+    image::load_from_memory(bytes).is_ok()
+}
+
+/// 图片字节校验（PL025；FIX015.14 完整解码）：不认格式或解码失败 → UnsupportedFormat。
+/// **无大小上限**（落盘无 DB 上限；文件读盘闸口见 source_file_within_limit）
 pub fn validate_image_bytes(bytes: &[u8]) -> Result<(), BubbleError> {
-    image_extension(bytes)
-        .map(|_| ())
-        .ok_or(BubbleError::UnsupportedFormat)
+    if image_is_usable(bytes) {
+        Ok(())
+    } else {
+        Err(BubbleError::UnsupportedFormat)
+    }
 }
 
 /// 大图降采样预览（PL025）：宽 > 2000px 或字节 > 2MB → 长边 ≤ 1600 的 PNG 预览字节；
@@ -195,6 +213,8 @@ struct DibLayout {
     /// true = 自顶向下（负高）；false = 自下而上（经典正高，行序需翻转）
     top_down: bool,
     bpp: u16,
+    /// 压缩类型（BI_RGB / BI_BITFIELDS；决定 32bpp 的 alpha 语义）
+    compression: u32,
     /// 像素数据起始偏移（头 + BITFIELDS 掩码段之后）
     px_off: usize,
 }
@@ -224,7 +244,7 @@ fn parse_dib(dib: &[u8]) -> Option<DibLayout> {
     let px_off = if compression == BI_BITFIELDS {
         let (r, g, b) = (rd_u32(dib, 40)?, rd_u32(dib, 44)?, rd_u32(dib, 48)?);
         // 40B 标准头只有三个掩码位（alpha 无槽位——那是 DIBV5 的存在理由），
-        // 像素起于 52；32bpp alpha 固定按 0xFF000000 直通
+        // 像素起于 52；32bpp alpha 的取法由 encode_png_from_dib 按 compression 决定。
         if bpp == 24 || (r, g, b) != canonical {
             return None;
         }
@@ -239,6 +259,7 @@ fn parse_dib(dib: &[u8]) -> Option<DibLayout> {
         height: height_raw.unsigned_abs(),
         top_down,
         bpp,
+        compression,
         px_off,
     })
 }
@@ -257,6 +278,9 @@ pub fn encode_png_from_dib(dib: &[u8]) -> Result<Vec<u8>, BubbleError> {
         return Err(bad());
     }
     let bytes_pp = (layout.bpp / 8) as usize;
+    // FIX015.16：40B DIB 头没有 alpha 掩码。BI_RGB 的 32bpp 高字节按 Windows 语义是
+    // 未使用值（很多旧应用填 0），必须强制不透明；BI_BITFIELDS 保留既有直通语义。
+    let preserve_source_alpha = bytes_pp == 4 && layout.compression == BI_BITFIELDS;
     let (w, h) = (layout.width as usize, layout.height as usize);
     let mut rgba = vec![0u8; w * h * 4];
     for y in 0..h {
@@ -268,7 +292,11 @@ pub fn encode_png_from_dib(dib: &[u8]) -> Result<Vec<u8>, BubbleError> {
             rgba[d] = dib[s + 2]; // R
             rgba[d + 1] = dib[s + 1]; // G
             rgba[d + 2] = dib[s]; // B
-            rgba[d + 3] = if bytes_pp == 4 { dib[s + 3] } else { 255 };
+            rgba[d + 3] = if preserve_source_alpha {
+                dib[s + 3]
+            } else {
+                255
+            };
         }
     }
     encode_rgba_to_png(w as u32, h as u32, rgba)
@@ -930,6 +958,35 @@ mod tests {
     }
 
     #[test]
+    fn dib_bi_rgb_32bpp_zero_alpha_is_forced_opaque() {
+        // FIX015.16：BI_RGB 32bpp 高字节是未使用值，旧来源常填 0，不能生成全透明 PNG。
+        let mut dib = Vec::new();
+        wr_u32(&mut dib, 40);
+        wr_u32(&mut dib, 2); // width
+        wr_u32(&mut dib, 1); // height
+        wr_u16(&mut dib, 1); // planes
+        wr_u16(&mut dib, 32); // bpp
+        wr_u32(&mut dib, BI_RGB);
+        wr_u32(&mut dib, 0);
+        wr_u32(&mut dib, 0);
+        wr_u32(&mut dib, 0);
+        wr_u32(&mut dib, 0);
+        wr_u32(&mut dib, 0);
+        dib.extend_from_slice(&[10, 20, 30, 0]);
+        dib.extend_from_slice(&[40, 50, 60, 0]);
+
+        let png = encode_png_from_dib(&dib).expect("BI_RGB 32bpp 必须编码成功");
+        let (w, h, rgba) = decode_to_rgba(&png).expect("自解码必须成功");
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(
+            &rgba[0..4],
+            &[30, 20, 10, 255],
+            "BGR → RGBA，alpha 强制不透明"
+        );
+        assert_eq!(&rgba[4..8], &[60, 50, 40, 255], "第二像素同样不透明");
+    }
+
+    #[test]
     fn fixture_png_to_dib_and_back() {
         // 独立夹具 PNG → DIB 头字段与像素布局断言 → 回编 PNG 解码像素一致
         let png = fixture_png();
@@ -1058,6 +1115,34 @@ mod tests {
             validate_image_bytes(b"definitely not an image"),
             Err(BubbleError::UnsupportedFormat)
         ));
+    }
+
+    #[test]
+    fn image_is_usable_requires_full_decode_and_png_idat() {
+        assert!(image_is_usable(&fixture_png()));
+        assert!(image_is_usable(&fixture_jpeg()));
+        assert!(image_is_usable(&fixture_bmp()));
+
+        // PNG 结构完整（IHDR + IEND）但没有非空 IDAT：魔数/尺寸检查会放过，完整判据必须拒。
+        let mut no_idat = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        no_idat.extend_from_slice(&13u32.to_be_bytes());
+        no_idat.extend_from_slice(b"IHDR");
+        no_idat.extend_from_slice(&[0u8; 13]);
+        no_idat.extend_from_slice(&[0u8; 4]);
+        no_idat.extend_from_slice(&0u32.to_be_bytes());
+        no_idat.extend_from_slice(b"IEND");
+        no_idat.extend_from_slice(&[0u8; 4]);
+        assert!(!image_is_usable(&no_idat), "无 IDAT 的 PNG 不可用");
+        assert!(validate_image_bytes(&no_idat).is_err());
+
+        let mut truncated_jpeg = fixture_jpeg();
+        truncated_jpeg.truncate(truncated_jpeg.len() / 2);
+        assert!(
+            !image_is_usable(&truncated_jpeg),
+            "截断 JPEG 必须完整解码失败"
+        );
+
+        assert!(!image_is_usable(b"<html>not an image</html>"));
     }
 
     #[test]

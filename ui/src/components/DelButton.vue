@@ -80,6 +80,7 @@ onBeforeUnmount(() => {
     :class="{ 'del-open': confirming, 'del-press': pressing }"
     aria-label="删除"
     @click.stop="onClick"
+    @dblclick.stop
     @mouseleave="onMouseLeave"
   >
     <svg class="del-icon" viewBox="0 0 448 512">

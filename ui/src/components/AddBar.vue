@@ -12,6 +12,7 @@ import { useAutoHideError } from "../composables/useAutoHideError";
 // 原 changed/added 双发使刷新链双跑（同一新增 6 个 invoke，其中 3 个纯重复）
 const emit = defineEmits<{ added: [] }>();
 const draft = ref("");
+const busy = ref(false);
 const { message: error, show: showError, hide: clearError } = useAutoHideError(10_000);
 
 /** FIX014.30：中文输入法组字中的 Enter 只用于选词，不得提交待办。 */
@@ -22,17 +23,23 @@ function onAddEnter(e: KeyboardEvent): void {
 
 async function add(): Promise<void> {
   const text = draft.value.trim();
-  if (!text) {
+  if (!text || busy.value) {
     return;
   }
+  // FIX015.28：在飞锁 + 请求文本快照；请求期间的新输入不能被无条件清空。
+  busy.value = true;
   try {
     await invoke("todo_add", { text });
-    draft.value = "";
+    if (draft.value.trim() === text) {
+      draft.value = "";
+    }
     clearError();
     emit("added");
   } catch (err) {
     console.error("添加待办失败", err);
     showError("添加失败！");
+  } finally {
+    busy.value = false;
   }
 }
 </script>
@@ -48,7 +55,7 @@ async function add(): Promise<void> {
         placeholder="添加一条待办…"
         @keydown.enter="onAddEnter"
       />
-      <button class="btn-add" :disabled="draft.trim().length === 0" @click="add">
+      <button class="btn-add" :disabled="busy || draft.trim().length === 0" @click="add">
         <span class="btn-add-face"><span class="btn-add-text">REC</span></span>
       </button>
     </div>

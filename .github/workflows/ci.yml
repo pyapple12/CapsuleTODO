@@ -40,6 +40,11 @@ jobs:
       - name: 前端测试
         run: npm test
 
+      # FIX015.25：release 分支/ windows_subsystem 不能只靠发版时第一次编译。
+      - name: cargo check（release）
+        run: cargo check --release --locked
+        working-directory: core
+
       - name: cargo fmt --check
         run: cargo fmt --check
         working-directory: core

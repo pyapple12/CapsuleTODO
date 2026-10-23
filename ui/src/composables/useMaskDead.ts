@@ -57,6 +57,12 @@ export function rowInvadeRatio(row: HTMLElement): number {
  * @param row 行元素
  */
 export function rowMaskDead(row: HTMLElement): boolean {
+  // FIX015.32：罩死只服务三列表；详情 note 的 .board-read 不参与（否则顶部图块
+  // 会被静默判死，且详情并没有 .mask-dead 视觉提示）。
+  const list = row.closest(".board-read") as HTMLElement | null;
+  if (!list || !MASK_DEAD_TARGETS.some((target) => target.listId === list.id)) {
+    return false;
+  }
   return rowInvadeRatio(row) >= MASK_FADE_RATIO;
 }
 

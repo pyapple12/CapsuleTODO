@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasMockCommand } from "../src/dev/mock-invoke";
+import { hasMockCommand, mockInvoke } from "../src/dev/mock-invoke";
 
 /** FIX014.27：直接读取真机注册块，避免“手写常量 + mock”两边一起漂移。 */
 const libSource = Object.values(
@@ -77,5 +77,55 @@ describe("mock 命令覆盖（FIX014.27）", () => {
   it("真机注册的每个命令都有 DEV mock 路由", () => {
     const missing = REGISTERED_COMMANDS.filter((name) => !hasMockCommand(name));
     expect(missing).toEqual([]);
+  });
+
+  it("关键返回形状与新建语义对齐 Rust", async () => {
+    // FIX015.35：命令名一致不够，DEV 还要镜像“新建无块/缺失 todo 空列表/粘贴块序”。
+    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock 新条目" });
+    expect(await mockInvoke("note_blocks_list", { todoId: item.id })).toEqual([]);
+    expect(await mockInvoke("note_blocks_list", { todoId: 999_999 })).toEqual([]);
+
+    const saved = await mockInvoke<Array<{ id: number; kind: string; text: string }>>(
+      "note_blocks_save",
+      {
+        todoId: item.id,
+        blocks: [{ id: 0, kind: "Text", text: "正文" }],
+      },
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0].id).toBeGreaterThan(0);
+
+    const pasted = await mockInvoke<{
+      status: string;
+      blocks: Array<{ kind: string }>;
+    }>("note_paste_image", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "",
+      after: "尾",
+    });
+    expect(pasted.status).toBe("image");
+    expect(pasted.blocks.filter((block) => block.kind === "Image")).toHaveLength(1);
+  });
+
+  it("HTML 多图粘贴按真实 img 数建块，不降级为单图", async () => {
+    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock HTML" });
+    const saved = await mockInvoke<Array<{ id: number }>>("note_blocks_save", {
+      todoId: item.id,
+      blocks: [{ id: 0, kind: "Text", text: "正文" }],
+    });
+    const out = await mockInvoke<{
+      outcome: { status: string; blocks: Array<{ kind: string }> };
+      pending: unknown[];
+    }>("note_paste_html", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "",
+      after: "",
+      html: '<p>前</p><img src="a"><img src="b"><p>后</p>',
+    });
+    expect(out.outcome.status).toBe("image");
+    expect(out.outcome.blocks.filter((block) => block.kind === "Image")).toHaveLength(2);
+    expect(out.pending).toEqual([]);
   });
 });

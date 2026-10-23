@@ -44,6 +44,9 @@ pub enum TodoError {
     /// 文本块内含换行（一段一行：换行 = 新块）
     #[error("文本块不允许含换行")]
     NewlineInTextBlock,
+    /// 块类型与字段形态不一致（如 Image 带 text、Text 带 image_file）
+    #[error("详情块形态非法：{0}")]
+    InvalidBlockShape(&'static str),
     /// 详情块数超出 MAX_NOTE_BLOCKS 上限
     #[error("详情块数超限（上限 {MAX_NOTE_BLOCKS} 块）")]
     TooManyBlocks,
@@ -126,11 +129,23 @@ pub fn validate_note_blocks(blocks: &[NoteBlock]) -> Result<(), TodoError> {
     }
     let mut total = 0usize;
     for block in blocks {
-        if block.kind == NoteBlockKind::Text {
-            if block.text.contains('\n') || block.text.contains('\r') {
-                return Err(TodoError::NewlineInTextBlock);
+        match block.kind {
+            NoteBlockKind::Text => {
+                // FIX015.18：文本块不得携带图片引用；否则会绕过图块域引用计数。
+                if block.image_file.is_some() {
+                    return Err(TodoError::InvalidBlockShape("文本块不得携带 image_file"));
+                }
+                if block.text.contains('\n') || block.text.contains('\r') {
+                    return Err(TodoError::NewlineInTextBlock);
+                }
+                total += block.text.chars().count();
             }
-            total += block.text.chars().count();
+            NoteBlockKind::Image => {
+                // FIX015.18：图块文本必须为空（image_file 由存储层按库内行校验）。
+                if !block.text.is_empty() {
+                    return Err(TodoError::InvalidBlockShape("图块 text 必须为空"));
+                }
+            }
         }
     }
     if total > MAX_NOTE_LEN {
@@ -282,6 +297,23 @@ mod tests {
         assert!(matches!(
             validate_note_blocks(&[block(NoteBlockKind::Text, "a\rb")]),
             Err(TodoError::NewlineInTextBlock)
+        ));
+    }
+
+    #[test]
+    fn note_blocks_reject_inconsistent_kind_shape() {
+        // FIX015.18：段模型字段必须与 kind 一致，防止幽灵图块/文本块夹带图片引用。
+        let mut text_with_image = block(NoteBlockKind::Text, "正文");
+        text_with_image.image_file = Some("note_x/a.png".to_string());
+        assert!(matches!(
+            validate_note_blocks(&[text_with_image]),
+            Err(TodoError::InvalidBlockShape(_))
+        ));
+
+        let image_with_text = block(NoteBlockKind::Image, "不该有文字");
+        assert!(matches!(
+            validate_note_blocks(&[block(NoteBlockKind::Text, "正文"), image_with_text]),
+            Err(TodoError::InvalidBlockShape(_))
         ));
     }
 
