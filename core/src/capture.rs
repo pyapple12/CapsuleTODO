@@ -1,6 +1,7 @@
 //! 圈选直达捕获（PL016）：全局热键触发时模拟 Ctrl+C 两段式——快照原剪贴板 →
-//! 合成按键 → 轮询等剪贴板变化 → 读新文本入库。纯逻辑段（wait_clipboard_change）
-//! 注入时间源与读函数 cargo test 直测零真实等待；运行时段（cfg windows）user32
+//! 合成按键 → 轮询等剪贴板变化（`wait_clipboard_capture` /
+//! `wait_clipboard_capture_with_sequence`）→ 读新内容入库。纯逻辑段注入时间源
+//! 与读函数 cargo test 直测零真实等待；运行时段（cfg windows）user32
 //! keybd_event 直连零新依赖（沿 fullscreen/hotkey 先例）。
 //! 用户定案（2026-09-30）：无选区/复制失败 = 静默（不回退捕获旧剪贴板）；
 //! 不设设置板开关。实现注记：编排跑热键线程（沿 PL015.4 直调先例，行为等价）。

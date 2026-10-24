@@ -115,6 +115,72 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(after.some((el) => el.element.value.includes("\n"))).toBe(false);
   });
 
+  it("单块原生选区 Enter 先删选区再拆块", async () => {
+    // FIX017.17：原生选区不能只按 selectionStart 切片，否则选中文字会残留。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+
+    const first = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text")[0];
+    first.element.focus();
+    first.element.setSelectionRange(1, 2); // 选中 "b"
+    await first.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["a", "c", "def"]);
+  });
+
+  it("原生选区下方向键不跨块、不吃选区", async () => {
+    // FIX017.17：有选区时 ↑/↓ 交还浏览器，不得直接跳到相邻块。
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    first.element.focus();
+    first.element.setSelectionRange(0, 1);
+    const event = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      bubbles: true,
+      cancelable: true,
+    });
+    first.element.dispatchEvent(event);
+    await flushPromises();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(first.element);
+  });
+
+  it("原生选区下 ArrowUp 不跨块、不吃选区", async () => {
+    // FIX017.17：↑ 与 ↓ 走不同视觉行判断，必须单独验证。
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+
+    const textareas = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    const second = textareas[textareas.length - 1]; // 尾块 "后"，上一块是 Image
+    second.element.focus();
+    second.element.setSelectionRange(0, 1);
+    const event = new KeyboardEvent("keydown", {
+      key: "ArrowUp",
+      bubbles: true,
+      cancelable: true,
+    });
+    second.element.dispatchEvent(event);
+    await flushPromises();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(second.element);
+  });
+
   it("大写 IMG 的 HTML-only 粘贴仍进入 HTML 分支", async () => {
     // FIX016.6：前端图片判定必须大小写不敏感。
     wrapper = mount(DetailOverlay, {
@@ -438,6 +504,40 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(values).toContain("X");
   });
 
+  it("删除唯一文本块后补空文本块（FIX017.22）", async () => {
+    // 纯图列表要被保存点归一化补回 textarea，不能只剩图块让 Rust 拒绝。
+    const blocks: NoteBlock[] = [
+      { id: 41, kind: "Image", text: "", image_path: "C:/tmp/only.png" },
+      { id: 42, kind: "Text", text: "尾", image_path: null },
+    ];
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, blocks);
+    vi.useFakeTimers();
+
+    const text = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    await text.setValue("");
+    text.element.focus();
+    text.element.setSelectionRange(0, 0);
+    await text.trigger("keydown", { key: "Backspace" });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+
+    const textareas = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    expect(textareas).toHaveLength(1);
+    expect(textareas[0].element.value).toBe("");
+    expect(document.activeElement).toBe(textareas[0].element);
+
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    const last = saved[saved.length - 1] ?? [];
+    expect(last.some((block) => block.kind === "Text")).toBe(true);
+  });
+
   it("单图块 Ctrl+A→Delete 删除后不留图片块", async () => {
     // FIX017.11 / A017 P3-6：全选后 Delete 必须落到图块选择，而不是只动文本。
     wrapper = mount(DetailOverlay, {
@@ -528,6 +628,27 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
         .findAll<HTMLTextAreaElement>("textarea.note-block-text")
         .map((el) => el.element.value),
     ).toEqual(before);
+  });
+
+  it("空标题按 Enter 退回原标题且不发 rename", async () => {
+    // FIX017.19 预防：空串/纯空白永不排 todo_rename；Enter 立刻恢复原标题。
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    const title = wrapper.find<HTMLInputElement>("input.detail-title");
+
+    await title.setValue("");
+    await title.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(title.element.value).toBe(TODO.text);
+
+    await title.setValue("   ");
+    await title.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(title.element.value).toBe(TODO.text);
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "todo_rename")).toBe(false);
   });
 
   it("跨块选区 Backspace 在板级处理后不再触发块级 keydown", async () => {

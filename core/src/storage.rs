@@ -2971,20 +2971,9 @@ mod tests {
         vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3]
     }
 
-    /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images）
-    fn temp_images_dir() -> std::path::PathBuf {
-        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-images-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
-        dir
+    /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images；FIX017.14 RAII 收尾）
+    fn temp_images_dir() -> crate::test_support::TempImagesDir {
+        crate::test_support::TempImagesDir::new("capsule-todo-images")
     }
 
     #[test]
@@ -4727,6 +4716,8 @@ mod tests {
         let degraded = blocks.iter().find(|b| b.id == part_id).expect("占位块仍在");
         assert_eq!(degraded.text, url, "启动清扫要把下载中占位换成 URL");
         assert_eq!(degraded.kind, NoteBlockKind::Text);
+        // FIX017.14：Windows 下连接还开着时目录删不掉；先关库再清临时根。
+        drop(st);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -366,7 +366,8 @@ pub enum BubbleCopyPayload {
 }
 
 /// 复制回取数路由核心（直测面；写剪贴板动作留命令薄壳不直测）：文本回原文；
-/// 图片按来源分叉（file → 副本绝对路径；screenshot → PNG 字节）；文件缺失/列缺席
+/// 图片按来源分叉（file → 副本绝对路径；screenshot → PNG 文件路径，实际读盘在
+/// `write_bubble_copy` 的锁外阻塞线程）；文件缺失/列缺席
 /// 严格报错（前端失效态）
 pub fn bubble_copy_payload_core(
     id: i64,
@@ -665,20 +666,9 @@ mod tests {
         assert!(bubble_get_image_path_core(99, &dir, &ctx).is_err());
     }
 
-    /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images）
-    fn temp_images_dir() -> std::path::PathBuf {
-        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-cmd-images-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
-        dir
+    /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images；FIX017.14 RAII 收尾）
+    fn temp_images_dir() -> crate::test_support::TempImagesDir {
+        crate::test_support::TempImagesDir::new("capsule-todo-cmd-images")
     }
 
     /// 截图来源捕获（file_name=None）

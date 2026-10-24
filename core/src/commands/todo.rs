@@ -168,11 +168,12 @@ pub fn todo_archive_list(ctx: State<'_, AppContext>) -> Result<Vec<TodoItem>, Co
     todo_archive_list_core(&ctx, &images_dir)
 }
 
-/// todo_archive_list 核心实现：归档读路径惰性清扫（PATCH001）+ 出归档视图。
-/// 清扫挂读路径 = 打卡软件模式在常驻板上的等价形态：本命令调用点天然覆盖 App 挂载
+/// todo_archive_list 核心实现：归档读路径先删除超期条目并收集相关图片夹，再按
+/// 当前引用精确释放（PATCH001）+ 出归档视图。
+/// 回收挂读路径 = 打卡软件模式在常驻板上的等价形态：本命令调用点天然覆盖 App 挂载
 /// （App.vue 启动拉归档）与每次清单变更（onListChanged 三源齐拉），超期条目在出视图
 /// 前已删、前端永无中间态，零新线程零定时器；删除数 > 0 落一行日志对账。
-/// PL027：回收连带释放其详情图文件（块行随删，清扫按引用归零删 `note_*` 夹）
+/// PL027：回收连带释放其详情图文件（块行随删，按当前引用精确释放 `note_*` 夹）。
 pub fn todo_archive_list_core(
     ctx: &AppContext,
     images_dir: &std::path::Path,
@@ -1790,7 +1791,7 @@ mod tests {
 
     #[test]
     fn archive_list_purges_expired_before_view() {
-        // PATCH001：归档读路径惰性清扫全链——超期条目在出视图前已删，前端永无中间态
+        // PATCH001：归档读路径回收全链——超期条目在出视图前已删，前端永无中间态
         let t0 = 1_700_000_000_000i64;
         let clock = Arc::new(std::sync::atomic::AtomicI64::new(t0));
         let ctx = AppContext {
@@ -1870,20 +1871,9 @@ mod tests {
 
     // —— PL027 详情块命令 ——
 
-    /// 临时图片目录（禁触真实 data/images）
-    fn temp_images_dir() -> std::path::PathBuf {
-        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-note-images-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
-        dir
+    /// 临时图片目录（禁触真实 data/images；FIX017.14 RAII 收尾）
+    fn temp_images_dir() -> crate::test_support::TempImagesDir {
+        crate::test_support::TempImagesDir::new("capsule-todo-note-images")
     }
 
     /// 独立夹具：image crate 编码 1×1 PNG（合法格式，供格式嗅探过闸）

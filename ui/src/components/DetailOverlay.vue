@@ -516,17 +516,33 @@ async function deleteBlockRun(
     if (leavingKey.value === block._key) leavingKey.value = "";
     const at = list.findIndex((b) => b._key === block._key);
     if (at < 0) return;
+    const wasCurrent = blocks.value === list;
+    if (wasCurrent) {
+      // FIX017.22：删前输入可能已排了 300ms 防抖；它捕获的是旧数组引用，
+      // 若不掐掉，会在本次归一化保存后用 [Image] 覆盖掉刚补的空文本块。
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+    }
     list.splice(at, 1);
+    const hadText = list.some((b) => b.kind === "Text");
+    // FIX017.22：删掉最后一个文本块后必须补空文本块（textarea），否则纯图列表
+    // 会被 Rust 的“至少一个文本块”校验拒绝，板面也没有输入面。
+    const normalized = normalizeBlocks(list);
+    if (wasCurrent) blocks.value = normalized;
     // PATCH002.37（甲案）：邻居是**文本**块才交还光标；是图块则维持现状（不强推焦点）。
     // FIX014.40：只在当前板仍展示这份列表时动焦点，切源后不得把焦点推到新板。
-    if (blocks.value === list && caretTo) {
-      const neighbor = caretTo === "prev" ? list[at - 1] : list[at];
+    if (wasCurrent && caretTo && hadText) {
+      const neighbor = caretTo === "prev" ? normalized[at - 1] : normalized[at];
       if (neighbor?.kind === "Text") {
         focusBlock(neighbor._key, caretTo === "prev" ? neighbor.text.length : 0);
       }
     }
+    if (wasCurrent && !hadText) {
+      const text = normalized.find((b) => b.kind === "Text");
+      if (text) focusBlock(text._key, 0);
+    }
     // 落旧条目而不是当前 props：关板后 props.todo 已空，saveBlocks() 会直接返回。
-    if (todoId != null) await saveBlocksFor(todoId, list, true);
+    if (todoId != null) await saveBlocksFor(todoId, normalized, true);
   };
   leavingKey.value = block._key; // 语义标记（淡出视觉由动画 / 内联样式负责）
   if (rowEl && typeof rowEl.animate === "function") {
@@ -585,8 +601,21 @@ function splitBlockFromEnter(index: number, el: HTMLTextAreaElement): void {
     if (DIAG) undoLog(`enter:sel afterSplit=${blocks.value.length}`);
     return;
   }
-  if (DIAG) undoLog(`enter:plain index=${index} start=${el.selectionStart ?? 0}`);
-  splitBlock(index, el.selectionStart ?? 0);
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  if (start !== end) {
+    // FIX017.17：单块原生选区也必须先删除，再按删除后的起点拆块；
+    // 只压一次撤销栈（splitBlock 的 push=false）。
+    const block = blocks.value[index];
+    if (!block) return;
+    pushUndo();
+    block.text = block.text.slice(0, start) + block.text.slice(end);
+    splitBlock(index, start, false);
+    if (DIAG) undoLog(`enter:nativeSel index=${index} start=${start} end=${end}`);
+    return;
+  }
+  if (DIAG) undoLog(`enter:plain index=${index} start=${start}`);
+  splitBlock(index, start);
 }
 
 /** beforeinput 兜底（FIX014.1）：输入法以外的 line-break/paragraph 输入一律拆块。 */
@@ -670,6 +699,9 @@ function onBlockKeydown(index: number, e: KeyboardEvent): void {
     else mergeWithNext(index);
     return;
   }
+  // FIX017.17：有原生选区时方向键交还浏览器（收拢/扩选），不得跨块；
+  // 否则 ↑/↓ 会在首/末视觉行把原生选区直接丢掉。
+  if (!collapsed) return;
   // PATCH002.9 方向键跨块（方案乙）：↑/← 在"第一视觉行/块首"→ 上一块；↓/→ 在"末视觉行/块尾"→ 下一块
   if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
     const at = el.selectionStart ?? 0;
@@ -2329,13 +2361,21 @@ async function saveTitleRename(pending: { id: number; text: string }): Promise<v
   }
 }
 
+/** FIX017.19：空标题按 Enter 退回原标题；空串/纯空白永不排 rename。 */
+function onTitleEnter(): void {
+  if (titleDraft.value.trim() !== "") return;
+  titleDraft.value = props.todo?.text ?? "";
+  clearTimeout(renameTimer);
+  renamePending = null;
+}
+
 watch(titleDraft, (text) => {
   const todo = props.todo;
   const savedBase =
     lastSavedText != null && lastSavedText.id === todo?.id
       ? lastSavedText.text
       : (todo?.text ?? null);
-  if (todo == null || text === savedBase) {
+  if (todo == null || text.trim() === "" || text === savedBase) {
     clearTimeout(renameTimer);
     renamePending = null;
     return;
@@ -2560,6 +2600,7 @@ onBeforeUnmount(() => {
           class="detail-title"
           :maxlength="UI_TEXT_MAX_LEN"
           placeholder="最多 12 字"
+          @keydown.enter="onTitleEnter"
         />
       </div>
       <!-- 滚动容器：id 沿用 detail-note（帘特判与板内套件零改动） -->

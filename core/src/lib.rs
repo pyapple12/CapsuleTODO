@@ -20,6 +20,8 @@ pub mod settings;
 pub mod single_instance;
 pub mod snap;
 pub mod storage;
+#[cfg(test)]
+mod test_support;
 pub mod todo;
 pub mod tray;
 pub mod util;

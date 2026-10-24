@@ -88,8 +88,8 @@ CapsuleTODO/
 │   │   └── commands/          # Tauri 命令层（薄封装，核心可脱离 Tauri 直测）
 │   ├── capabilities/          # ACL 权限白名单（拖动等前端能力）
 │   ├── build.rs               # Tauri 构建脚本（dev-diag 内联 ACL）
-│   ├── icons/                 # 应用图标（正式五件套 + 设计源）
-│   ├── tests/                 # 集成测试（真实文件库探针 / 迁移）
+│   ├── icons/                 # 应用图标（五个 PNG + icon.ico，共六文件 + 设计源）
+│   ├── tests/                 # 集成测试（真实文件库探针 / 迁移 / 图标配置断言）
 │   ├── tauri.conf.json        # 窗口 / CSP / 打包配置
 │   └── tauri.dev.conf.json    # dev-only 配置（诊断 capability）
 ├── ui/                        # 🖼️ Vue 3 前端（只做展示，零业务逻辑）
