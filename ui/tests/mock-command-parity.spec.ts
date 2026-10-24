@@ -81,7 +81,13 @@ describe("mock 命令覆盖（FIX014.27）", () => {
 
   it("关键返回形状与新建语义对齐 Rust", async () => {
     // FIX015.35：命令名一致不够，DEV 还要镜像“新建无块/缺失 todo 空列表/粘贴块序”。
-    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock 新条目" });
+    const item = await mockInvoke<{ id: number; sort_order?: number }>("todo_add", {
+      text: "mock 新条目",
+    });
+    // FIX018.13：新增条目必须与 Rust 一样排在未完成段顶部（种子已按迁移口径回填 0..n）。
+    const list = await mockInvoke<Array<{ id: number; sort_order?: number }>>("todo_list");
+    expect(list[0]?.id).toBe(item.id);
+    expect(list[0]?.sort_order).toBe(-1);
     expect(await mockInvoke("note_blocks_list", { todoId: item.id })).toEqual([]);
     expect(await mockInvoke("note_blocks_list", { todoId: 999_999 })).toEqual([]);
 

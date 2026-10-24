@@ -170,6 +170,13 @@ function seed(): void {
     t("交房租", false, 0, "每月 5 号前，银行卡留够余额。"),
     t("回复设计评审邮件", false, 0, "重点回复动效时长那两条意见，语气放软。"),
   ];
+  // FIX018.13：对齐 Rust migrate_sort_order 的回填口径——按 done 段内 id 升序计 0..n，
+  // 而不是保留 undefined 让 todo_add 回退 id。否则首条新条目会得到 0，真机为 -1。
+  let activeSort = 0;
+  let doneSort = 0;
+  for (const todo of state.todos) {
+    todo.sort_order = todo.done ? doneSort++ : activeSort++;
+  }
   const b = (text: string): MockBubble => ({ id: ++state.bubbleSeq, text, kind: "Text" });
   state.bubbles = [
     b("示例片段：把设计实验场的配方读数抄回 glass.css"),
@@ -234,6 +241,10 @@ const handlers: Record<string, CommandHandler> = {
     const text = String(args.text ?? "");
     const err = validateText(text);
     if (err) throw err;
+    const activeSorts = state.todos
+      .filter((todo) => !todo.done)
+      .map((todo) => todo.sort_order ?? todo.id);
+    const sortOrder = activeSorts.length > 0 ? Math.min(...activeSorts) - 1 : -1;
     const item: MockTodo = {
       id: ++state.todoSeq,
       text: text.trim(),
@@ -241,6 +252,7 @@ const handlers: Record<string, CommandHandler> = {
       created_at: Date.now(),
       done_at: null,
       has_note: false,
+      sort_order: sortOrder,
     };
     state.todos.push(item);
     // FIX015.35：Rust 新建 todo 没有 note_blocks 行；mock 不再预置空文本块。

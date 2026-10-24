@@ -96,6 +96,25 @@ fn reserve_total(total: &AtomicUsize, len: usize) -> bool {
     }
 }
 
+/// FIX018.21：预算闸门纯函数（worker 与测试共用）。
+fn budget_error(elapsed: Duration, total_bytes: usize) -> Option<FetchError> {
+    if elapsed >= TOTAL_BUDGET {
+        Some(FetchError::Timeout)
+    } else if total_bytes >= MAX_TOTAL_BYTES {
+        Some(FetchError::TotalLimit)
+    } else {
+        None
+    }
+}
+
+/// FIX018.21：把未执行槽位统一补成可读错误，便于测试/日志区分。
+fn finalize_results(results: FetchResults) -> Vec<FetchResult> {
+    results
+        .into_iter()
+        .map(|result| result.unwrap_or(Err(FetchError::Request("下载任务未执行".to_string()))))
+        .collect()
+}
+
 /// 读取最多 `limit` 字节；多读 1 字节用于判定超限（**不信任 Content-Length**）
 fn read_limited<R: Read>(reader: R, limit: usize) -> FetchResult {
     let mut buf = Vec::new();
@@ -133,34 +152,21 @@ fn fetch_one(client: &Client, url: &str, timeout: Duration) -> FetchResult {
     read_response(response)
 }
 
-/// 并发下载（同序返回）。每张失败独立；不返回顶层错误。
-/// 总预算/总字节在 worker 内动态检查，剩余 URL 标 `Timeout` / `TotalLimit`。
-pub fn fetch_all(urls: &[String]) -> Vec<FetchResult> {
+/// FIX018.21.2：可注入时钟/取数器的并发核心（生产与测试共用）。
+/// `clock` 返回批次已用时间，`fetch` 接收规范化 URL 与本次请求时限；返回值同序。
+fn fetch_all_with<C, F>(urls: &[String], clock: C, fetch: F) -> Vec<FetchResult>
+where
+    C: Fn() -> Duration + Sync,
+    F: Fn(&str, Duration) -> FetchResult + Sync,
+{
     if urls.is_empty() {
         return Vec::new();
     }
-    let client = match Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .connect_timeout(CONNECT_TIMEOUT)
-        .redirect(Policy::limited(5))
-        .user_agent(concat!("CapsuleTODO/", env!("CARGO_PKG_VERSION")))
-        .build()
-    {
-        Ok(client) => client,
-        // 客户端都建不起来（TLS 初始化失败等）→ 每张都降级，不阻断粘贴
-        Err(err) => {
-            return urls
-                .iter()
-                .map(|_| Err(FetchError::Request(format!("HTTP 客户端初始化失败：{err}"))))
-                .collect()
-        }
-    };
     let workers = worker_count(urls.len());
     let queue: Mutex<VecDeque<(usize, String)>> =
         Mutex::new(urls.iter().cloned().enumerate().collect());
     let results: Mutex<FetchResults> = Mutex::new(vec![None; urls.len()]);
     let total_bytes = AtomicUsize::new(0);
-    let start = Instant::now();
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -174,22 +180,21 @@ pub fn fetch_all(urls: &[String]) -> Vec<FetchResult> {
                 let Some((index, url)) = item else {
                     break;
                 };
-                let result = if start.elapsed() >= TOTAL_BUDGET {
-                    Err(FetchError::Timeout)
-                } else if total_bytes.load(Ordering::Relaxed) >= MAX_TOTAL_BYTES {
-                    Err(FetchError::TotalLimit)
-                } else {
-                    let remaining = TOTAL_BUDGET.saturating_sub(start.elapsed());
-                    let per_request = REQUEST_TIMEOUT.min(remaining);
-                    if per_request.is_zero() {
-                        Err(FetchError::Timeout)
+                let result =
+                    if let Some(err) = budget_error(clock(), total_bytes.load(Ordering::Relaxed)) {
+                        Err(err)
                     } else {
-                        match normalize_url(&url) {
-                            Some(normalized) => fetch_one(&client, &normalized, per_request),
-                            None => Err(FetchError::InvalidUrl),
+                        let remaining = TOTAL_BUDGET.saturating_sub(clock());
+                        let per_request = REQUEST_TIMEOUT.min(remaining);
+                        if per_request.is_zero() {
+                            Err(FetchError::Timeout)
+                        } else {
+                            match normalize_url(&url) {
+                                Some(normalized) => fetch(&normalized, per_request),
+                                None => Err(FetchError::InvalidUrl),
+                            }
                         }
-                    }
-                };
+                    };
                 let result = match result {
                     Ok(bytes) => {
                         // 只有接纳成功才计数；CAS 失败/超限不留下虚增配额。
@@ -212,10 +217,37 @@ pub fn fetch_all(urls: &[String]) -> Vec<FetchResult> {
         Ok(results) => results,
         Err(poisoned) => poisoned.into_inner(),
     };
-    results
-        .into_iter()
-        .map(|result| result.unwrap_or(Err(FetchError::Request("下载任务未执行".to_string()))))
-        .collect()
+    finalize_results(results)
+}
+
+/// 并发下载（同序返回）。每张失败独立；不返回顶层错误。
+/// 总预算/总字节在 worker 内动态检查，剩余 URL 标 `Timeout` / `TotalLimit`。
+pub fn fetch_all(urls: &[String]) -> Vec<FetchResult> {
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let client = match Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(Policy::limited(5))
+        .user_agent(concat!("CapsuleTODO/", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(client) => client,
+        // 客户端都建不起来（TLS 初始化失败等）→ 每张都降级，不阻断粘贴
+        Err(err) => {
+            return urls
+                .iter()
+                .map(|_| Err(FetchError::Request(format!("HTTP 客户端初始化失败：{err}"))))
+                .collect()
+        }
+    };
+    let start = Instant::now();
+    fetch_all_with(
+        urls,
+        || start.elapsed(),
+        |url, timeout| fetch_one(&client, url, timeout),
+    )
 }
 
 #[cfg(test)]
@@ -244,6 +276,94 @@ mod tests {
         assert_eq!(exact.len(), 4);
         let err = read_limited(std::io::Cursor::new(vec![1u8; 5]), 4).expect_err("超 1 字节必须拒");
         assert!(matches!(err, FetchError::TooLarge));
+    }
+
+    #[test]
+    fn budget_error_distinguishes_timeout_and_total_limit() {
+        assert!(matches!(
+            budget_error(TOTAL_BUDGET, 0),
+            Some(FetchError::Timeout)
+        ));
+        assert!(matches!(
+            budget_error(Duration::ZERO, MAX_TOTAL_BYTES),
+            Some(FetchError::TotalLimit)
+        ));
+        assert!(budget_error(Duration::ZERO, MAX_TOTAL_BYTES - 1).is_none());
+    }
+
+    #[test]
+    fn finalize_results_marks_unexecuted_slots() {
+        let out = finalize_results(vec![None, Some(Ok(vec![1]))]);
+        assert!(matches!(out[0], Err(FetchError::Request(_))));
+        assert!(matches!(&out[1], Ok(bytes) if bytes == &vec![1]));
+    }
+
+    #[test]
+    fn fetch_all_with_skips_fetcher_when_fake_clock_exceeds_budget() {
+        let calls = AtomicUsize::new(0);
+        let out = fetch_all_with(
+            &["https://a/1".to_string(), "https://a/2".to_string()],
+            || TOTAL_BUDGET,
+            |_url, _timeout| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Ok(vec![1])
+            },
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out
+            .iter()
+            .all(|result| matches!(result, Err(FetchError::Timeout))));
+        assert_eq!(calls.load(Ordering::Relaxed), 0, "超预算后不得再发请求");
+    }
+
+    #[test]
+    fn fetch_all_with_caps_per_request_timeout_to_remaining_budget() {
+        let seen = Mutex::new(Vec::new());
+        let out = fetch_all_with(
+            &["https://a/1".to_string()],
+            || Duration::from_secs(19),
+            |url, timeout| {
+                seen.lock()
+                    .expect("测试记录锁必须可用")
+                    .push((url.to_string(), timeout));
+                Ok(vec![1])
+            },
+        );
+        assert!(out[0].is_ok());
+        let seen = seen.into_inner().expect("测试记录锁必须可用");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "https://a/1");
+        assert_eq!(seen[0].1, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn fetch_all_with_returns_input_order() {
+        let out = fetch_all_with(
+            &["https://a/1".to_string(), "https://a/2".to_string()],
+            || Duration::ZERO,
+            |url, _timeout| Ok(url.as_bytes().to_vec()),
+        );
+        assert_eq!(
+            out.into_iter()
+                .map(|result| result.expect("fake fetch 必须成功"))
+                .collect::<Vec<_>>(),
+            vec![b"https://a/1".to_vec(), b"https://a/2".to_vec()]
+        );
+    }
+
+    #[test]
+    fn fetch_all_with_rejects_non_http_without_calling_fetcher() {
+        let calls = AtomicUsize::new(0);
+        let out = fetch_all_with(
+            &["file:///C:/a.png".to_string()],
+            || Duration::ZERO,
+            |_, _| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Ok(vec![1])
+            },
+        );
+        assert!(matches!(out[0], Err(FetchError::InvalidUrl)));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]

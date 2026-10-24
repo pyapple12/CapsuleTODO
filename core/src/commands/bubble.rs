@@ -331,14 +331,30 @@ pub fn bubble_open_image_path_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let (rel, _source) = storage
-        .get_bubble_image_file(id)?
-        .ok_or(CommandError::Bubble(
-            BubbleError::UnsupportedFormat.to_string(),
-        ))?;
+    bubble_open_image_path_core_with(id, images_dir, ctx, |path| path.is_file())
+}
+
+/// FIX018.20：路径解析的可注入文件检查版本；生产传 `Path::is_file`，测试可探测锁已释放。
+fn bubble_open_image_path_core_with<F>(
+    id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+    exists: F,
+) -> Result<std::path::PathBuf, CommandError>
+where
+    F: FnOnce(&std::path::Path) -> bool,
+{
+    // FIX018.20：锁内只取 rel，文件检查在出锁后做，避免慢盘 stat 阻塞 storage。
+    let (rel, _source) = {
+        let storage = ctx.lock_storage()?;
+        storage
+            .get_bubble_image_file(id)?
+            .ok_or(CommandError::Bubble(
+                BubbleError::UnsupportedFormat.to_string(),
+            ))?
+    };
     let abs = images_dir.join(&rel);
-    if !abs.is_file() {
+    if !exists(&abs) {
         return Err(CommandError::Bubble("图片文件已移动或删除".to_string()));
     }
     Ok(abs)
@@ -374,18 +390,43 @@ pub fn bubble_copy_payload_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<BubbleCopyPayload, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let item = storage.get_bubble(id)?;
+    bubble_copy_payload_core_with(id, images_dir, ctx, |path| path.is_file())
+}
+
+/// FIX018.20：复制载荷路径检查的可注入版本；生产传 `Path::is_file`。
+fn bubble_copy_payload_core_with<F>(
+    id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+    exists: F,
+) -> Result<BubbleCopyPayload, CommandError>
+where
+    F: FnOnce(&std::path::Path) -> bool,
+{
+    // FIX018.20：锁内只取条目与 rel，文件检查在出锁后做。
+    let (item, image) = {
+        let storage = ctx.lock_storage()?;
+        let item = storage.get_bubble(id)?;
+        let image = if item.kind == crate::bubble::BubbleKind::Image {
+            Some(
+                storage
+                    .get_bubble_image_file(id)?
+                    .ok_or(CommandError::Bubble(
+                        BubbleError::UnsupportedFormat.to_string(),
+                    ))?,
+            )
+        } else {
+            None
+        };
+        (item, image)
+    };
     match item.kind {
         crate::bubble::BubbleKind::Text => Ok(BubbleCopyPayload::Text(item.text)),
         crate::bubble::BubbleKind::Image => {
-            let (rel, source) = storage
-                .get_bubble_image_file(id)?
-                .ok_or(CommandError::Bubble(
-                    BubbleError::UnsupportedFormat.to_string(),
-                ))?;
+            let (rel, source) = image
+                .ok_or_else(|| CommandError::Bubble(BubbleError::UnsupportedFormat.to_string()))?;
             let abs = images_dir.join(&rel);
-            if !abs.is_file() {
+            if !exists(&abs) {
                 return Err(CommandError::Bubble("图片文件已移动或删除".to_string()));
             }
             if source == "file" {
@@ -664,6 +705,36 @@ mod tests {
             bubble_get_image_path_core(text_item.id, &dir, &ctx).expect_err("文本气泡必须报错");
         assert!(matches!(err, CommandError::Bubble(ref msg) if msg.contains("图片格式暂不支持")));
         assert!(bubble_get_image_path_core(99, &dir, &ctx).is_err());
+    }
+
+    #[test]
+    fn image_path_checks_run_after_storage_lock_released() {
+        // FIX018.20：两个路径入口的文件检查都必须在 storage guard 释放后执行。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = bubble_capture_image_core(&dir, &screenshot_capture(fixture_png()), &ctx)
+            .expect("合法图片必须成功")
+            .added_item();
+
+        let opened = bubble_open_image_path_core_with(item.id, &dir, &ctx, |path| {
+            assert!(
+                ctx.storage.try_lock().is_ok(),
+                "bubble_open_image 的文件检查不得持有 storage 锁"
+            );
+            path.is_file()
+        })
+        .expect("打开原图路径必须成功");
+        assert!(opened.is_file());
+
+        let copied = bubble_copy_payload_core_with(item.id, &dir, &ctx, |path| {
+            assert!(
+                ctx.storage.try_lock().is_ok(),
+                "bubble_copy 的文件检查不得持有 storage 锁"
+            );
+            path.is_file()
+        })
+        .expect("复制图路径必须成功");
+        assert!(matches!(copied, BubbleCopyPayload::ImagePng(_)));
     }
 
     /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images；FIX017.14 RAII 收尾）

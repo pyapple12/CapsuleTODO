@@ -22,6 +22,7 @@ import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
 import { normalizePasteNewlines, notePasteFitsLimits } from "../composables/notePasteLimits";
 import { htmlHasImage } from "../composables/htmlImage";
+import { shouldIgnoreImeEnter } from "../composables/imeEnter";
 import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection";
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
 import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
@@ -294,21 +295,51 @@ async function saveBlocksForCore(
       `pre-save todo=${todoId} len=${list.length} last=${preLast ? `${preLast.kind}#${preLast.id}` : "none"} sig=${sig.length}/${sigFingerprint(sig)}`,
     );
   }
+  const sentKeys = list.map((b) => b._key);
+  const sentContent = JSON.stringify(
+    list.map((b) => ({ key: b._key, kind: b.kind, text: b.text })),
+  );
   const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
     // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
     if (blocks.value !== list) return true;
-    // 就地回填 id（保 _key → 不重挂 DOM，输入焦点不丢）；基准取回填后的签名
-    saved.forEach((b, i) => {
-      const local = list[i];
-      if (!local) return;
-      local.id = b.id;
-      local.kind = b.kind;
-      local.image_path = b.image_path;
+    // FIX018.9：按 _key 回填而非按下标。在飞期间拆块/合并会改变数组长度，下标回填
+    // 会把响应 id 写到错误块上；key 缺失时保留 id=0，交给下一次保存补写。
+    const savedByKey = new Map<string, NoteBlock>();
+    sentKeys.forEach((key, i) => {
+      const savedBlock = saved[i];
+      if (savedBlock) savedByKey.set(key, savedBlock);
     });
-    savedTodoId = todoId;
-    savedSignature = signature(list);
+    for (const local of list) {
+      const savedBlock = savedByKey.get(local._key);
+      if (!savedBlock) continue;
+      local.id = savedBlock.id;
+      local.kind = savedBlock.kind;
+      local.image_path = savedBlock.image_path;
+    }
+    const currentKeys = list.map((b) => b._key);
+    const sameOrder =
+      currentKeys.length === sentKeys.length && currentKeys.every((key, i) => key === sentKeys[i]);
+    const sameContent =
+      JSON.stringify(list.map((b) => ({ key: b._key, kind: b.kind, text: b.text }))) ===
+      sentContent;
+    const complete =
+      saved.length === list.length &&
+      savedByKey.size === sentKeys.length &&
+      sameOrder &&
+      sameContent;
+    if (complete) {
+      savedTodoId = todoId;
+      savedSignature = signature(list);
+    } else if (pasteInFlight > 0 || editInFlight > 0) {
+      // 编辑窗口内不能强写中间态；交给收尾 flush，保持原有 T28 语义。
+      scheduleSave();
+    } else {
+      // 本轮响应只覆盖发送时那一代；当前列表仍有结构/文本变化，不能标成已保存。
+      // FIX018.9：立即把 follow-up 登记进 noteSavesInFlight，拖拽/关板才能等到它。
+      return await saveBlocksFor(todoId, list, true);
+    }
     // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
     // （PATCH002.72：与 `pre-save` 行配对读——两行指纹相同 = 服务端没改块集 ✓）
     const savedLast = saved[saved.length - 1];
@@ -1427,19 +1458,53 @@ let keepUndoComposing = false;
  * 伪造一次 `focusout` ⇒ 若此刻归一化落库/清豁免，就会把空中间态写进库、并把撤销快照清掉 ✗
  * （实证：`undo:keep clear reason=focusout` 紧接 `pre-save len=1`）。窗口内**保存入口与豁免清理一律跳过**。 */
 let editInFlight = 0;
+/** FIX018.10：IME 229 没有后续 composition 时的 5s 兜底拍子；只允许一个。 */
+let imeFallbackTimer: number | undefined;
+/** FIX018.10：切源 flush 等待 IME 窗口结束（compositionend / 5s 超时 / close）。 */
+let imeWait: Promise<void> | null = null;
+let resolveImeWait: (() => void) | null = null;
+
+function ensureImeWait(): void {
+  if (imeWait != null) return;
+  imeWait = new Promise((resolve) => {
+    resolveImeWait = resolve;
+  });
+}
+
+function resolveImeWaitNow(): void {
+  if (imeFallbackTimer !== undefined) {
+    window.clearTimeout(imeFallbackTimer);
+    imeFallbackTimer = undefined;
+  }
+  resolveImeWait?.();
+  resolveImeWait = null;
+  imeWait = null;
+}
+
 /** 置一次豁免（`char` = 普通字符，下一拍兜底自清；`ime` = 组字，活到 `compositionend`） */
 function armKeepUndo(reason: "char" | "ime"): void {
+  // FIX018.10：229 分支后浏览器还会再发 compositionstart；同一窗口不得重复 ++，
+  // 否则 compositionend 只减一次，editInFlight 会永久挂住保存。
+  if (reason === "ime" && keepUndoComposing) return;
   keepUndoOnce = true;
-  if (reason === "ime") keepUndoComposing = true;
+  if (reason === "ime") {
+    keepUndoComposing = true;
+    ensureImeWait();
+  }
   editInFlight += 1; // 打开结构性编辑窗口（删→写之间不许落库、不许清豁免 ✓）
   if (DIAG) undoLog(`undo:keep set reason=${reason} editInFlight=${editInFlight}`);
   if (reason === "char") {
     // 兜底：万一那一下没产生 input（键被别处拦了 / 焦点丢了），下一拍自清 ✓
     window.setTimeout(() => clearKeepUndo("timeout"), 0);
   } else {
-    // 兜底：一旦判"输入法起手"却没真的进入组字（键被吞 / 输入法直接上屏），5s 后自清，
-    // 免得结构性编辑窗口一直挂着把保存全挡住 ✗
-    window.setTimeout(() => clearKeepUndo("ime-timeout"), 5000);
+    // 兜底：一旦判"输入法起手"却没真的进入组字（键被吞 / 输入法直接上屏），5s 后自清 +
+    // 主动排一次保存；否则 flush 会因 editInFlight 一直跳过，关板/切源丢最近输入 ✗
+    if (imeFallbackTimer !== undefined) window.clearTimeout(imeFallbackTimer);
+    imeFallbackTimer = window.setTimeout(() => {
+      imeFallbackTimer = undefined;
+      clearKeepUndo("ime-timeout");
+      scheduleSave();
+    }, 5000);
   }
 }
 /** 清豁免（带原因 ⇒ 万一泄漏，日志能定位是哪条路径清的/没清 ✓） */
@@ -1447,6 +1512,7 @@ function clearKeepUndo(reason: string): void {
   const had = keepUndoOnce || keepUndoComposing;
   keepUndoOnce = false;
   keepUndoComposing = false;
+  resolveImeWaitNow();
   if (editInFlight > 0) editInFlight -= 1; // 关闭窗口
   if (had) if (DIAG) undoLog(`undo:keep clear reason=${reason} editInFlight=${editInFlight}`);
 }
@@ -2347,34 +2413,68 @@ let renamePending: { id: number; text: string } | null = null;
 let renameTimer: number | undefined;
 /** 最近一次成功落库的标题基准（FIX007.5 基准机制 + FIX008.2 带条目 id） */
 let lastSavedText: { id: number; text: string } | null = null;
+/** FIX018.2：标题保存串行代际；清空 Enter 期间若已有保存，排队回滚。 */
+let titleSaveInFlight = 0;
+let titleRollback: { id: number; text: string } | null = null;
 
-/** 保存一次标题改名（标题不依赖块模型；失败只落 console，不阻断块/关板）。 */
+/** 当前标题基准：同条目优先最近成功落库值，回退开板快照。
+ * FIX018.2：props.todo 是开板快照，改名成功后父级刷新不会回写它。 */
+function titleBase(): string {
+  const todo = props.todo;
+  if (todo == null) return "";
+  return lastSavedText?.id === todo.id ? lastSavedText.text : todo.text;
+}
+
+/** 保存一次标题改名（标题不依赖块模型；失败只落 console，不阻断块/关板）。
+ * FIX018.2：基准改用服务端返回的 trim 后文本；若用户已在飞期间清空并 Enter，
+ * 当前保存结束后串行补一次“回滚到原标题”，避免 UI 显示 A、DB 已是 B。 */
 async function saveTitleRename(pending: { id: number; text: string }): Promise<void> {
+  titleSaveInFlight += 1;
   try {
-    await invoke("todo_rename", { id: pending.id, text: pending.text });
+    const saved = await invoke<TodoItem>("todo_rename", {
+      id: pending.id,
+      text: pending.text,
+    });
     if (props.todo?.id === pending.id) {
-      lastSavedText = { id: pending.id, text: pending.text };
+      lastSavedText = { id: pending.id, text: saved.text };
+      // 用户若已在保存期间继续输入，不覆盖其新草稿。
+      if (titleDraft.value === pending.text) titleDraft.value = saved.text;
     }
     emit("changed");
   } catch (err) {
     console.error("改名失败", err);
+  } finally {
+    titleSaveInFlight -= 1;
+    let rollback: { id: number; text: string } | null = null;
+    if (titleSaveInFlight === 0) {
+      rollback = titleRollback;
+      titleRollback = null;
+    }
+    if (rollback) await saveTitleRename(rollback);
   }
 }
 
 /** FIX017.19：空标题按 Enter 退回原标题；空串/纯空白永不排 rename。 */
-function onTitleEnter(): void {
+function onTitleEnter(e: KeyboardEvent): void {
+  // FIX018.3：输入法选词 Enter 不是提交，必须交还输入法。
+  if (shouldIgnoreImeEnter(e)) return;
   if (titleDraft.value.trim() !== "") return;
-  titleDraft.value = props.todo?.text ?? "";
+  const todo = props.todo;
+  const base = titleBase();
+  // FIX018.2：有保存在飞时，排队一次回滚；先登记再赋值，避免 watch 把回滚意图清掉。
+  if (todo != null && titleSaveInFlight > 0) {
+    titleRollback = { id: todo.id, text: base };
+  }
+  titleDraft.value = base;
   clearTimeout(renameTimer);
   renamePending = null;
 }
 
 watch(titleDraft, (text) => {
   const todo = props.todo;
-  const savedBase =
-    lastSavedText != null && lastSavedText.id === todo?.id
-      ? lastSavedText.text
-      : (todo?.text ?? null);
+  // 用户若在回滚排队后又输入新标题，回滚意图作废。
+  if (titleRollback != null && text !== titleRollback.text) titleRollback = null;
+  const savedBase = todo == null ? null : titleBase();
   if (todo == null || text.trim() === "" || text === savedBase) {
     clearTimeout(renameTimer);
     renamePending = null;
@@ -2405,7 +2505,16 @@ async function flushPending(prev?: { todoId: number | null; list: LocalBlock[] }
   const renameJob = rename != null ? saveTitleRename(rename) : null;
   // PATCH002.72 C5：粘贴窗口内不落库（此时 `blocks` 可能是"删完未插"的中间态 ✗）；
   // 收尾的 `finally` 会把最终态按快照写回（板已切走时也能写，沿 `.47` 口径）
-  if (pasteInFlight > 0 || editInFlight > 0) {
+  if (pasteInFlight > 0) {
+    if (renameJob) await renameJob;
+    return;
+  }
+  // FIX018.10：切源时若 229 仍在等 composition，先等它收场/5s 超时；否则 prev.list
+  // 会因 editInFlight>0 被直接跳过，旧条目的最近输入丢失。
+  if (editInFlight > 0 && keepUndoComposing && imeWait != null) {
+    await imeWait;
+  }
+  if (editInFlight > 0) {
     if (renameJob) await renameJob;
     return;
   }
@@ -2566,6 +2675,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearKeepUndo("unmount"); // FIX018.10：清 5s IME 兜底与 imeWait，防卸载后写旧状态
+  clearTimeout(renameTimer);
+  renameTimer = undefined;
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   unlistenNoteImageReady?.();
   unlistenNoteImageFailed?.();
   if (savedTodoId != null) void finalizeTodoAfterClose(savedTodoId, blocks.value.slice());

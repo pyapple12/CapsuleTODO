@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { rowMaskDead } from "../src/composables/useMaskDead";
 import { isNoteDragTarget } from "../src/composables/useDragReorder";
+
+const detailCss = readFileSync("ui/src/styles/detail.css", "utf8");
 
 describe("详情拖拽边界（FIX015.32）", () => {
   afterEach(() => {
@@ -45,6 +49,10 @@ describe("详情拖拽边界（FIX015.32）", () => {
 
       expect(rowMaskDead(row), listId).toBe(true);
     }
+  });
+
+  it("详情拖拽态锁滚动（FIX018.11）", () => {
+    expect(detailCss).toMatch(/\.note-scroll\.drag-live\s*\{[^}]*overflow-y:\s*hidden/);
   });
 
   it("图块可拖，但删除按钮不可作为起拖目标", () => {

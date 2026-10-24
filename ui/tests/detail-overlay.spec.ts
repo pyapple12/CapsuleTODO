@@ -63,6 +63,11 @@ function mockNoteInvoke(blocks: NoteBlock[]): void {
         id: block.id || 100 + index,
       }));
     }
+    if (cmd === "todo_rename") {
+      const id = Number(args?.id);
+      const text = String(args?.text ?? "").trim();
+      return { ...(id === TODO2.id ? TODO2 : TODO), id, text };
+    }
     return undefined;
   });
 }
@@ -573,13 +578,29 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(last.some((block) => block.kind === "Image")).toBe(false);
   });
 
-  it("收起态详情遮罩 mousedown 不触发开板（FIX017.11）", async () => {
+  it("收起态详情遮罩 mousedown 不重开板、不重拉块（FIX018.21）", async () => {
     wrapper = mount(DetailOverlay, {
       props: { todo: null, bubble: null, anchor: null },
     });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    await wrapper.setProps({ todo: null, bubble: null, anchor: null });
+    await flushPromises();
+    const listCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "note_blocks_list").length;
+    // 收起后内容节点仍在（只是 .open 摘除）；保留一个可观测的原生选区，
+    // 若误删 `if (!isOpen) return` 守卫，onGlobalDown 的 clearSelAll 会把选区收掉。
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const el = textarea.element;
+    el.focus();
+    el.setSelectionRange(1, 2);
+
     await wrapper.find(".detail-overlay").trigger("mousedown");
     await flushPromises();
     expect(wrapper.find(".detail-overlay").classes()).not.toContain("open");
+    expect(el.selectionStart).toBe(1);
+    expect(el.selectionEnd).toBe(2);
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "note_blocks_list").length).toBe(
+      listCalls,
+    );
   });
 
   it("标题 Ctrl+A / Backspace 只作用于标题，不删除笔记", async () => {
@@ -649,6 +670,263 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     await flushPromises();
     expect(title.element.value).toBe(TODO.text);
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "todo_rename")).toBe(false);
+  });
+
+  it("标题先改名成功后清空按 Enter 不回退旧标题（FIX018.2）", async () => {
+    vi.useFakeTimers();
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    const title = wrapper.find<HTMLInputElement>("input.detail-title");
+
+    await title.setValue("新标题");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    const renameCalls = () => invokeMock.mock.calls.filter(([cmd]) => cmd === "todo_rename");
+    expect(renameCalls()).toHaveLength(1);
+    expect(renameCalls()[0]?.[1]).toMatchObject({ id: TODO.id, text: "新标题" });
+
+    await title.setValue("");
+    await title.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+
+    expect(title.element.value).toBe("新标题");
+    expect(renameCalls()).toHaveLength(1);
+  });
+
+  it("标题保存在飞时清空按 Enter，最终回滚到原标题（FIX018.2 竞态）", async () => {
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+
+    const baseImpl = invokeMock.getMockImplementation();
+    let resolveFirstRename: (() => void) | undefined;
+    let renameCount = 0;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd !== "todo_rename") return baseImpl?.(cmd, args);
+      renameCount += 1;
+      const text = String(args?.text ?? "").trim();
+      const saved = { ...TODO, text };
+      if (renameCount === 1) {
+        return new Promise<TodoItem>((resolve) => {
+          resolveFirstRename = () => resolve(saved);
+        });
+      }
+      return Promise.resolve(saved);
+    });
+
+    const title = wrapper.find<HTMLInputElement>("input.detail-title");
+    await title.setValue("B");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(renameCount).toBe(1);
+
+    await title.setValue("");
+    await title.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    expect(title.element.value).toBe(TODO.text);
+
+    resolveFirstRename?.();
+    await flushPromises();
+    await flushPromises();
+
+    const renameCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "todo_rename");
+    expect(renameCalls).toHaveLength(2);
+    expect(renameCalls[1]?.[1]).toMatchObject({ id: TODO.id, text: TODO.text });
+    expect(title.element.value).toBe(TODO.text);
+  });
+
+  it("标题组字中的 Enter 不重置输入、不排 rename（FIX018.3）", async () => {
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    const title = wrapper.find<HTMLInputElement>("input.detail-title");
+    await title.setValue("");
+
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      title.element.dispatchEvent(event);
+      await flushPromises();
+      expect(title.element.value).toBe("");
+    }
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "todo_rename")).toBe(false);
+  });
+
+  it("保存响应在飞改文本时重存当前内容（FIX018.9）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+
+    let resolveFirst: (() => void) | undefined;
+    let saveCalls = 0;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd !== "note_blocks_save") return undefined;
+      saveCalls += 1;
+      const input = (args?.blocks ?? []) as NoteBlock[];
+      const response = input.map((block, index) => ({
+        ...block,
+        id: block.id || 100 + index,
+      }));
+      if (saveCalls === 1) {
+        return new Promise<NoteBlock[]>((resolve) => {
+          resolveFirst = () => resolve(response);
+        });
+      }
+      return Promise.resolve(response);
+    });
+
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    first.element.focus();
+    await first.setValue("abcX");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(saveCalls).toBe(1);
+
+    await first.setValue("abcY");
+    resolveFirst?.();
+    await flushPromises();
+    await flushPromises();
+
+    const saves = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saves.length).toBeGreaterThanOrEqual(2);
+    expect(saves[saves.length - 1][0]?.text).toBe("abcY");
+  });
+
+  it("IME 229 无 composition 时超时补保存（FIX018.10）", async () => {
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    textarea.element.focus();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "a",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+    textarea.element.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Process",
+        keyCode: 229,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+
+    // 5s 兜底清窗口并排保存；再给 300ms 防抖一拍。
+    await vi.advanceTimersByTimeAsync(5300);
+    await flushPromises();
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_blocks_save")).toBe(true);
+  });
+
+  it("卸载清理 IME 兜底定时器（FIX018.10）", async () => {
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(500); // 清掉开板 450ms 拍子
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    textarea.element.focus();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "a",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+    textarea.element.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Process",
+        keyCode: 229,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+    const timersBeforeUnmount = vi.getTimerCount();
+    expect(timersBeforeUnmount).toBeGreaterThan(0);
+
+    wrapper.unmount();
+    wrapper = undefined;
+    // 其他套件拍子可能仍在；关键是 5s IME 兜底必须被卸载清掉。
+    expect(vi.getTimerCount()).toBeLessThan(timersBeforeUnmount);
+  });
+
+  it("保存响应按 _key 回填，在飞拆块不产生重复 id（FIX018.9）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+
+    let resolveFirst: (() => void) | undefined;
+    let saveCalls = 0;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd !== "note_blocks_save") return undefined;
+      saveCalls += 1;
+      const input = (args?.blocks ?? []) as NoteBlock[];
+      const response = input.map((block, index) => ({
+        ...block,
+        id: block.id || 100 + index,
+      }));
+      if (saveCalls === 1) {
+        return new Promise<NoteBlock[]>((resolve) => {
+          resolveFirst = () => resolve(response);
+        });
+      }
+      return Promise.resolve(response);
+    });
+
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    first.element.focus();
+    first.element.setSelectionRange(first.element.value.length, first.element.value.length);
+    await first.setValue("abcX");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(saveCalls).toBe(1);
+
+    // 第一拍保存仍在飞：拆块会原地改数组，旧实现会按下标把 id 写错。
+    await first.trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    resolveFirst?.();
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+
+    const saves = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saves.length).toBeGreaterThanOrEqual(2);
+    const lastIds = saves[saves.length - 1].map((block) => block.id);
+    expect(new Set(lastIds).size).toBe(lastIds.length);
   });
 
   it("跨块选区 Backspace 在板级处理后不再触发块级 keydown", async () => {

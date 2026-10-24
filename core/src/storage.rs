@@ -9,8 +9,8 @@
 //! 时间源注入（NowFn 默认系统时钟，测试注入固定值零真实等待）。
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -39,6 +39,35 @@ fn note_ref_query_calls() -> usize {
 /// `PENDING_IMAGE_TEXT` 同源——**改一处必须同步**。占位块是文本块，原 URL 存
 /// `note_blocks.source_url`；成功后原位升格图块，失败/启动清扫时换成 URL 文本。
 pub const PENDING_NOTE_IMAGE_TEXT: &str = "🖼 下载中…";
+/// FIX018.6：启动降级时无 source_url 的孤儿占位使用的短文本（不再伪装“下载中”）。
+pub const DEGRADED_NOTE_IMAGE_TEXT: &str = "🖼 图片";
+
+/// FIX018.5：预览校验缓存条目；键 = 绝对路径，值 = 文件长度/修改时间/可用性。
+#[derive(Clone, Copy)]
+struct PreviewCacheEntry {
+    len: u64,
+    modified: Option<SystemTime>,
+    usable: bool,
+}
+
+/// FIX018.5：进程内预览校验缓存（只缓存结果，不缓存文件内容）。
+fn preview_cache() -> &'static Mutex<HashMap<PathBuf, PreviewCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, PreviewCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// FIX018.5：测试用解码次数（线程本地，避免并行测试串扰）。
+    static PREVIEW_DECODE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// FIX018.5：让预览缓存失效（写入/替换预览后调用）。
+fn invalidate_preview_cache(path: &Path) {
+    if let Ok(mut cache) = preview_cache().lock() {
+        cache.remove(path);
+    }
+}
 
 /// 气泡新增结果（PL015.5 去重裁决）：重复文本拒入库不是错误——手动捕获据此切换
 /// "重复捕获，无效！"占字态，热键路径据此静默；Added 携带回填 id 的新条目
@@ -128,16 +157,50 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
+    } else {
+        invalidate_preview_cache(path);
     }
     result
 }
 
-/// FIX017.8：预览是否可用（存在、非空、可解码）；不可用则调用方回落原图。
+/// FIX017.8 / FIX018.5：预览是否可用（存在、非空、可解码）；不可用则调用方回落原图。
+/// 同 `(len, mtime)` 只完整解码一次：详情列表/保存会对每个图块重复问，缓存避免
+/// 每次 IPC 都解一遍大图；文件被写入/替换时由 `write_atomic` 失效缓存。
 pub(crate) fn preview_is_usable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if meta.len() == 0 {
+        return false;
+    }
+    let modified = meta.modified().ok();
+    if let Ok(cache) = preview_cache().lock() {
+        if let Some(entry) = cache.get(path) {
+            if entry.len == meta.len() && entry.modified == modified {
+                return entry.usable;
+            }
+        }
+    }
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
-    !bytes.is_empty() && image::load_from_memory(&bytes).is_ok()
+    let usable = !bytes.is_empty() && image::load_from_memory(&bytes).is_ok();
+    #[cfg(test)]
+    PREVIEW_DECODE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    if let Ok(mut cache) = preview_cache().lock() {
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            PreviewCacheEntry {
+                len: meta.len(),
+                modified,
+                usable,
+            },
+        );
+    }
+    usable
 }
 
 /// FIX017.8：同 hash 命中时确保原图与预览仍在；缺失则按本次字节补建。
@@ -503,7 +566,7 @@ pub enum NotePastePart {
     Text(String),
     /// 图段（字节 + 可选原名；去重 / 命名 / 预览沿单图插入同款）
     Image {
-        /// 图片字节（调用方须先 `validate_image_bytes`）
+        /// 图片字节（调用方须先 `prepare_image` / `prepare_captured_image`）
         bytes: Vec<u8>,
         /// 来源文件名（净化后作内层名；None = 截图式 `snap_…`）
         orig_name: Option<String>,
@@ -869,14 +932,16 @@ impl Storage {
         Ok(())
     }
 
-    /// FIX014.13：`note_blocks` 查询索引（幂等）——列表按 todo/order、删图与清扫按
-    /// image_file。小数据量无感，块/图片增长后避免反复全表扫描。
+    /// FIX014.13 / FIX018.8：`note_blocks` 查询索引（幂等）——列表按 todo/order、删图与
+    /// 清扫按 image_file、同图复用按 image_hash。小数据量无感，块/图片增长后避免全表扫描。
     fn migrate_note_indexes(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_note_blocks_todo_order
                  ON note_blocks(todo_id, sort_order);
              CREATE INDEX IF NOT EXISTS idx_note_blocks_image_file
-                 ON note_blocks(image_file);",
+                 ON note_blocks(image_file);
+             CREATE INDEX IF NOT EXISTS idx_note_blocks_image_hash
+                 ON note_blocks(image_hash);",
         )?;
         Ok(())
     }
@@ -1456,20 +1521,24 @@ impl Storage {
                     }
                 }
             }
-            let existing: HashMap<i64, (String, Option<String>)> = self
+            let existing: HashMap<i64, (String, Option<String>, Option<String>)> = self
                 .conn
-                .prepare("SELECT id, kind, image_file FROM note_blocks WHERE todo_id = ?1")?
+                .prepare(
+                    "SELECT id, kind, image_file, source_url
+                     FROM note_blocks WHERE todo_id = ?1",
+                )?
                 .query_map([todo_id], |row| {
-                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
                 })?
                 .collect::<Result<HashMap<_, _>, _>>()?;
-            for (id, (kind, _)) in &existing {
+            for (id, (kind, _, source)) in &existing {
                 let id = *id;
                 if keep_ids.contains(&id) {
                     continue;
                 }
-                if kind == "image" {
-                    // FIX014.2：图块删除先软删除，文件/行保留到关板 finalize；Ctrl+Z 可复活
+                // FIX018.6：图块与“下载中”文本都软删除（后者保留 source_url 供撤销复活）；
+                // 普通文本仍硬删除，避免无意义行堆积。
+                if kind == "image" || (kind == "text" && source.is_some()) {
                     self.conn.execute(
                         "UPDATE note_blocks SET deleted_at = COALESCE(deleted_at, ?2)
                          WHERE id = ?1",
@@ -1524,20 +1593,38 @@ impl Storage {
                                     _ => false,
                                 };
                                 if stale {
-                                    self.conn.execute(
-                                        "UPDATE note_blocks SET sort_order = ?2
-                                         WHERE id = ?1 AND todo_id = ?3",
-                                        rusqlite::params![block.id, i as i64, todo_id],
-                                    )?;
+                                    // FIX018.6：软删除的 pending 文本被撤销带回来时复活；
+                                    // 图块仍保持软删除语义，只更新顺序。
+                                    if kind == "text" {
+                                        self.conn.execute(
+                                            "UPDATE note_blocks SET sort_order = ?2, deleted_at = NULL
+                                             WHERE id = ?1 AND todo_id = ?3",
+                                            rusqlite::params![block.id, i as i64, todo_id],
+                                        )?;
+                                    } else {
+                                        self.conn.execute(
+                                            "UPDATE note_blocks SET sort_order = ?2
+                                             WHERE id = ?1 AND todo_id = ?3",
+                                            rusqlite::params![block.id, i as i64, todo_id],
+                                        )?;
+                                    }
                                     continue;
                                 }
                             }
                             let changed = self.conn.execute(
                                 "UPDATE note_blocks SET sort_order = ?2, kind = 'text', text = ?3,
-                                     image_hash = NULL, image_file = NULL, source_url = NULL,
+                                     image_hash = NULL, image_file = NULL,
+                                     source_url = CASE WHEN ?3 = ?5 AND source_url IS NOT NULL
+                                                       THEN source_url ELSE NULL END,
                                      deleted_at = NULL
                                  WHERE id = ?1 AND todo_id = ?4",
-                                rusqlite::params![block.id, i as i64, text, todo_id],
+                                rusqlite::params![
+                                    block.id,
+                                    i as i64,
+                                    text,
+                                    todo_id,
+                                    PENDING_NOTE_IMAGE_TEXT
+                                ],
                             )?;
                             if changed == 0 {
                                 // PATCH002.72 C7：**旧行可能已被删除** —— "粘贴替换选区"落库时会把
@@ -1562,7 +1649,7 @@ impl Storage {
                         // FIX015.18：图块只可能来自粘贴命令（落盘 + hash 已就位）——
                         // 必须命中原生图块行（kind=image 且 image_file 非空），
                         // 禁止把文本行改 kind 成幽灵图块，也禁止复用无文件图块。
-                        let Some((kind, image_file)) = existing.get(&block.id) else {
+                        let Some((kind, image_file, _)) = existing.get(&block.id) else {
                             return Err(StorageError::NotFound(block.id));
                         };
                         if kind != "image" || image_file.is_none() {
@@ -1635,13 +1722,14 @@ impl Storage {
             stamp,
             preview.as_deref(),
             None,
+            None,
         )
     }
 
     /// 粘贴插图（PL027）：图片字节 → **同 hash 复用同一文件**（域内引用计数，命中不写盘）
     /// 或新落盘 `note_{stamp}_{n}/…`（内层名：截图 `snap_{stamp}_{n}.png` / 文件图净化原名；
     /// 大图预览阈值同气泡）→ 事务内把 `block_id` 的文本按 `before` / `after` 切成两块 +
-    /// 中间插图块（保持 sort_order 连续）→ 返回新块列表。调用方须先 `validate_image_bytes`
+    /// 中间插图块（保持 sort_order 连续）→ 返回新块列表。调用方须先 `prepare_image`
     /// 与 `validate_note_blocks`；`before`/`after` 由前端按光标/选区本地切好（免 UTF-16 换算）；
     /// `preview` 由调用方在 storage 锁外预生成。
     #[allow(clippy::too_many_arguments)]
@@ -1657,23 +1745,31 @@ impl Storage {
         stamp: &str,
         preview: Option<&[u8]>,
         prepared: Option<&PreparedImageFile>,
+        existing_rel: Option<&str>,
     ) -> Result<Vec<NoteBlock>, StorageError> {
         // ⓪ 目标块必须先存在（PATCH002.46，同 `insert_note_parts`）——校验先于任何落盘
         self.require_note_block(todo_id, block_id)?;
         // ① 落盘或复用：生产路径由调用方锁外准备（prepared Some）；兼容入口仍在此落盘。
-        let (hash, rel) = match prepared {
-            Some(file) => (file.hash.clone(), file.rel.clone()),
-            None => {
-                match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
-                        return Err(err);
+        // FIX018.5：同 hash 已有文件时由调用方传入 existing_rel，锁内不再重复 ensure/解码。
+        let (hash, rel) = if let Some(rel) = existing_rel {
+            (fnv1a_hex(bytes), rel.to_string())
+        } else {
+            match prepared {
+                Some(file) => (file.hash.clone(), file.rel.clone()),
+                None => {
+                    match self
+                        .write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview)
+                    {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
+                            return Err(err);
+                        }
                     }
                 }
             }
         };
-        let owns_files = prepared.is_none();
+        let owns_files = prepared.is_none() && existing_rel.is_none();
         if let Err(err) = self.conn.execute_batch("BEGIN") {
             if owns_files {
                 self.sweep_after_failed_write(images_dir);
@@ -1711,13 +1807,15 @@ impl Storage {
             )?;
             let mut next = order + 1;
             if keep_before {
-                // 原块保留为「上段」文本块，图块插在其后
+                // 原块保留为「上段」文本块，图块插在其后；若它仍是下载中占位，保留 source_url
                 self.conn.execute(
                     "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL, source_url = NULL,
+                         image_hash = NULL, image_file = NULL,
+                         source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                           THEN source_url ELSE NULL END,
                          deleted_at = NULL
                      WHERE id = ?1",
-                    rusqlite::params![block_id, before],
+                    rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
                 )?;
                 self.conn.execute(
                     "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
@@ -1978,12 +2076,15 @@ impl Storage {
             // 不靠 URL 文本反查（重复 URL 会歧义）
             let mut part_ids: Vec<i64> = Vec::with_capacity(parts.len());
             if keep_before {
+                // FIX018.6：占位上下文中插入图片时，上段仍是占位则保留 source_url。
                 self.conn.execute(
                     "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL, source_url = NULL,
+                         image_hash = NULL, image_file = NULL,
+                         source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                           THEN source_url ELSE NULL END,
                          deleted_at = NULL
                      WHERE id = ?1",
-                    rusqlite::params![block_id, before],
+                    rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
                 )?;
             }
             for (i, part) in parts.iter().enumerate() {
@@ -1994,9 +2095,11 @@ impl Storage {
                         if reuse_original {
                             self.conn.execute(
                                 "UPDATE note_blocks SET kind = 'text', text = ?2,
-                                     image_hash = NULL, image_file = NULL, source_url = NULL
+                                     image_hash = NULL, image_file = NULL,
+                                     source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                                       THEN source_url ELSE NULL END
                                  WHERE id = ?1",
-                                rusqlite::params![block_id, text],
+                                rusqlite::params![block_id, text, PENDING_NOTE_IMAGE_TEXT],
                             )?;
                             part_ids.push(block_id);
                             continue;
@@ -2147,6 +2250,7 @@ impl Storage {
         preview: Option<&[u8]>,
         stamp: &str,
         prepared: Option<&PreparedImageFile>,
+        existing_rel: Option<&str>,
     ) -> Result<Option<NoteBlock>, StorageError> {
         let current: Option<(String, Option<String>)> = self
             .conn
@@ -2163,8 +2267,10 @@ impl Storage {
         if text != PENDING_NOTE_IMAGE_TEXT || source.as_deref() != Some(expected_url) {
             return Ok(None);
         }
-        let owns_files = prepared.is_none();
-        let (hash, rel) = if let Some(file) = prepared {
+        let owns_files = prepared.is_none() && existing_rel.is_none();
+        let (hash, rel) = if let Some(rel) = existing_rel {
+            (fnv1a_hex(bytes), rel.to_string())
+        } else if let Some(file) = prepared {
             (file.hash.clone(), file.rel.clone())
         } else {
             match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
@@ -2239,7 +2345,14 @@ impl Storage {
                AND deleted_at IS NULL",
             [PENDING_NOTE_IMAGE_TEXT],
         )?;
-        Ok(changed)
+        // FIX018.6：source_url 因旧路径/软删除丢失的孤儿占位也要降级，不能永久“下载中…”。
+        let orphaned = self.conn.execute(
+            "UPDATE note_blocks SET text = ?2, source_url = NULL
+             WHERE kind = 'text' AND text = ?1 AND source_url IS NULL
+               AND deleted_at IS NULL",
+            [PENDING_NOTE_IMAGE_TEXT, DEGRADED_NOTE_IMAGE_TEXT],
+        )?;
+        Ok(changed + orphaned)
     }
 
     /// 详情块重排（图块拖拽落点提交）：id 集合须与该 todo 现存块完全一致（长度/幽灵/重复），
@@ -2372,7 +2485,7 @@ impl Storage {
     /// Duplicate）→ 事务内 INSERT 取 id → 写盘 `bubble_{stamp}_{n}/{内层名}` +
     /// 写入锁外预生成的预览 → UPDATE image_file（**相对路径含子目录**）。排头插入同 add_bubble。
     /// `orig_name` = 文件来源原名（None = 截图）；bytes 须先过
-    /// clipboard_image::validate_image_bytes（格式嗅探执行点在命令层）。
+    /// clipboard_image::prepare_captured_image（格式嗅探与预览执行点在命令层）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn add_image_bubble_prepared(
         &self,
@@ -4481,6 +4594,7 @@ mod tests {
                 None,
                 "261022000000",
                 None,
+                None,
             )
             .expect("后台落库必须成功")
             .expect("占位仍在，必须升级");
@@ -4519,6 +4633,7 @@ mod tests {
             Some("pasted.png"),
             None,
             "261022000001",
+            None,
             None,
         )
         .expect("后台落库")
@@ -4649,6 +4764,7 @@ mod tests {
                 None,
                 "261022000003",
                 None,
+                None,
             )
             .expect("后台任务不得报错");
         assert!(result.is_none(), "用户已改过 → 不覆盖");
@@ -4681,6 +4797,178 @@ mod tests {
             )
             .expect("查 source_url");
         assert!(source.is_none(), "降级后清空 source_url");
+    }
+
+    #[test]
+    fn preview_cache_reuses_decode_until_file_changes() {
+        let dir = temp_images_dir();
+        let path = dir.join("preview.png");
+        let valid = valid_preview_png();
+        std::fs::write(&path, &valid).expect("预览写入必须成功");
+        PREVIEW_DECODE_CALLS.with(|calls| calls.set(0));
+
+        assert!(preview_is_usable(&path));
+        assert!(preview_is_usable(&path), "同 stamp 第二次必须命中缓存");
+        assert_eq!(PREVIEW_DECODE_CALLS.with(|calls| calls.get()), 1);
+
+        std::fs::write(&path, b"not-a-png").expect("坏预览写入必须成功");
+        assert!(!preview_is_usable(&path));
+        assert_eq!(PREVIEW_DECODE_CALLS.with(|calls| calls.get()), 2);
+
+        std::fs::write(&path, valid).expect("修复预览写入必须成功");
+        assert!(preview_is_usable(&path));
+        assert_eq!(PREVIEW_DECODE_CALLS.with(|calls| calls.get()), 3);
+    }
+
+    /// 预览缓存测试用的真实可解码 PNG（`png_bytes()` 只是存储层任意字节夹具）。
+    fn valid_preview_png() -> Vec<u8> {
+        let image = image::RgbaImage::new(1, 1);
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("测试 PNG 编码必须成功");
+        out
+    }
+
+    #[test]
+    fn note_blocks_image_hash_index_exists() {
+        let st = storage();
+        let count: i64 = st
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_note_blocks_image_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("查索引必须成功");
+        assert_eq!(count, 1, "note_blocks.image_hash 必须有索引");
+    }
+
+    #[test]
+    fn pending_source_survives_image_paste_in_placeholder() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/keep-before.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000010")
+            .expect("占位插入必须成功");
+        let placeholder_id = ids[0];
+
+        st.add_note_image_block(
+            &dir,
+            item.id,
+            placeholder_id,
+            PENDING_NOTE_IMAGE_TEXT,
+            "",
+            &png_bytes(),
+            None,
+            "261025000011",
+        )
+        .expect("占位中插图必须成功");
+
+        let source: Option<String> = st
+            .conn
+            .query_row(
+                "SELECT source_url FROM note_blocks WHERE id = ?1",
+                [placeholder_id],
+                |row| row.get(0),
+            )
+            .expect("查 source_url");
+        assert_eq!(source.as_deref(), Some(url.as_str()));
+        assert!(st
+            .pending_note_image_matches(item.id, placeholder_id, &url)
+            .expect("匹配查询必须成功"));
+    }
+
+    #[test]
+    fn pending_text_soft_delete_can_be_restored_with_source() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/undo.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000012")
+            .expect("占位插入必须成功");
+        let placeholder_id = ids[0];
+        let blocks = st.note_blocks(item.id).expect("读块");
+        let placeholder = blocks
+            .iter()
+            .find(|block| block.id == placeholder_id)
+            .expect("占位块必须存在")
+            .clone();
+
+        let without = blocks
+            .into_iter()
+            .filter(|block| block.id != placeholder_id)
+            .collect::<Vec<_>>();
+        st.set_note_blocks(&dir, item.id, &without)
+            .expect("删除占位必须成功");
+        assert!(
+            !st.note_blocks(item.id)
+                .expect("读块")
+                .iter()
+                .any(|block| block.id == placeholder_id),
+            "删除后占位不可见"
+        );
+
+        let mut restored = without;
+        restored.push(placeholder);
+        st.set_note_blocks(&dir, item.id, &restored)
+            .expect("撤销占位必须成功");
+        let source: Option<String> = st
+            .conn
+            .query_row(
+                "SELECT source_url FROM note_blocks WHERE id = ?1",
+                [placeholder_id],
+                |row| row.get(0),
+            )
+            .expect("查 source_url");
+        assert_eq!(source.as_deref(), Some(url.as_str()));
+        assert!(st
+            .pending_note_image_matches(item.id, placeholder_id, &url)
+            .expect("撤销后仍可匹配"));
+    }
+
+    #[test]
+    fn startup_degrade_handles_pending_without_source() {
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let parts = vec![NotePastePart::PendingImage {
+            url: "https://example.com/orphan.png".to_string(),
+        }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000013")
+            .expect("占位插入必须成功");
+        st.conn
+            .execute(
+                "UPDATE note_blocks SET source_url = NULL WHERE id = ?1",
+                [ids[0]],
+            )
+            .expect("制造无 source 占位");
+
+        let count = st.degrade_pending_note_images().expect("启动清扫必须成功");
+        assert_eq!(count, 1);
+        let block = st
+            .note_blocks(item.id)
+            .expect("读块")
+            .into_iter()
+            .find(|block| block.id == ids[0])
+            .expect("占位块仍在");
+        assert_eq!(block.text, DEGRADED_NOTE_IMAGE_TEXT);
     }
 
     #[test]

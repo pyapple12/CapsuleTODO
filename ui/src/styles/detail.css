@@ -122,6 +122,11 @@
   overflow-anchor: none;
 }
 
+/* FIX018.11：详情拖拽期间与三列表同规锁滚动，防起拖几何快照与当前视口错位。 */
+.note-scroll.drag-live {
+  overflow-y: hidden;
+}
+
 /* 气泡图片模式（PL024）：img 接管板面，超高图由内层自行滚动（textarea 缺席，
    滑杆/阅读三角不挂载属可接受降态——图片模式无长文滚动需求） */
 /* PATCH002.52：图片模式的内距**自己声明**（原为继承 `.bubble-shell` 的 2px ⇒ 归属不清、

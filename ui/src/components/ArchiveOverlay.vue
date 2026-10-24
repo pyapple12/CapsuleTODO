@@ -121,11 +121,11 @@ function setArchiveVisible(visible: boolean): void {
   }
 }
 
-/** 开合归档板：开板重拉数据 + 动态落位 + 揭示动画 + 450ms 后 settle（揭示中几何中间态防御）。
- * 开合都先收口未决删除确认（A2 = design setBoard 首行：板开遮盖清单行、收板后板内行复见）。
- * 开板 listKey++ 强制列表重建（design renderBoard 每次开板 innerHTML 重建 → 勾选态的
- * 粒子迸发/环脉冲/对勾描画在新元素上重播——Vue 持久 vnode 不重建则开屏无动画，
- * 真窗口实测 2026-09-28） */
+/** 开合归档板：开板仅 `listKey++` 重建列表（**不做开板重拉，见 T27**）+ 动态落位 + 揭示动画
+ * + 450ms 后 settle（揭示中几何中间态防御）。开合都先收口未决删除确认（A2 = design setBoard
+ * 首行：板开遮盖清单行、收板后板内行复见）。开板 listKey++ 强制列表重建（design renderBoard
+ * 每次开板 innerHTML 重建 → 勾选态的粒子迸发/环脉冲/对勾描画在新元素上重播——Vue 持久 vnode
+ * 不重建则开屏无动画，真窗口实测 2026-09-28） */
 async function toggle(): Promise<void> {
   rollbackAllDelConfirms();
   const next = !isOpen.value;

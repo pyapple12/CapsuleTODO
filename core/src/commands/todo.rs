@@ -445,9 +445,8 @@ pub fn note_blocks_purge_deleted_core(
     Ok(())
 }
 
-/// 粘贴插图（**唯一插图入口**）：命中剪贴板图片 → 落盘/复用 + 光标处切分插入 → 广播
-/// 粘贴剪贴板图片（PATCH002.71：读剪贴板 / 解码 / 落盘 / 预览全部移到阻塞线程，
-/// 不再冻结 UI 主线程）
+/// 粘贴插图（**唯一插图入口**）：命中剪贴板图片 → 落盘/复用 + 光标处切分插入 → 广播。
+/// PATCH002.71：读剪贴板 / 解码 / 落盘 / 预览全部移到阻塞线程，不再冻结 UI 主线程。
 #[tauri::command]
 pub async fn note_paste_image(
     window: tauri::Window,
@@ -562,6 +561,7 @@ pub fn note_insert_image_core(
             } else {
                 None
             },
+            existing_now.as_deref(),
         )?;
         Ok((blocks, !use_prepared))
     })();
@@ -629,13 +629,29 @@ pub fn note_open_image_path_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let block = storage.get_note_block(block_id)?;
-    let rel = block
-        .image_file
-        .ok_or_else(|| CommandError::Todo("该块不是图片块".to_string()))?;
+    note_open_image_path_core_with(block_id, images_dir, ctx, |path| path.is_file())
+}
+
+/// FIX018.20：详情原图路径检查的可注入版本；生产传 `Path::is_file`。
+fn note_open_image_path_core_with<F>(
+    block_id: i64,
+    images_dir: &std::path::Path,
+    ctx: &AppContext,
+    exists: F,
+) -> Result<std::path::PathBuf, CommandError>
+where
+    F: FnOnce(&std::path::Path) -> bool,
+{
+    // FIX018.20：锁内只取 rel，文件检查在出锁后做。
+    let rel = {
+        let storage = ctx.lock_storage()?;
+        let block = storage.get_note_block(block_id)?;
+        block
+            .image_file
+            .ok_or_else(|| CommandError::Todo("该块不是图片块".to_string()))?
+    };
     let abs = images_dir.join(&rel);
-    if !abs.is_file() {
+    if !exists(&abs) {
         return Err(CommandError::Todo("图片文件已移动或删除".to_string()));
     }
     Ok(abs)
@@ -1257,6 +1273,16 @@ fn run_pending_image_jobs(
                 continue;
             }
         };
+        // FIX018.5：同 hash 已有行时仍要锁外补齐原图/预览，再交给 complete_pending；
+        // 否则 DB 有引用但文件缺失会把图块指向不存在文件。
+        if let Some(rel) = existing_rel.as_deref() {
+            crate::storage::ensure_existing_note_image(
+                &images_dir,
+                rel,
+                &bytes,
+                preview.as_deref(),
+            );
+        }
         let prepared = if existing_rel.is_some() {
             None
         } else {
@@ -1283,7 +1309,7 @@ fn run_pending_image_jobs(
         let (outcome, used_existing) = match ctx.lock_storage() {
             Ok(storage) => match storage.note_image_rel_by_hash(&hash) {
                 // FIX017.5：锁外准备后二次复核；并发落库则改用已有文件。
-                Ok(Some(_)) => (
+                Ok(Some(rel)) => (
                     storage.complete_pending_note_image(
                         &images_dir,
                         todo_id,
@@ -1294,6 +1320,7 @@ fn run_pending_image_jobs(
                         preview.as_deref(),
                         &stamp,
                         None,
+                        Some(rel.as_str()),
                     ),
                     true,
                 ),
@@ -1308,6 +1335,7 @@ fn run_pending_image_jobs(
                         preview.as_deref(),
                         &stamp,
                         prepared.as_ref(),
+                        None,
                     ),
                     false,
                 ),
@@ -1648,6 +1676,7 @@ mod tests {
                     None,
                     None,
                     "261024000011",
+                    None,
                     None,
                 )
                 .expect("远端图落库必须成功")
@@ -2287,6 +2316,56 @@ mod tests {
             note_open_image_core(999, &dir, &ctx).is_err(),
             "不存在块报错"
         );
+    }
+
+    #[test]
+    fn note_open_image_path_check_runs_after_storage_lock_released() {
+        // FIX018.20：详情原图路径检查不得在 storage guard 内做 stat。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("带图任务", &ctx).expect("合法文本必须成功");
+        let block_id = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            let base = storage
+                .set_note_blocks(
+                    &dir,
+                    item.id,
+                    &[NoteBlock {
+                        id: 0,
+                        kind: NoteBlockKind::Text,
+                        text: "文字".to_string(),
+                        image_file: None,
+                    }],
+                )
+                .expect("写块必须成功");
+            let blocks = storage
+                .add_note_image_block(
+                    &dir,
+                    item.id,
+                    base[0].id,
+                    "",
+                    "",
+                    &fixture_png(),
+                    None,
+                    "261025000001",
+                )
+                .expect("插图必须成功");
+            blocks
+                .iter()
+                .find(|block| block.kind == NoteBlockKind::Image)
+                .expect("应有图块")
+                .id
+        };
+
+        let path = note_open_image_path_core_with(block_id, &dir, &ctx, |path| {
+            assert!(
+                ctx.storage.try_lock().is_ok(),
+                "note_open_image 的文件检查不得持有 storage 锁"
+            );
+            path.is_file()
+        })
+        .expect("详情原图路径必须成功");
+        assert!(path.is_file());
     }
 
     // —— PATCH002.71：复制载荷（锁外构建、纯函数可直测）——

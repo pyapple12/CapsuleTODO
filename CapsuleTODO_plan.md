@@ -23,21 +23,21 @@ CapsuleTODO 是一款固定在桌面上的玻璃 Todo 小程序：
 
 ### 2.1 Todo 数据模型与勾选状态（定案）
 
-- `TodoItem { id, text, done }`：文本非空且 ≤100 字符（越界严格拒绝）；一期操作 = 添加/勾选/删除（**编辑缓到二期**随剪贴板议）
-- 勾选后：条目折叠进"已完成"折叠区（默认收起 + "已完成 N" 计数徽章）并呈现**删除线**变淡；排序 = 未完成在前按创建序（id 升序），已完成在后
+- `TodoItem { id, text, done, created_at, done_at, has_note }`：文本非空且后端 ≤24 字符（UI 输入上限 12，越界严格拒绝）；操作 = 添加/勾选/删除/改名/详情笔记
+- 勾选后：条目折叠进"已完成"折叠区（默认收起 + "已完成 N" 计数徽章）并呈现**删除线**变淡；排序 = 未完成在前按 `sort_order`（拖拽可调），已完成在后
 - 删除不做确认框（一期定案 KISS：条目价值低、误删可承受，使用中觉得误删风险高再翻案）
 
 ### 2.2 存储（定案）
 
-- rusqlite（SQLite bundled）落 `data/todo.db`（双落址：dev=项目根、release=exe 同级）；表 `todos(id, text, done)`（不做 created_at——排序按 id 即创建序，KISS）
+- rusqlite（SQLite bundled）落 `data/todo.db`（双落址：dev=项目根、release=exe 同级）；当前四表 `todos` / `bubbles` / `whiteboard` / `note_blocks`（todos 含 created_at/done_at/sort_order；详情笔记按行落 note_blocks）
 - **操作即落库，单一事实源 = db**，重启恢复；首启无文件 = 建表正常态，库损坏/SQL 错误严格报错启动失败（不进容错白名单）
 
 ### 2.3 窗口与常驻（定案）
 
-- 300×400 **固定尺寸**（resizable false）、无边框透明、**置顶**（alwaysOnTop）
+- 300×400 **固定尺寸**（resizable false）、无边框透明、**置顶可设置（默认关，V0.2.0.0 用户定案）**
 - **全屏让位**：前台应用全屏覆盖板子所在显示器时摘除置顶（被盖住），退出全屏恢复置顶——Rust 侧 1s 轮询判定 + 动态摘挂（extern user32 直连，零新依赖）
-- **位置记忆**：窗口销毁/退出时保存 x/y 落 `configs/config.json`，启动恢复；越界兜底回默认位（主屏右下距边 40px）
-- 任务栏/Alt+Tab 保持默认显示（暂不隐藏，定案记录）；单实例防双开；开机自启一期不做（y.problems#4）
+- **位置记忆**：窗口销毁/退出时保存 x/y 落 `configs/config.json`，启动恢复；越界兜底回默认位（主屏右上距边 40px）
+- **主窗 skipTaskbar + 托盘常驻**（PL018 改定）；单实例防双开；开机自启一期不做（y.problems#4）
 
 ### 2.4 玻璃效果（沿系列定案）
 
@@ -64,7 +64,7 @@ CapsuleTODO 是一款固定在桌面上的玻璃 Todo 小程序：
 
 ```
 ┌─────────────────────────────────┐
-│  CapsuleTODO                    │  ← 无边框透明玻璃小板 300×400，置顶
+│  CapsuleTODO                    │  ← 无边框透明玻璃小板 300×400，置顶可设置（默认关）
 │                                 │
 │  [ 添加一条待办…           + ]  │  ← 添加行（PL002）
 │                                 │

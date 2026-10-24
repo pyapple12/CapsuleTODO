@@ -17,7 +17,7 @@ pub enum BubbleError {
     /// 文本超出 MAX_BUBBLE_TEXT_LEN 上限
     #[error("气泡内容过长（上限 {MAX_BUBBLE_TEXT_LEN} 字符）")]
     TooLong,
-    /// 图片格式暂不支持（格式嗅探不认——PL025 起由 clipboard_image::validate_image_bytes 判定）
+    /// 图片格式暂不支持（格式嗅探不认——PL025 起由 clipboard_image::prepare_captured_image 判定）
     #[error("图片格式暂不支持")]
     UnsupportedFormat,
 }
@@ -105,7 +105,7 @@ mod tests {
         ));
     }
 
-    // —— PL024.1 类型契约（图片校验 PL025 起移入 clipboard_image::validate_image_bytes）——
+    // —— PL024.1 类型契约（图片校验 PL025 起移入 clipboard_image::prepare_captured_image）——
 
     #[test]
     fn bubble_kind_serializes_as_plain_string() {
