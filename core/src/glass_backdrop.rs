@@ -16,6 +16,7 @@
 //! 保留裸句柄入口供将来非窗口调用者复用。本模块为 FFI 能力模块，豁免
 //! 「纯逻辑模块禁 import tauri」，依据见 z.plan.md 附录 PL026。
 
+#[cfg(target_os = "windows")]
 use tauri::Window;
 
 /// 窗口句柄提取抽象（公开壳统一入参）：`Window` 与 `WebviewWindow` 两种窗口类型

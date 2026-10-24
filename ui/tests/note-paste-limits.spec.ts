@@ -55,4 +55,17 @@ describe("notePasteFitsLimits（FIX014.6）：粘贴前静默闸门", () => {
     // FIX016.3：粘贴路径与预检共用同一入口，不能把裸 CR 留进文本块。
     expect(normalizePasteNewlines("a\rb\r\nc\nd")).toBe("a\nb\nc\nd");
   });
+
+  it("img-foo 伪标签不增加图块数，image 别名增加", () => {
+    // FIX017.3：块数预检与 Rust 解析使用同一图片标签语法。
+    expect(
+      projectPasteLimits([textBlock("a")], null, "", "<img-foo src='x'>", false).blockCount,
+    ).toBe(1);
+    expect(
+      projectPasteLimits([textBlock("a")], null, "", "<image src='x'>", false).blockCount,
+    ).toBe(4);
+    expect(projectPasteLimits([textBlock("a")], null, "", "<IMG SRC='x'>", false).blockCount).toBe(
+      4,
+    );
+  });
 });

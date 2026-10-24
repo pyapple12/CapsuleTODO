@@ -93,4 +93,19 @@ describe("App 拖拽期聚焦态（FIX015.34）", () => {
     expect(startDraggingMock).toHaveBeenCalled();
     expect(wrapper!.find(".glass-card").classes()).toContain("focused");
   });
+
+  it("startDragging 失败后清掉 windowDragging 聚焦态", async () => {
+    // FIX017.11（A017 P3-12）：失败回调必须立即回清，不能等 10s 安全阀。
+    startDraggingMock.mockRejectedValueOnce(new Error("denied"));
+    const title = wrapper!.find(".title");
+    await title.trigger("mousedown", { button: 0, clientX: 10, clientY: 10 });
+    window.dispatchEvent(
+      new MouseEvent("mousemove", { buttons: 1, clientX: 10, clientY: 30, bubbles: true }),
+    );
+    await flushPromises();
+    await nextTick();
+
+    expect(startDraggingMock).toHaveBeenCalled();
+    expect(wrapper!.find(".glass-card").classes()).not.toContain("focused");
+  });
 });

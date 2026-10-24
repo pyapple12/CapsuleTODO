@@ -1,5 +1,6 @@
 import type { NoteBlockKind } from "../../types";
 import { UI_NOTE_MAX_BLOCKS, UI_NOTE_MAX_LEN } from "../../types";
+import { htmlImageCount } from "./htmlImage";
 
 /** 粘贴限长输入块（只依赖块类型与文本，便于纯函数测试） */
 export interface PasteLimitBlock {
@@ -65,19 +66,6 @@ function htmlTextUpperBound(html: string): number {
 /** FIX016.3：剪贴板多行文本唯一换行归一化入口（CRLF / 裸 CR → LF）。 */
 export function normalizePasteNewlines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
-}
-
-/** 按 HTML 中的 `<img>` 数量计图块（大小写不敏感；srcset 不会额外增加） */
-function htmlImageCount(html: string): number {
-  const lower = html.toLowerCase();
-  let count = 0;
-  let from = 0;
-  while (true) {
-    const at = lower.indexOf("<img", from);
-    if (at < 0) return count;
-    count += 1;
-    from = at + 4;
-  }
 }
 
 /**

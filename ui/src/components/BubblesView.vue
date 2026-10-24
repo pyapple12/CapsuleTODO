@@ -10,7 +10,12 @@ import { syncVeils } from "../composables/useVeils";
 import { useEmptyState } from "../composables/useEmptyState";
 import { useDelConfirmGroup } from "../composables/useDelConfirmGroup";
 import { useScrollKit } from "../composables/useScrollKit";
-import { installDragHooks, isSuppressed, type DragCtx } from "../composables/useDragReorder";
+import {
+  deferDuringDrag,
+  installDragHooks,
+  isSuppressed,
+  type DragCtx,
+} from "../composables/useDragReorder";
 import { expectedOrderMatches } from "../composables/dragHandoff";
 import { useAutoHideError } from "../composables/useAutoHideError";
 
@@ -88,7 +93,10 @@ const hasWarning = computed(() => items.value.length > props.maxBubbles);
  * 页内用户操作路径照旧 emit（App 无其他途径感知页内操作）
  */
 async function refresh(notify: boolean = true): Promise<void> {
+  // FIX017.11（A017 P3-9）：先推进代际再判拖拽冻结——这样拖拽前已在飞的旧响应
+  // 也会失效，不能绕过冻结把 items 换回旧序；收场 rerenderBubbles 再重拉。
   const seq = ++refreshSeq;
+  if (deferDuringDrag()) return;
   try {
     const snapshot = await invoke<BubbleSnapshot>("bubble_list");
     if (seq !== refreshSeq) return; // 旧响应后到：丢弃，不许覆盖新序

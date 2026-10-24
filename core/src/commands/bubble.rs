@@ -46,21 +46,62 @@ pub fn bubble_capture_image_core(
     captured: &crate::clipboard_image::CapturedImage,
     ctx: &AppContext,
 ) -> Result<BubbleCaptureOutcome, CommandError> {
-    // FIX016.2：一次解码同时完成校验与预览，大图不再 validate + preview 解码两次。
+    // FIX016.2 / FIX017.12：一次解码同时完成校验与预览。
     let preview = crate::clipboard_image::prepare_captured_image(&captured.bytes)?;
     let label = image_label(captured.file_name.as_deref());
     let stamp = local_stamp();
-    let storage = ctx.lock_storage()?;
-    match storage.add_image_bubble_prepared(
+    let hash = crate::storage::fnv1a_hex(&captured.bytes);
+    let duplicate = {
+        let storage = ctx.lock_storage()?;
+        storage.bubble_image_hash_exists(&hash)?
+    };
+    if duplicate {
+        // FIX017.11：duplicate 不重复入库，但若已有气泡文件/预览损坏，按本次字节补建。
+        let rel = {
+            let storage = ctx.lock_storage()?;
+            storage.bubble_image_rel_by_hash(&hash)?
+        };
+        if let Some(rel) = rel {
+            crate::storage::ensure_existing_bubble_image(
+                images_dir,
+                &rel,
+                &captured.bytes,
+                preview.as_deref(),
+            );
+            return Ok(BubbleCaptureOutcome::Duplicate);
+        }
+        // 极小竞态：首次判重后气泡被删除/无 image_file；按新捕获继续，不能返回假 Duplicate。
+    }
+    // FIX017.5：文件在锁外写；锁内只查重 + 入库。
+    let prepared = crate::storage::prepare_bubble_image_file(
         images_dir,
-        &label,
         &captured.bytes,
         captured.file_name.as_deref(),
         &stamp,
         preview.as_deref(),
-    )? {
-        BubbleAddOutcome::Added(item) => Ok(BubbleCaptureOutcome::Added { item }),
-        BubbleAddOutcome::Duplicate => Ok(BubbleCaptureOutcome::Duplicate),
+    )?;
+    let result = (|| -> Result<BubbleAddOutcome, CommandError> {
+        let storage = ctx.lock_storage()?;
+        Ok(storage.add_image_bubble_prepared(
+            images_dir,
+            &label,
+            &captured.bytes,
+            captured.file_name.as_deref(),
+            &stamp,
+            preview.as_deref(),
+            Some(&prepared),
+        )?)
+    })();
+    match result {
+        Ok(BubbleAddOutcome::Added(item)) => Ok(BubbleCaptureOutcome::Added { item }),
+        Ok(BubbleAddOutcome::Duplicate) => {
+            crate::storage::cleanup_prepared_image(images_dir, &prepared);
+            Ok(BubbleCaptureOutcome::Duplicate)
+        }
+        Err(err) => {
+            crate::storage::cleanup_prepared_image(images_dir, &prepared);
+            Err(err)
+        }
     }
 }
 
@@ -105,11 +146,13 @@ fn capture_quiet_windows(app: &AppHandle) {
         }
         return;
     }
+    let baseline_sequence = crate::capture::clipboard_sequence();
     crate::capture::synthesize_ctrl_c();
     let start = std::time::Instant::now();
     let picked = crate::capture::wait_clipboard_capture_with_sequence(
         before_text.as_deref(),
         before_image_bytes,
+        baseline_sequence,
         crate::capture::WAIT_TIMEOUT_MS,
         crate::capture::POLL_INTERVAL_MS,
         || start.elapsed().as_millis() as u64,
@@ -248,19 +291,21 @@ pub fn bubble_get_image_path_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<String, CommandError> {
-    let storage = ctx.lock_storage()?;
-    let (rel, _source) = storage
-        .get_bubble_image_file(id)?
-        .ok_or(CommandError::Bubble(
-            BubbleError::UnsupportedFormat.to_string(),
-        ))?;
+    let (rel, _source) = {
+        let storage = ctx.lock_storage()?;
+        storage
+            .get_bubble_image_file(id)?
+            .ok_or(CommandError::Bubble(
+                BubbleError::UnsupportedFormat.to_string(),
+            ))?
+    };
     let abs = images_dir.join(&rel);
     if !abs.is_file() {
         return Err(CommandError::Bubble("图片文件已移动或删除".to_string()));
     }
-    // PL025 预览优先：大图有 preview.png 则回预览（详情秒开）；无则原图
+    // PL025 预览优先：大图有有效预览则回预览（详情秒开）；坏/缺预览回落原图
     if let Some(preview) = abs.parent().map(|dir| dir.join("preview.png")) {
-        if preview.is_file() {
+        if crate::storage::preview_is_usable(&preview) {
             return Ok(preview.to_string_lossy().into_owned());
         }
     }
@@ -538,6 +583,34 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_capture_repairs_missing_bubble_image() {
+        // FIX017.11：同图 duplicate 不重复入库，但必须补回缺失的原图/预览。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let captured = screenshot_capture(fixture_png());
+        let item = bubble_capture_image_core(&dir, &captured, &ctx)
+            .expect("首次捕获必须成功")
+            .added_item();
+        let (rel, _) = ctx
+            .lock_storage()
+            .expect("锁必须可拿")
+            .get_bubble_image_file(item.id)
+            .expect("读取必须成功")
+            .expect("应有文件");
+        let abs = dir.join(rel);
+        std::fs::remove_dir_all(abs.parent().expect("含子目录")).expect("删除文件夹模拟损坏");
+        assert!(!abs.is_file());
+
+        let outcome = bubble_capture_image_core(&dir, &captured, &ctx).expect("duplicate 必须成功");
+        assert!(matches!(outcome, BubbleCaptureOutcome::Duplicate));
+        assert_eq!(
+            std::fs::read(&abs).expect("duplicate 必须补回原图"),
+            fixture_png()
+        );
+        assert!(bubble_get_image_path_core(item.id, &dir, &ctx).is_ok());
+    }
+
+    #[test]
     fn capture_image_file_source_labels_with_name() {
         // 文件来源 → 文案 `🖼️ 图片 <文件名>` + image_source='file'
         let ctx = test_context();
@@ -594,13 +667,15 @@ mod tests {
 
     /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images）
     fn temp_images_dir() -> std::path::PathBuf {
+        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-cmd-images-{}-{}",
+            "capsule-todo-cmd-images-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
         dir

@@ -143,6 +143,154 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(true);
   });
 
+  it("非图片文件 no_image + 空 plain 不删除选中文字", async () => {
+    // FIX017.2：fallbackText 为空时不得调用 pasteTextLines（空串会删选区）。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_blocks_save") {
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        return input.map((block, index) => ({ ...block, id: block.id || 200 + index }));
+      }
+      if (cmd === "note_paste_image") return { status: "no_image" };
+      return undefined;
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true }));
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: { types: ["Files"], getData: () => "" },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["abc", "def"]);
+
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saved[saved.length - 1].map((block) => block.text)).toEqual(["abc", "def"]);
+  });
+
+  it("大写 IMG 的选区 HTML no_image + 空 plain 不删除选中文字", async () => {
+    // FIX017.2 + FIX017.3：选区路径大小写不敏感；空回落必须恢复原文。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_blocks_save") {
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        return input.map((block, index) => ({ ...block, id: block.id || 200 + index }));
+      }
+      if (cmd === "note_paste_html") {
+        return { outcome: { status: "no_image" }, pending: [] };
+      }
+      return undefined;
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true }));
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/html"],
+        getData: (type: string) => (type === "text/html" ? "<IMG SRC='x.png'>" : ""),
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(true);
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["abc", "def"]);
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saved[saved.length - 1].map((block) => block.text)).toEqual(["abc", "def"]);
+  });
+
+  it("img-a 伪标签不进入 HTML 粘贴分支", async () => {
+    // FIX017.3：/<img\b/i 会把 <img-a> 误当图片；共享判定必须拒绝。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_paste_html") return { outcome: { status: "no_image" }, pending: [] };
+      return undefined;
+    });
+
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    textarea.element.focus();
+    textarea.element.setSelectionRange(0, 0);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/html", "text/plain"],
+        getData: (type: string) => (type === "text/html" ? '<img-a src="x.png">' : "x\ny"),
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(false);
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    expect(first.element.value.startsWith("x")).toBe(true);
+  });
+
+  it("img-foo + 空 plain 不删除选中文字", async () => {
+    // FIX017.2/FIX017.3：伪标签不进入 HTML 分支，空回落也不能删除选区。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_blocks_save") {
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        return input.map((block, index) => ({ ...block, id: block.id || 200 + index }));
+      }
+      if (cmd === "note_paste_html") {
+        return { outcome: { status: "no_image" }, pending: [] };
+      }
+      return undefined;
+    });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true }));
+    const textarea = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/html", "text/plain"],
+        getData: (type: string) => (type === "text/html" ? '<img-foo src="x">' : ""),
+      },
+    });
+    textarea.element.dispatchEvent(paste);
+    await flushPromises();
+
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(false);
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["abc", "def"]);
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saved[saved.length - 1].map((block) => block.text)).toEqual(["abc", "def"]);
+  });
+
   it("CR-only 多行粘贴归一为 LF 并落库", async () => {
     // FIX016.3：裸 CR 不能进入文本块，否则 Rust 校验会拒绝整条保存。
     wrapper = mount(DetailOverlay, {
@@ -288,6 +436,50 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
       .findAll<HTMLTextAreaElement>("textarea.note-block-text")
       .map((el) => el.element.value);
     expect(values).toContain("X");
+  });
+
+  it("单图块 Ctrl+A→Delete 删除后不留图片块", async () => {
+    // FIX017.11 / A017 P3-6：全选后 Delete 必须落到图块选择，而不是只动文本。
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+    vi.useFakeTimers();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "a",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Delete",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+
+    const saved = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    const last = saved[saved.length - 1] ?? [];
+    expect(last.some((block) => block.kind === "Image")).toBe(false);
+  });
+
+  it("收起态详情遮罩 mousedown 不触发开板（FIX017.11）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await wrapper.find(".detail-overlay").trigger("mousedown");
+    await flushPromises();
+    expect(wrapper.find(".detail-overlay").classes()).not.toContain("open");
   });
 
   it("标题 Ctrl+A / Backspace 只作用于标题，不删除笔记", async () => {

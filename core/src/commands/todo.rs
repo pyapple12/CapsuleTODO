@@ -10,6 +10,9 @@ use crate::todo::{
     TodoItem, ARCHIVE_RETENTION_MS, MAX_NOTE_BLOCKS,
 };
 
+/// 多段粘贴的图片落点（与 parts 同序；None = 文本/远端占位）。
+type NotePasteImages = Vec<Option<(String, String)>>;
+
 /// 变更广播（PL018.6 问题一修复；FIX006.1 载荷 origin 方案）：清单数据任何变更后
 /// 由命令层发 todo-changed，载荷 = 发起窗 label——**前端自判早退**（发起窗刷新走
 /// 自身组件链时序，300ms 主拍不被截断；跨窗照常刷新）。
@@ -108,19 +111,19 @@ pub fn todo_remove_core(
     // FIX016.1：只收集被删条目的图片文件夹；不再按删除后的旧引用集做整目录清扫。
     let folders = storage.remove_and_collect_note_folders(id)?;
     drop(storage);
-    for folder in folders {
-        // 每个文件夹重新取锁复核当前引用；新目录不在本列表，永不进入删除面。
-        let storage = match ctx.lock_storage() {
-            Ok(storage) => storage,
+    if !folders.is_empty() {
+        match ctx.lock_storage() {
+            Ok(storage) => {
+                if let Err(err) = storage.release_note_folders_if_unreferenced(images_dir, &folders)
+                {
+                    crate::diag::warn_diag(&format!(
+                        "删除条目后详情图释放失败（best-effort 不阻断）：{err}"
+                    ));
+                }
+            }
             Err(err) => {
                 crate::diag::warn_diag(&format!("删除条目后图片目录复核锁失败（跳过释放）：{err}"));
-                continue;
             }
-        };
-        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
-            crate::diag::warn_diag(&format!(
-                "删除条目后详情图释放失败（best-effort 不阻断）：{err}"
-            ));
         }
     }
     Ok(())
@@ -183,18 +186,19 @@ pub fn todo_archive_list_core(
     if purged > 0 {
         crate::diag::console(&format!("归档回收：清理 {purged} 条超期条目"));
     }
-    for folder in folders {
-        let storage = match ctx.lock_storage() {
-            Ok(storage) => storage,
+    if !folders.is_empty() {
+        match ctx.lock_storage() {
+            Ok(storage) => {
+                if let Err(err) = storage.release_note_folders_if_unreferenced(images_dir, &folders)
+                {
+                    crate::diag::warn_diag(&format!(
+                        "归档回收后详情图释放失败（best-effort 不阻断）：{err}"
+                    ));
+                }
+            }
             Err(err) => {
                 crate::diag::warn_diag(&format!("归档回收后图片复核锁失败（跳过释放）：{err}"));
-                continue;
             }
-        };
-        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
-            crate::diag::warn_diag(&format!(
-                "归档回收后详情图释放失败（best-effort 不阻断）：{err}"
-            ));
         }
     }
     let storage = ctx.lock_storage()?;
@@ -299,7 +303,9 @@ fn to_block_view(block: NoteBlock, images_dir: &std::path::Path) -> NoteBlockVie
     let image_path = block.image_file.as_ref().map(|rel| {
         let abs = images_dir.join(rel);
         match abs.parent().map(|dir| dir.join("preview.png")) {
-            Some(preview) if preview.is_file() => preview.to_string_lossy().into_owned(),
+            Some(preview) if crate::storage::preview_is_usable(&preview) => {
+                preview.to_string_lossy().into_owned()
+            }
             _ => abs.to_string_lossy().into_owned(),
         }
     });
@@ -328,9 +334,11 @@ pub fn note_blocks_list_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<Vec<NoteBlockView>, CommandError> {
-    let storage = ctx.lock_storage()?;
-    Ok(storage
-        .note_blocks(todo_id)?
+    let blocks = {
+        let storage = ctx.lock_storage()?;
+        storage.note_blocks(todo_id)?
+    };
+    Ok(blocks
         .into_iter()
         .map(|b| to_block_view(b, images_dir))
         .collect())
@@ -374,18 +382,19 @@ pub fn note_blocks_save_core(
         let storage = ctx.lock_storage()?;
         storage.set_note_blocks_collecting(todo_id, &model)?
     };
-    for folder in folders {
-        let storage = match ctx.lock_storage() {
-            Ok(storage) => storage,
+    if !folders.is_empty() {
+        match ctx.lock_storage() {
+            Ok(storage) => {
+                if let Err(err) = storage.release_note_folders_if_unreferenced(images_dir, &folders)
+                {
+                    crate::diag::warn_diag(&format!(
+                        "详情保存后图片释放失败（best-effort 不阻断）：{err}"
+                    ));
+                }
+            }
             Err(err) => {
                 crate::diag::warn_diag(&format!("详情保存后图片复核锁失败（跳过释放）：{err}"));
-                continue;
             }
-        };
-        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
-            crate::diag::warn_diag(&format!(
-                "详情保存后图片释放失败（best-effort 不阻断）：{err}"
-            ));
         }
     }
     Ok(saved
@@ -417,16 +426,19 @@ pub fn note_blocks_purge_deleted_core(
         let (_, folders) = storage.purge_deleted_note_blocks_collecting(Some(todo_id))?;
         folders
     };
-    for folder in folders {
-        let storage = match ctx.lock_storage() {
-            Ok(storage) => storage,
+    if !folders.is_empty() {
+        match ctx.lock_storage() {
+            Ok(storage) => {
+                if let Err(err) = storage.release_note_folders_if_unreferenced(images_dir, &folders)
+                {
+                    crate::diag::warn_diag(&format!(
+                        "软删除图片释放失败（best-effort 不阻断）：{err}"
+                    ));
+                }
+            }
             Err(err) => {
                 crate::diag::warn_diag(&format!("软删除图片复核锁失败（跳过释放）：{err}"));
-                continue;
             }
-        };
-        if let Err(err) = storage.release_note_folder_if_unreferenced(images_dir, &folder) {
-            crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort 不阻断）：{err}"));
         }
     }
     Ok(())
@@ -487,38 +499,85 @@ pub fn note_insert_image_core(
     images_dir: &std::path::Path,
     ctx: &AppContext,
 ) -> Result<NotePasteOutcome, CommandError> {
-    crate::clipboard_image::validate_image_bytes(&captured.bytes)?;
-    // FIX015.6：大图解码/预览生成在 storage 锁外完成，锁内只落盘/写库。
-    let preview = crate::clipboard_image::generate_preview(&captured.bytes);
+    // FIX017.12：一次解码同时完成校验+预览，避免 validate + preview 两次解码。
+    let preview = crate::clipboard_image::prepare_image(&captured.bytes)?;
     let stamp = crate::util::local_stamp();
-    let storage = ctx.lock_storage()?;
-    // FIX014.52：单图与 HTML 共用最终块集校验（块数 / 总长 / 换行 / 至少一个文本块），
-    // 不再维护 `current.len() + 2` 与独立字符累计的近似副本。
+    let hash = crate::storage::fnv1a_hex(&captured.bytes);
+    let existing = {
+        let storage = ctx.lock_storage()?;
+        storage.note_image_rel_by_hash(&hash)?
+    };
+    // FIX017.5：同 hash 命中只补文件；未命中时锁外写，锁内只写 DB。
+    let prepared = if let Some(rel) = existing.as_deref() {
+        crate::storage::ensure_existing_note_image(
+            images_dir,
+            rel,
+            &captured.bytes,
+            preview.as_deref(),
+        );
+        None
+    } else {
+        Some(crate::storage::prepare_note_image_file(
+            images_dir,
+            &captured.bytes,
+            captured.file_name.as_deref(),
+            &stamp,
+            preview.as_deref(),
+        )?)
+    };
+    // FIX014.52：单图与 HTML 共用最终块集校验（块数 / 总长 / 换行 / 至少一个文本块）。
     let image_part = NoteBlock {
         id: 0,
         kind: NoteBlockKind::Image,
         text: String::new(),
         image_file: None,
     };
-    validate_final_blocks(
-        &storage,
-        todo_id,
-        block_id,
-        before,
-        after,
-        std::slice::from_ref(&image_part),
-    )?;
-    let blocks = storage.add_note_image_block_prepared(
-        images_dir,
-        todo_id,
-        block_id,
-        before,
-        after,
-        &captured.bytes,
-        captured.file_name.as_deref(),
-        &stamp,
-        preview.as_deref(),
-    )?;
+    let result = (|| -> Result<(Vec<NoteBlock>, bool), CommandError> {
+        let storage = ctx.lock_storage()?;
+        validate_final_blocks(
+            &storage,
+            todo_id,
+            block_id,
+            before,
+            after,
+            std::slice::from_ref(&image_part),
+        )?;
+        // FIX017.5：锁外准备后必须二次复核 hash；并发粘贴若已落库，改用已有文件，
+        // 本次预写文件在出锁后清理，保持“同内容一份文件”不变量。
+        let existing_now = storage.note_image_rel_by_hash(&hash)?;
+        let use_prepared = existing_now.is_none();
+        let blocks = storage.add_note_image_block_prepared(
+            images_dir,
+            todo_id,
+            block_id,
+            before,
+            after,
+            &captured.bytes,
+            captured.file_name.as_deref(),
+            &stamp,
+            preview.as_deref(),
+            if use_prepared {
+                prepared.as_ref()
+            } else {
+                None
+            },
+        )?;
+        Ok((blocks, !use_prepared))
+    })();
+    let (blocks, used_existing) = match result {
+        Ok(value) => value,
+        Err(err) => {
+            if let Some(prepared) = &prepared {
+                crate::storage::cleanup_prepared_image(images_dir, prepared);
+            }
+            return Err(err);
+        }
+    };
+    if used_existing {
+        if let Some(prepared) = &prepared {
+            crate::storage::cleanup_prepared_image(images_dir, prepared);
+        }
+    }
     Ok(NotePasteOutcome::Image {
         blocks: blocks
             .into_iter()
@@ -917,6 +976,7 @@ pub fn note_paste_html_core(
     ctx: &AppContext,
 ) -> Result<PasteHtmlResult, CommandError> {
     let mut parts: Vec<crate::storage::NotePastePart> = Vec::new();
+    let mut previews: Vec<Option<Vec<u8>>> = Vec::new();
     for part in crate::html_paste::parse(html) {
         match part {
             crate::html_paste::HtmlPart::Text(text) => {
@@ -925,30 +985,51 @@ pub fn note_paste_html_core(
                     let line = line.trim_end_matches('\r');
                     if !line.trim().is_empty() {
                         parts.push(crate::storage::NotePastePart::Text(line.to_string()));
+                        previews.push(None);
                     }
                 }
             }
             crate::html_paste::HtmlPart::Image(src) => {
                 if let Some((bytes, orig_name)) = decode_data_url(&src) {
-                    if bytes.len() <= PASTE_HTML_MAX_ONE
-                        && crate::clipboard_image::validate_image_bytes(&bytes).is_ok()
-                    {
-                        parts.push(crate::storage::NotePastePart::Image { bytes, orig_name });
+                    if bytes.len() <= PASTE_HTML_MAX_ONE {
+                        // FIX017.12：一次解码同时完成校验+预览。
+                        match crate::clipboard_image::prepare_image(&bytes) {
+                            Ok(preview) => {
+                                parts.push(crate::storage::NotePastePart::Image {
+                                    bytes,
+                                    orig_name,
+                                });
+                                previews.push(preview);
+                            }
+                            Err(_) => {
+                                // data: 解码失败 / 非法字节（SVG、截断 PNG…）→ 短占位
+                                parts.push(crate::storage::NotePastePart::Text(
+                                    paste_fallback_text(&src),
+                                ));
+                                previews.push(None);
+                            }
+                        }
                     } else {
-                        // data: 超限 / 解码失败 / 非法字节（SVG、截断 PNG…）→ 短占位
-                        // （**判定而非传播**：PATCH002.46 前这里用 `?` 把单段失败升格整条）
+                        // data: 超限 → 短占位
                         parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
                             &src,
                         )));
+                        previews.push(None);
                     }
                     continue;
                 }
                 match crate::image_fetch::normalize_url(&src) {
-                    Some(url) => parts.push(crate::storage::NotePastePart::PendingImage { url }),
+                    Some(url) => {
+                        parts.push(crate::storage::NotePastePart::PendingImage { url });
+                        previews.push(None);
+                    }
                     // 其他 scheme / 相对路径 / 非法 URL → 原样文本链接
-                    None => parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
-                        &src,
-                    ))),
+                    None => {
+                        parts.push(crate::storage::NotePastePart::Text(paste_fallback_text(
+                            &src,
+                        )));
+                        previews.push(None);
+                    }
                 }
             }
         }
@@ -960,20 +1041,7 @@ pub fn note_paste_html_core(
         });
     }
     let stamp = crate::util::local_stamp();
-    // FIX015.6：图片预览在 storage 锁外预生成，避免大图解码堵住自动保存。
-    let previews: Vec<Option<Vec<u8>>> = parts
-        .iter()
-        .map(|part| match part {
-            crate::storage::NotePastePart::Image { bytes, .. } => {
-                crate::clipboard_image::generate_preview(bytes)
-            }
-            crate::storage::NotePastePart::Text(_)
-            | crate::storage::NotePastePart::PendingImage { .. } => None,
-        })
-        .collect();
-    let storage = ctx.lock_storage()?;
-    // FIX014.6 / FIX014.52：在写文件/写库前按最终块集统一校验（总长 / 块数 / 换行）；
-    // 超限直接拒绝，前端静默中止，不留下任何半成品。远端占位按升级后的图块口径。
+    debug_assert_eq!(previews.len(), parts.len());
     let preview_parts: Vec<NoteBlock> = parts
         .iter()
         .map(|part| match part {
@@ -992,10 +1060,71 @@ pub fn note_paste_html_core(
             },
         })
         .collect();
-    validate_final_blocks(&storage, todo_id, block_id, before, after, &preview_parts)?;
-    let (blocks, part_ids) = storage.insert_note_parts_prepared(
-        images_dir, todo_id, block_id, before, after, &parts, &stamp, &previews,
-    )?;
+    // FIX017.5：锁内只做最终块集校验与已有 hash 查询；文件写在锁外。
+    let mut existing: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    {
+        let storage = ctx.lock_storage()?;
+        validate_final_blocks(&storage, todo_id, block_id, before, after, &preview_parts)?;
+        for part in &parts {
+            if let crate::storage::NotePastePart::Image { bytes, .. } = part {
+                let hash = crate::storage::fnv1a_hex(bytes);
+                if let Some(rel) = storage.note_image_rel_by_hash(&hash)? {
+                    existing.insert(hash, rel);
+                }
+            }
+        }
+    }
+    let (images, prepared) =
+        crate::storage::prepare_note_parts_files(images_dir, &parts, &stamp, &previews, &existing)?;
+    let result = (|| -> Result<(Vec<NoteBlock>, Vec<i64>, NotePasteImages), CommandError> {
+        let storage = ctx.lock_storage()?;
+        // FIX017.5：锁外准备后二次复核 hash；并发粘贴若已落库，改用已有文件并
+        // 在出锁后清理本次预写文件，保持同内容复用。
+        let mut final_images = images.clone();
+        for (i, part) in parts.iter().enumerate() {
+            if let crate::storage::NotePastePart::Image { bytes, .. } = part {
+                let hash = crate::storage::fnv1a_hex(bytes);
+                if let Some(rel) = storage.note_image_rel_by_hash(&hash)? {
+                    let current = final_images
+                        .get(i)
+                        .and_then(|value| value.as_ref())
+                        .map(|(_, rel)| rel.as_str());
+                    if current != Some(rel.as_str()) {
+                        final_images[i] = Some((hash, rel));
+                    }
+                }
+            }
+        }
+        validate_final_blocks(&storage, todo_id, block_id, before, after, &preview_parts)?;
+        let (blocks, part_ids) = storage.insert_note_parts_prepared(
+            images_dir,
+            todo_id,
+            block_id,
+            before,
+            after,
+            &parts,
+            &stamp,
+            &previews,
+            Some(&final_images),
+        )?;
+        Ok((blocks, part_ids, final_images))
+    })();
+    let (blocks, part_ids, final_images) = match result {
+        Ok(value) => value,
+        Err(err) => {
+            crate::storage::cleanup_prepared_images(images_dir, &prepared);
+            return Err(err);
+        }
+    };
+    for file in &prepared {
+        if !final_images
+            .iter()
+            .flatten()
+            .any(|(_, rel)| rel == &file.rel)
+        {
+            crate::storage::cleanup_prepared_image(images_dir, file);
+        }
+    }
     let pending = parts
         .iter()
         .zip(part_ids)
@@ -1088,31 +1217,116 @@ fn run_pending_image_jobs(
             degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容不是受支持图片");
             continue;
         };
-        if !crate::clipboard_image::image_is_usable(&bytes) {
-            degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容图片损坏");
-            continue;
-        }
-        // 预览在 storage 锁外生成（PATCH002.76：锁内只落盘，别堵 300ms 自动保存）
-        let preview = crate::clipboard_image::generate_preview(&bytes);
+        // FIX017.12：一次解码同时完成校验+预览，避免 image_is_usable + preview 两次解码。
+        let preview = match crate::clipboard_image::prepare_image(&bytes) {
+            Ok(preview) => preview,
+            Err(_) => {
+                degrade_pending_image(&app, ctx.inner(), todo_id, &job, "下载内容图片损坏");
+                continue;
+            }
+        };
         let orig_name = format!("pasted.{ext}");
-        let outcome = match ctx.lock_storage() {
-            Ok(storage) => storage.complete_pending_note_image(
+        let hash = crate::storage::fnv1a_hex(&bytes);
+        // FIX017.5：先锁内确认占位仍匹配 + 查已有同 hash 图；已有则不重复落盘。
+        let matches = match ctx.lock_storage() {
+            Ok(storage) => storage.pending_note_image_matches(todo_id, job.block_id, &job.url),
+            Err(err) => {
+                crate::diag::warn_diag(&format!("图片后台任务取库锁失败（{}）：{err}", job.url));
+                emit_note_image_failed(&app, todo_id, job.block_id, &job.url);
+                continue;
+            }
+        };
+        let Ok(true) = matches else {
+            continue;
+        };
+        let existing_rel = match ctx.lock_storage() {
+            Ok(storage) => match storage.note_image_rel_by_hash(&hash) {
+                Ok(rel) => rel,
+                Err(err) => {
+                    crate::diag::warn_diag(&format!(
+                        "图片后台任务查同 hash 失败（{}）：{err}",
+                        job.url
+                    ));
+                    continue;
+                }
+            },
+            Err(err) => {
+                crate::diag::warn_diag(&format!("图片后台任务取库锁失败（{}）：{err}", job.url));
+                emit_note_image_failed(&app, todo_id, job.block_id, &job.url);
+                continue;
+            }
+        };
+        let prepared = if existing_rel.is_some() {
+            None
+        } else {
+            match crate::storage::prepare_note_image_file(
                 &images_dir,
-                todo_id,
-                job.block_id,
-                &job.url,
                 &bytes,
                 Some(orig_name.as_str()),
-                preview.as_deref(),
                 &stamp,
-            ),
+                preview.as_deref(),
+            ) {
+                Ok(prepared) => Some(prepared),
+                Err(err) => {
+                    degrade_pending_image(
+                        &app,
+                        ctx.inner(),
+                        todo_id,
+                        &job,
+                        &format!("落盘失败：{err}"),
+                    );
+                    continue;
+                }
+            }
+        };
+        let (outcome, used_existing) = match ctx.lock_storage() {
+            Ok(storage) => match storage.note_image_rel_by_hash(&hash) {
+                // FIX017.5：锁外准备后二次复核；并发落库则改用已有文件。
+                Ok(Some(_)) => (
+                    storage.complete_pending_note_image(
+                        &images_dir,
+                        todo_id,
+                        job.block_id,
+                        &job.url,
+                        &bytes,
+                        Some(orig_name.as_str()),
+                        preview.as_deref(),
+                        &stamp,
+                        None,
+                    ),
+                    true,
+                ),
+                Ok(None) => (
+                    storage.complete_pending_note_image(
+                        &images_dir,
+                        todo_id,
+                        job.block_id,
+                        &job.url,
+                        &bytes,
+                        Some(orig_name.as_str()),
+                        preview.as_deref(),
+                        &stamp,
+                        prepared.as_ref(),
+                    ),
+                    false,
+                ),
+                Err(err) => (Err(err), false),
+            },
             Err(err) => {
+                if let Some(prepared) = &prepared {
+                    crate::storage::cleanup_prepared_image(&images_dir, prepared);
+                }
                 crate::diag::warn_diag(&format!("图片后台任务取库锁失败（{}）：{err}", job.url));
                 // 库锁失败：先让前端降级，下一次保存再落库
                 emit_note_image_failed(&app, todo_id, job.block_id, &job.url);
                 continue;
             }
         };
+        if let Some(prepared) = &prepared {
+            if used_existing || !matches!(outcome, Ok(Some(_))) {
+                crate::storage::cleanup_prepared_image(&images_dir, prepared);
+            }
+        }
         match outcome {
             Ok(Some(block)) => {
                 let view = to_block_view(block, &images_dir);
@@ -1317,6 +1531,216 @@ mod tests {
         assert!(!folder.is_dir(), "被删条目的图片夹必须释放");
     }
 
+    #[test]
+    fn concurrent_note_image_insert_reuses_single_file() {
+        // FIX017.5：两个并发粘贴同一字节，二次 hash 复核后只能留一份文件。
+        let ctx = Arc::new(test_context());
+        let dir = temp_images_dir();
+        let item = todo_add_core("并发粘贴", &ctx).expect("合法文本必须成功");
+        let (first_id, second_id) = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            let blocks = storage
+                .set_note_blocks(
+                    &dir,
+                    item.id,
+                    &[
+                        NoteBlock {
+                            id: 0,
+                            kind: NoteBlockKind::Text,
+                            text: "甲".to_string(),
+                            image_file: None,
+                        },
+                        NoteBlock {
+                            id: 0,
+                            kind: NoteBlockKind::Text,
+                            text: "乙".to_string(),
+                            image_file: None,
+                        },
+                    ],
+                )
+                .expect("写块必须成功");
+            (blocks[0].id, blocks[1].id)
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = [first_id, second_id]
+            .into_iter()
+            .map(|block_id| {
+                let ctx = Arc::clone(&ctx);
+                let dir = dir.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    note_insert_image_core(
+                        item.id,
+                        block_id,
+                        "",
+                        "",
+                        &crate::clipboard_image::CapturedImage {
+                            bytes: fixture_png(),
+                            file_name: None,
+                        },
+                        &dir,
+                        &ctx,
+                    )
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle
+                .join()
+                .expect("线程不得 panic")
+                .expect("并发粘贴必须成功");
+        }
+
+        let rels: Vec<String> = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            storage
+                .note_blocks(item.id)
+                .expect("读块必须成功")
+                .into_iter()
+                .filter(|block| block.kind == NoteBlockKind::Image)
+                .filter_map(|block| block.image_file)
+                .collect()
+        };
+        assert_eq!(rels.len(), 2, "两个图块");
+        assert_eq!(rels[0], rels[1], "同字节必须复用同一文件");
+        let folders = std::fs::read_dir(&dir)
+            .expect("目录可读")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("note_"))
+            .count();
+        assert_eq!(folders, 1, "盘上只能留一份 note_* 文件夹");
+    }
+
+    #[test]
+    fn note_blocks_save_releases_removed_image_folder() {
+        // FIX017.11：远端图降级为文本后，保存命令的释放循环必须真删无引用夹。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("带图保存", &ctx).expect("合法文本必须成功");
+        let url = "https://example.com/save.png".to_string();
+        let (text_id, image_id, folder) = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            let base = storage
+                .set_note_blocks(
+                    &dir,
+                    item.id,
+                    &[NoteBlock {
+                        id: 0,
+                        kind: NoteBlockKind::Text,
+                        text: "文字".to_string(),
+                        image_file: None,
+                    }],
+                )
+                .expect("写块必须成功");
+            let parts = [crate::storage::NotePastePart::PendingImage { url: url.clone() }];
+            let (_, part_ids) = storage
+                .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261024000010")
+                .expect("占位插入必须成功");
+            storage
+                .complete_pending_note_image(
+                    &dir,
+                    item.id,
+                    part_ids[0],
+                    &url,
+                    &fixture_png(),
+                    None,
+                    None,
+                    "261024000011",
+                    None,
+                )
+                .expect("远端图落库必须成功")
+                .expect("占位仍在必须升级");
+            let blocks = storage.note_blocks(item.id).expect("读块必须成功");
+            let image = blocks
+                .iter()
+                .find(|b| b.kind == NoteBlockKind::Image)
+                .expect("必须有图块");
+            let rel = image.image_file.clone().expect("图块必须有文件");
+            let folder = dir
+                .join(rel.rsplit_once('/').expect("含子目录").0)
+                .to_path_buf();
+            let text_id = blocks
+                .iter()
+                .find(|b| b.kind == NoteBlockKind::Text)
+                .expect("必须留文本块")
+                .id;
+            (text_id, image.id, folder)
+        };
+        let blocks = [
+            NoteBlockInput {
+                id: text_id,
+                kind: NoteBlockKind::Text,
+                text: "尾".to_string(),
+            },
+            NoteBlockInput {
+                id: image_id,
+                kind: NoteBlockKind::Text,
+                text: "远程图改文字".to_string(),
+            },
+        ];
+        note_blocks_save_core(item.id, &blocks, &dir, &ctx).expect("保存必须成功");
+        assert!(!folder.is_dir(), "远端图降级后必须释放文件夹");
+    }
+
+    #[test]
+    fn note_blocks_purge_deleted_releases_image_folder() {
+        // FIX017.11：软删除墓碑在 purge 前保留文件，purge 后释放。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("带图清理", &ctx).expect("合法文本必须成功");
+        let (text_id, folder) = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            let base = storage
+                .set_note_blocks(
+                    &dir,
+                    item.id,
+                    &[NoteBlock {
+                        id: 0,
+                        kind: NoteBlockKind::Text,
+                        text: "文字".to_string(),
+                        image_file: None,
+                    }],
+                )
+                .expect("写块必须成功");
+            let with_img = storage
+                .add_note_image_block(
+                    &dir,
+                    item.id,
+                    base[0].id,
+                    "",
+                    "",
+                    &fixture_png(),
+                    None,
+                    "261024000002",
+                )
+                .expect("插图必须成功");
+            let rel = with_img
+                .iter()
+                .find(|b| b.kind == NoteBlockKind::Image)
+                .and_then(|b| b.image_file.clone())
+                .expect("图块必须有文件");
+            let folder = dir
+                .join(rel.rsplit_once('/').expect("含子目录").0)
+                .to_path_buf();
+            let text_id = with_img
+                .iter()
+                .find(|b| b.kind == NoteBlockKind::Text)
+                .expect("必须留文本块")
+                .id;
+            (text_id, folder)
+        };
+        let blocks = [NoteBlockInput {
+            id: text_id,
+            kind: NoteBlockKind::Text,
+            text: "软删除后先留文件".to_string(),
+        }];
+        note_blocks_save_core(item.id, &blocks, &dir, &ctx).expect("保存必须成功");
+        assert!(folder.is_dir(), "软删除墓碑仍引用 → 文件先留");
+        note_blocks_purge_deleted_core(item.id, &dir, &ctx).expect("purge 必须成功");
+        assert!(!folder.is_dir(), "purge 后必须释放文件夹");
+    }
+
     // —— PL010.3 新命令 ——
 
     #[test]
@@ -1380,14 +1804,48 @@ mod tests {
             settings: Mutex::new(crate::settings::WindowSettings::default()),
         };
         let item = todo_add_core("老条目", &ctx).expect("合法文本必须成功");
+        let dir = temp_images_dir();
+        let folder = {
+            let storage = ctx.lock_storage().expect("锁必须可用");
+            let base = storage
+                .set_note_blocks(
+                    &dir,
+                    item.id,
+                    &[NoteBlock {
+                        id: 0,
+                        kind: NoteBlockKind::Text,
+                        text: "文字".to_string(),
+                        image_file: None,
+                    }],
+                )
+                .expect("写块必须成功");
+            let with_img = storage
+                .add_note_image_block(
+                    &dir,
+                    item.id,
+                    base[0].id,
+                    "",
+                    "",
+                    &fixture_png(),
+                    None,
+                    "261024000003",
+                )
+                .expect("插图必须成功");
+            let rel = with_img
+                .iter()
+                .find(|b| b.kind == NoteBlockKind::Image)
+                .and_then(|b| b.image_file.clone())
+                .expect("图块必须有文件");
+            dir.join(rel.rsplit_once('/').expect("含子目录").0)
+        };
         todo_toggle_core(item.id, &ctx).expect("勾选必须成功"); // done_at = t0
         clock.store(
             t0 + crate::todo::ARCHIVE_RETENTION_MS + 1,
             std::sync::atomic::Ordering::SeqCst,
         );
-        let dir = temp_images_dir();
         let view = todo_archive_list_core(&ctx, &dir).expect("归档读必须成功");
         assert!(view.is_empty(), "超期条目在出视图前已回收");
+        assert!(!folder.is_dir(), "归档回收必须释放图片文件夹");
     }
 
     // —— PL013.2 重排命令 ——
@@ -1414,13 +1872,15 @@ mod tests {
 
     /// 临时图片目录（禁触真实 data/images）
     fn temp_images_dir() -> std::path::PathBuf {
+        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-note-images-{}-{}",
+            "capsule-todo-note-images-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
         dir

@@ -595,6 +595,7 @@ fn cursor_in_window(w: &tauri::WebviewWindow) -> bool {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = w;
         false
     }
 }

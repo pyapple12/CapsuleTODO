@@ -21,6 +21,7 @@ import { useBoardRead } from "../composables/useBoardRead";
 import { useGlassBar } from "../composables/useGlassBar";
 import { installNoteDragHooks } from "../composables/useDragReorder";
 import { normalizePasteNewlines, notePasteFitsLimits } from "../composables/notePasteLimits";
+import { htmlHasImage } from "../composables/htmlImage";
 import { useNoteSelection, type SelPoint } from "../composables/useNoteSelection";
 import { useNoteWriteChain } from "../composables/useNoteWriteChain";
 import { shouldCloseDetailOnOutsideClick } from "../composables/detailOutsideClick";
@@ -885,12 +886,12 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
       at = removed.at;
       // PATCH002.72 C6：图 / HTML 分支让 Rust 按"库里的块集"重建列表 ⇒ 本地删除必须先落库，
       // 否则服务端返回"未删的旧块 + 插入"（实证 len=6 ⇒ 旧内容跑到粘贴内容之后 ✗）
-      if (html0.includes("<img") || hasImage) {
+      if (htmlHasImage(html0) || hasImage) {
         if (!(await saveBlocks(true))) return;
         // FIX014.41：保存 await 期间可能已切源；此时不能把旧选区粘贴到新条目。
         if (props.todo?.id !== todoId) return;
       }
-      if (html0.includes("<img")) {
+      if (htmlHasImage(html0)) {
         pasteOk = await pasteHtmlAt(at.index, at.offset, at.offset, html0, plain0, false);
       } else if (hasImage) {
         pasteOk = await pasteImageAt(at.index, at.offset, at.offset, plain0, false);
@@ -928,7 +929,7 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
   // PATCH002.25：剪贴板带 text/html 且含 <img> → 走多段粘贴（唯一能带**多图 + 段落结构**
   // 的载体；应用内复制经 PATCH002.24 内联 data: 图，此处免联网直取）
   const html = htmlClip;
-  if (/<img\b/i.test(html)) {
+  if (htmlHasImage(html)) {
     e.preventDefault();
     const pasteTodoId = props.todo?.id ?? null;
     pasteInFlight += 1;
@@ -1030,6 +1031,8 @@ async function pasteImageAt(
     // 剪贴板无图（或非图片文件）→ 回落文本粘贴（含多行拆块），不吞粘贴。
     // FIX014.41：已切源时后端没有插入任何内容，必须返回 false 让调用方恢复旧快照。
     if (!sameTodo) return false;
+    // FIX017.2：回落文本为空时不得调用 pasteTextLines（空串等价于删除选区）。
+    if (fallbackText.trim() === "") return false;
     // （PATCH002.72：`push` 透传——本函数在回落分支**未**入栈，由 pasteTextLines 按同一开关决定）
     const at = blocks.value.findIndex((b) => b._key === key);
     pasteTextLines(at >= 0 ? at : index, start, end, fallbackText, push);
@@ -1091,6 +1094,8 @@ async function pasteHtmlAt(
     } else if (outcome.status !== "image") {
       // FIX014.41：已切源且后端未插入 → 必须返回 false，让选区替换调用方恢复快照。
       if (!sameTodo) return false;
+      // FIX017.2：回落文本为空时不得调用 pasteTextLines（空串等价于删除选区）。
+      if (fallbackText.trim() === "") return false;
       // 片段全空（剪贴板 HTML 里没有可入块的内容）→ 回落纯文本，不吞这次粘贴
       // （PATCH002.72：`push` 透传——回落分支未入栈，由 pasteTextLines 按同一开关决定）
       const at = blocks.value.findIndex((b) => b._key === key);

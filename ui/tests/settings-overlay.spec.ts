@@ -45,6 +45,14 @@ describe("SettingsOverlay 热键失败恢复（FIX015.26）", () => {
     vi.restoreAllMocks();
   });
 
+  it("收起态透明根不再把 mousedown 翻回开板（FIX017.11）", async () => {
+    const overlay = wrapper!.find(".settings-overlay");
+    expect(overlay.classes()).not.toContain("open");
+    await overlay.trigger("mousedown");
+    await flushPromises();
+    expect(wrapper!.find(".settings-overlay").classes()).not.toContain("open");
+  });
+
   it("保存/parse 早退失败时调用幂等 resume", async () => {
     await wrapper!.find(".hotkey-btn").trigger("click");
     await flushPromises();

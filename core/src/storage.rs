@@ -19,6 +19,22 @@ use thiserror::Error;
 use crate::bubble::BubbleItem;
 use crate::todo::{NoteBlock, NoteBlockKind, TodoItem};
 
+// FIX017.5 / N-3：测试专用引用查询计数（线程本地，避免并行测试串扰）。
+#[cfg(test)]
+std::thread_local! {
+    static NOTE_REF_QUERY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_note_ref_query_calls() {
+    NOTE_REF_QUERY_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn note_ref_query_calls() -> usize {
+    NOTE_REF_QUERY_CALLS.with(std::cell::Cell::get)
+}
+
 /// 远端图下载占位文案（PATCH002.76）：与前端 `DetailOverlay.vue` 的
 /// `PENDING_IMAGE_TEXT` 同源——**改一处必须同步**。占位块是文本块，原 URL 存
 /// `note_blocks.source_url`；成功后原位升格图块，失败/启动清扫时换成 URL 文本。
@@ -83,7 +99,7 @@ pub fn system_now() -> i64 {
 }
 
 /// FNV-1a 64 位内容哈希（hex 16 位）：图片去重判据（PL025，零新依赖手写）
-fn fnv1a_hex(bytes: &[u8]) -> String {
+pub(crate) fn fnv1a_hex(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         hash ^= b as u64;
@@ -92,31 +108,269 @@ fn fnv1a_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+/// FIX017.8：预览原子写。临时文件与目标同目录，成功后 rename 覆盖；
+/// 失败删除临时文件，避免留下 0 字节/半截 `preview.png`。
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("preview.png");
+    let tmp = path.with_file_name(format!(
+        ".{name}.tmp.{}.{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// FIX017.8：预览是否可用（存在、非空、可解码）；不可用则调用方回落原图。
+pub(crate) fn preview_is_usable(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    !bytes.is_empty() && image::load_from_memory(&bytes).is_ok()
+}
+
+/// FIX017.8：同 hash 命中时确保原图与预览仍在；缺失则按本次字节补建。
+fn ensure_existing_image_file(images_dir: &Path, rel: &str, bytes: &[u8], preview: Option<&[u8]>) {
+    let abs = images_dir.join(rel);
+    if !abs.is_file() {
+        if let Some(parent) = abs.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                crate::diag::warn_diag(&format!("同 hash 图片目录补建失败：{err}"));
+                return;
+            }
+        }
+        if let Err(err) = std::fs::write(&abs, bytes) {
+            crate::diag::warn_diag(&format!("同 hash 原图补写失败：{err}"));
+            return;
+        }
+    }
+    let Some(preview) = preview else {
+        return;
+    };
+    let Some(parent) = abs.parent() else {
+        return;
+    };
+    let preview_path = parent.join("preview.png");
+    if preview_is_usable(&preview_path) {
+        return;
+    }
+    if let Err(err) = write_atomic(&preview_path, preview) {
+        crate::diag::warn_diag(&format!("详情图预览补写失败（降级用原图）：{err}"));
+    }
+}
+/// FIX017.5：生产命令在锁外调用，补齐同 hash 命中的原图/预览。
+pub(crate) fn ensure_existing_note_image(
+    images_dir: &Path,
+    rel: &str,
+    bytes: &[u8],
+    preview: Option<&[u8]>,
+) {
+    ensure_existing_image_file(images_dir, rel, bytes, preview);
+}
+
+/// FIX017.11：气泡 duplicate 命中时补建损坏/缺失的原图与预览。
+pub(crate) fn ensure_existing_bubble_image(
+    images_dir: &Path,
+    rel: &str,
+    bytes: &[u8],
+    preview: Option<&[u8]>,
+) {
+    ensure_existing_image_file(images_dir, rel, bytes, preview);
+}
+
+/// FIX017.5：锁外准备的详情图文件（已落盘，尚未入库）。
+pub(crate) struct PreparedImageFile {
+    /// 内容哈希（FNV-1a）
+    pub hash: String,
+    /// 库内相对路径 `folder/inner`
+    pub rel: String,
+    /// 本次新建的文件夹名（DB 失败时锁外清理）
+    pub folder: String,
+}
+
+/// FIX017.5：锁外准备一张详情图：唯一文件夹 + 原图 + 原子预览。
+/// 调用方负责在 DB 事务成功后保留、失败时 `cleanup_prepared_image`.
+pub(crate) fn prepare_note_image_file(
+    images_dir: &Path,
+    bytes: &[u8],
+    orig_name: Option<&str>,
+    stamp: &str,
+    preview: Option<&[u8]>,
+) -> Result<PreparedImageFile, StorageError> {
+    let hash = fnv1a_hex(bytes);
+    let folder = next_seq_folder(images_dir, "note", stamp)?;
+    let seq = folder.rsplit('_').next().unwrap_or("1");
+    let inner = image_inner_name(orig_name, stamp, seq);
+    let dir = images_dir.join(&folder);
+    if let Err(err) = std::fs::write(dir.join(&inner), bytes) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(err.into());
+    }
+    if let Some(preview) = preview {
+        if let Err(err) = write_atomic(&dir.join("preview.png"), preview) {
+            crate::diag::warn_diag(&format!("详情图预览写入失败（降级用原图）：{err}"));
+        }
+    }
+    Ok(PreparedImageFile {
+        hash,
+        rel: format!("{folder}/{inner}"),
+        folder,
+    })
+}
+
+/// FIX017.5：DB 失败时锁外清理本次新建的详情图文件夹。
+pub(crate) fn cleanup_prepared_image(images_dir: &Path, prepared: &PreparedImageFile) {
+    if let Err(err) = std::fs::remove_dir_all(images_dir.join(&prepared.folder)) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            crate::diag::warn_diag(&format!("详情图准备失败清理失败：{err}"));
+        }
+    }
+}
+
+/// FIX017.5：锁外准备一张气泡图：唯一文件夹 + 原图 + 原子预览。
+pub(crate) fn prepare_bubble_image_file(
+    images_dir: &Path,
+    bytes: &[u8],
+    orig_name: Option<&str>,
+    stamp: &str,
+    preview: Option<&[u8]>,
+) -> Result<PreparedImageFile, StorageError> {
+    let hash = fnv1a_hex(bytes);
+    let folder = next_seq_folder(images_dir, "bubble", stamp)?;
+    let seq = folder.rsplit('_').next().unwrap_or("1");
+    let inner = image_inner_name(orig_name, stamp, seq);
+    let dir = images_dir.join(&folder);
+    if let Err(err) = std::fs::write(dir.join(&inner), bytes) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(err.into());
+    }
+    if let Some(preview) = preview {
+        if let Err(err) = write_atomic(&dir.join("preview.png"), preview) {
+            crate::diag::warn_diag(&format!("气泡图预览写入失败（降级用原图）：{err}"));
+        }
+    }
+    Ok(PreparedImageFile {
+        hash,
+        rel: format!("{folder}/{inner}"),
+        folder,
+    })
+}
+
+/// FIX017.5：与 parts 对齐的 (hash, rel) 列表。
+pub(crate) type PreparedPartFiles = Vec<Option<(String, String)>>;
+
+/// FIX017.5：锁外准备多段粘贴的全部图片；返回与 parts 对齐的 (hash, rel) 和本次新建文件夹。
+pub(crate) fn prepare_note_parts_files(
+    images_dir: &Path,
+    parts: &[NotePastePart],
+    stamp: &str,
+    previews: &[Option<Vec<u8>>],
+    existing: &HashMap<String, String>,
+) -> Result<(PreparedPartFiles, Vec<PreparedImageFile>), StorageError> {
+    debug_assert_eq!(previews.len(), parts.len());
+    let mut images: PreparedPartFiles = Vec::with_capacity(parts.len());
+    let mut prepared = Vec::new();
+    let mut batch: HashMap<String, (String, String)> = HashMap::new();
+    for (i, part) in parts.iter().enumerate() {
+        match part {
+            NotePastePart::Image { bytes, orig_name } => {
+                let hash = fnv1a_hex(bytes);
+                if let Some(pair) = batch.get(&hash) {
+                    images.push(Some(pair.clone()));
+                    continue;
+                }
+                let pair = if let Some(rel) = existing.get(&hash) {
+                    ensure_existing_image_file(
+                        images_dir,
+                        rel,
+                        bytes,
+                        previews.get(i).and_then(|p| p.as_deref()),
+                    );
+                    (hash.clone(), rel.clone())
+                } else {
+                    let file = match prepare_note_image_file(
+                        images_dir,
+                        bytes,
+                        orig_name.as_deref(),
+                        stamp,
+                        previews.get(i).and_then(|p| p.as_deref()),
+                    ) {
+                        Ok(file) => file,
+                        Err(err) => {
+                            cleanup_prepared_images(images_dir, &prepared);
+                            return Err(err);
+                        }
+                    };
+                    let pair = (file.hash.clone(), file.rel.clone());
+                    prepared.push(file);
+                    pair
+                };
+                batch.insert(hash, pair.clone());
+                images.push(Some(pair));
+            }
+            NotePastePart::Text(_) | NotePastePart::PendingImage { .. } => images.push(None),
+        }
+    }
+    Ok((images, prepared))
+}
+
+/// FIX017.5：DB 失败时锁外清理本次新建的全部详情图文件夹。
+pub(crate) fn cleanup_prepared_images(images_dir: &Path, prepared: &[PreparedImageFile]) {
+    for file in prepared {
+        cleanup_prepared_image(images_dir, file);
+    }
+}
 /// 同 stamp 已存在的图片文件夹最大序号（PL027 参数化：`prefix` 由调用域给——
-/// 气泡传 `"bubble"`、详情传 `"note"`；无则 0）
-pub(crate) fn max_seq(images_dir: &Path, prefix: &str, stamp: &str) -> u32 {
+/// 气泡传 `"bubble"`、详情传 `"note"`；无则 0）。`read_dir`/entry 错误必须上抛，
+/// 不能静默回 0 导致重选既有目录（FIX017.7）。
+pub(crate) fn max_seq(images_dir: &Path, prefix: &str, stamp: &str) -> Result<u32, StorageError> {
     let prefix = format!("{prefix}_{stamp}_");
     let mut max_n = 0u32;
-    if let Ok(entries) = std::fs::read_dir(images_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Some(rest) = name.strip_prefix(&prefix) {
-                    if let Ok(n) = rest.parse::<u32>() {
-                        max_n = max_n.max(n);
-                    }
+    let entries = std::fs::read_dir(images_dir)?;
+    for entry in entries {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str() {
+            if let Some(rest) = name.strip_prefix(&prefix) {
+                if let Ok(n) = rest.parse::<u32>() {
+                    max_n = max_n.max(n);
                 }
             }
         }
     }
-    max_n
+    Ok(max_n)
 }
 
-/// 下一个图片文件夹名 `{prefix}_{stamp}_{n}`（PL027 参数化）：n = 同 stamp 最大序号 + 1
-pub(crate) fn next_seq_folder(images_dir: &Path, prefix: &str, stamp: &str) -> String {
-    format!(
-        "{prefix}_{stamp}_{}",
-        max_seq(images_dir, prefix, stamp) + 1
-    )
+/// 下一个图片文件夹名 `{prefix}_{stamp}_{n}`：n = 同 stamp 最大序号 + 1。
+/// 用 `create_dir` 原子占位；撞名就递增重试，返回时目录已创建（FIX017.7）。
+pub(crate) fn next_seq_folder(
+    images_dir: &Path,
+    prefix: &str,
+    stamp: &str,
+) -> Result<String, StorageError> {
+    let mut seq = max_seq(images_dir, prefix, stamp)?.saturating_add(1);
+    loop {
+        let folder = format!("{prefix}_{stamp}_{seq}");
+        match std::fs::create_dir(images_dir.join(&folder)) {
+            Ok(()) => return Ok(folder),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                seq = seq
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError::InvalidImagePath("图片序号耗尽".to_string()))?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 /// 净化文件名（PL025 文件图内层名）：取末段 + 替换 Windows 非法字符；空则回退 `image`
@@ -502,7 +756,7 @@ impl Storage {
             )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
-        let base = max_seq(images_dir, "bubble", stamp) + 1;
+        let base = max_seq(images_dir, "bubble", stamp)?.saturating_add(1);
         for (offset, (id, blob)) in rows.into_iter().enumerate() {
             let seq = base + offset as u32;
             let folder = format!("bubble_{stamp}_{seq}");
@@ -773,6 +1027,35 @@ impl Storage {
         }
     }
 
+    /// FIX017.5：批量释放入口——一次引用查询、一次锁；删除仍在锁内（check+delete
+    /// 原子），但 N-3 的“每夹一次全表 DISTINCT”消失。性能边界：单批文件夹数有限，
+    /// 每夹单次 `remove_dir_all`，毫秒级。
+    pub(crate) fn release_note_folders_if_unreferenced(
+        &self,
+        images_dir: &Path,
+        folders: &[String],
+    ) -> Result<(), StorageError> {
+        let referenced = self.referenced_note_image_folders()?;
+        for folder in folders {
+            if !is_safe_image_folder(folder, "note_") {
+                crate::diag::warn_diag(&format!("详情图释放跳过非法夹名：{folder}"));
+                continue;
+            }
+            if referenced.contains(folder) {
+                continue;
+            }
+            let dir = images_dir.join(folder);
+            if let Err(err) = std::fs::remove_dir_all(&dir) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    crate::diag::warn_diag(&format!(
+                        "详情图文件夹删除失败（best-effort 不阻断）：{err}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// FIX016.1：在持有 storage 锁时复核文件夹当前引用；无引用才删精确的 `note_*`
     /// 文件夹。新目录不进入调用方列表，整目录扫描不再参与删条目路径。
     pub(crate) fn release_note_folder_if_unreferenced(
@@ -971,8 +1254,8 @@ impl Storage {
         todo_id: Option<i64>,
     ) -> Result<usize, StorageError> {
         let (deleted, folders) = self.purge_deleted_note_blocks_collecting(todo_id)?;
-        for folder in folders {
-            if let Err(err) = self.release_note_folder_if_unreferenced(images_dir, &folder) {
+        if !folders.is_empty() {
+            if let Err(err) = self.release_note_folders_if_unreferenced(images_dir, &folders) {
                 crate::diag::warn_diag(&format!("软删除图片释放失败（best-effort）：{err}"));
             }
         }
@@ -1025,6 +1308,8 @@ impl Storage {
 
     /// 查询当前所有被引用的详情图文件夹（锁内只做一次 DISTINCT 查询；FIX014.13）。
     pub fn referenced_note_image_folders(&self) -> Result<HashSet<String>, StorageError> {
+        #[cfg(test)]
+        NOTE_REF_QUERY_CALLS.with(|calls| calls.set(calls.get() + 1));
         Ok(self
             .conn
             .prepare("SELECT DISTINCT image_file FROM note_blocks WHERE image_file IS NOT NULL")?
@@ -1349,6 +1634,7 @@ impl Storage {
             orig_name,
             stamp,
             preview.as_deref(),
+            None,
         )
     }
 
@@ -1359,7 +1645,7 @@ impl Storage {
     /// 与 `validate_note_blocks`；`before`/`after` 由前端按光标/选区本地切好（免 UTF-16 换算）；
     /// `preview` 由调用方在 storage 锁外预生成。
     #[allow(clippy::too_many_arguments)]
-    pub fn add_note_image_block_prepared(
+    pub(crate) fn add_note_image_block_prepared(
         &self,
         images_dir: &Path,
         todo_id: i64,
@@ -1370,24 +1656,31 @@ impl Storage {
         orig_name: Option<&str>,
         stamp: &str,
         preview: Option<&[u8]>,
+        prepared: Option<&PreparedImageFile>,
     ) -> Result<Vec<NoteBlock>, StorageError> {
         // ⓪ 目标块必须先存在（PATCH002.46，同 `insert_note_parts`）——校验先于任何落盘
         self.require_note_block(todo_id, block_id)?;
-        // ① 落盘或复用（与多段粘贴共用同一份 `write_note_image_prepared`：同 hash 复用
-        // 同一文件、命中不写盘；preview 由命令层在 storage 锁外预生成）
-        let (hash, rel) =
-            match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
-                Ok(pair) => pair,
-                Err(err) => {
-                    self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
-                    return Err(err);
+        // ① 落盘或复用：生产路径由调用方锁外准备（prepared Some）；兼容入口仍在此落盘。
+        let (hash, rel) = match prepared {
+            Some(file) => (file.hash.clone(), file.rel.clone()),
+            None => {
+                match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫
+                        return Err(err);
+                    }
                 }
-            };
+            }
+        };
+        let owns_files = prepared.is_none();
         if let Err(err) = self.conn.execute_batch("BEGIN") {
-            self.sweep_after_failed_write(images_dir);
+            if owns_files {
+                self.sweep_after_failed_write(images_dir);
+            }
             return Err(err.into());
         }
-        let result = (|| -> Result<(), StorageError> {
+        let result = (|| -> Result<Vec<NoteBlock>, StorageError> {
             let order: Option<i64> = self
                 .conn
                 .query_row(
@@ -1477,24 +1770,44 @@ impl Storage {
                     rusqlite::params![todo_id, last],
                 )?;
             }
-            Ok(())
+            self.note_blocks(todo_id)
         })();
         match result {
-            Ok(()) => {
+            Ok(saved) => {
                 if let Err(err) = self.commit_transaction("插图写入") {
-                    self.sweep_after_failed_write(images_dir);
+                    if owns_files {
+                        self.sweep_after_failed_write(images_dir);
+                    }
                     return Err(err);
                 }
+                Ok(saved)
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("插图事务回滚失败：{rollback}"));
                 }
-                self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
-                return Err(err);
+                if owns_files {
+                    self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
+                }
+                Err(err)
             }
         }
-        self.note_blocks(todo_id)
+    }
+
+    /// FIX017.5：按内容 hash 查已有详情图相对路径（只读 DB，供锁外准备文件前使用）。
+    pub(crate) fn note_image_rel_by_hash(
+        &self,
+        hash: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT image_file FROM note_blocks
+                 WHERE image_hash = ?1 AND image_file IS NOT NULL LIMIT 1",
+                [hash],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// 落盘一张详情图（PATCH002.76 变体）：预览由调用方**在 storage 锁外**预生成，
@@ -1508,30 +1821,12 @@ impl Storage {
         preview: Option<&[u8]>,
     ) -> Result<(String, String), StorageError> {
         let hash = fnv1a_hex(bytes);
-        let existing: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT image_file FROM note_blocks
-                 WHERE image_hash = ?1 AND image_file IS NOT NULL LIMIT 1",
-                [&hash],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(rel) = existing {
+        if let Some(rel) = self.note_image_rel_by_hash(&hash)? {
+            ensure_existing_image_file(images_dir, &rel, bytes, preview);
             return Ok((hash, rel));
         }
-        let folder = next_seq_folder(images_dir, "note", stamp);
-        let seq = folder.rsplit('_').next().unwrap_or("1");
-        let inner = image_inner_name(orig_name, stamp, seq);
-        let dir = images_dir.join(&folder);
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(&inner), bytes)?;
-        if let Some(preview) = preview {
-            if let Err(err) = std::fs::write(dir.join("preview.png"), preview) {
-                crate::diag::warn_diag(&format!("详情图预览写入失败（降级用原图）：{err}"));
-            }
-        }
-        Ok((hash, format!("{folder}/{inner}")))
+        let prepared = prepare_note_image_file(images_dir, bytes, orig_name, stamp, preview)?;
+        Ok((prepared.hash, prepared.rel))
     }
 
     /// 多段粘贴兼容入口：旧调用方在 storage 锁内直接调用；生产热路径走
@@ -1557,7 +1852,7 @@ impl Storage {
             })
             .collect();
         self.insert_note_parts_prepared(
-            images_dir, todo_id, block_id, before, after, parts, stamp, &previews,
+            images_dir, todo_id, block_id, before, after, parts, stamp, &previews, None,
         )
     }
 
@@ -1585,52 +1880,62 @@ impl Storage {
         parts: &[NotePastePart],
         stamp: &str,
         previews: &[Option<Vec<u8>>],
+        prepared_images: Option<&[Option<(String, String)>]>,
     ) -> Result<(Vec<NoteBlock>, Vec<i64>), StorageError> {
         // ⓪ 目标块必须先存在（PATCH002.46）：幻影块 id=0 / 跨条目陈旧 id 此前都在**落盘
         // 之后**才失败 → 留下孤儿夹（PATCH002.41）；校验前移到任何文件写入之前
         self.require_note_block(todo_id, block_id)?;
-        // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）。
-        // FIX014.14：本批第一张图尚未入 DB，后续同图查库查不到——必须用批内
-        // hash→rel 表复用，否则同一段 HTML 里的重复图片会落两份文件。
-        let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
-        let mut batch_images: HashMap<String, (String, String)> = HashMap::new();
-        let written = (|| -> Result<(), StorageError> {
-            for (i, part) in parts.iter().enumerate() {
-                match part {
-                    NotePastePart::Image { bytes, orig_name } => {
-                        let hash = fnv1a_hex(bytes);
-                        let pair = match batch_images.get(&hash) {
-                            Some(pair) => pair.clone(),
-                            None => {
-                                let pair = self.write_note_image_prepared(
-                                    images_dir,
-                                    bytes,
-                                    orig_name.as_deref(),
-                                    stamp,
-                                    previews.get(i).and_then(|p| p.as_deref()),
-                                )?;
-                                batch_images.insert(hash, pair.clone());
-                                pair
-                            }
-                        };
-                        images.push(Some(pair));
-                    }
-                    NotePastePart::Text(_) | NotePastePart::PendingImage { .. } => {
-                        images.push(None)
+        let owns_files = prepared_images.is_none();
+        let images: Vec<Option<(String, String)>> = if let Some(prepared) = prepared_images {
+            debug_assert_eq!(prepared.len(), parts.len());
+            prepared.to_vec()
+        } else {
+            // ① 先落盘全部图段（事务外：文件 IO 不该拖住事务；同 hash 去重保证幂等）。
+            // FIX014.14：本批第一张图尚未入 DB，后续同图查库查不到——必须用批内
+            // hash→rel 表复用，否则同一段 HTML 里的重复图片会落两份文件。
+            let mut images: Vec<Option<(String, String)>> = Vec::with_capacity(parts.len());
+            let mut batch_images: HashMap<String, (String, String)> = HashMap::new();
+            let written = (|| -> Result<(), StorageError> {
+                for (i, part) in parts.iter().enumerate() {
+                    match part {
+                        NotePastePart::Image { bytes, orig_name } => {
+                            let hash = fnv1a_hex(bytes);
+                            let pair = match batch_images.get(&hash) {
+                                Some(pair) => pair.clone(),
+                                None => {
+                                    let pair = self.write_note_image_prepared(
+                                        images_dir,
+                                        bytes,
+                                        orig_name.as_deref(),
+                                        stamp,
+                                        previews.get(i).and_then(|p| p.as_deref()),
+                                    )?;
+                                    batch_images.insert(hash, pair.clone());
+                                    pair
+                                }
+                            };
+                            images.push(Some(pair));
+                        }
+                        NotePastePart::Text(_) | NotePastePart::PendingImage { .. } => {
+                            images.push(None)
+                        }
                     }
                 }
+                Ok(())
+            })();
+            if let Err(err) = written {
+                self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫（不留半份）
+                return Err(err);
             }
-            Ok(())
-        })();
-        if let Err(err) = written {
-            self.sweep_after_failed_write(images_dir); // 写盘半途失败：补偿清扫（不留半份）
-            return Err(err);
-        }
+            images
+        };
         if let Err(err) = self.conn.execute_batch("BEGIN") {
-            self.sweep_after_failed_write(images_dir);
+            if owns_files {
+                self.sweep_after_failed_write(images_dir);
+            }
             return Err(err.into());
         }
-        let result = (|| -> Result<Vec<i64>, StorageError> {
+        let result = (|| -> Result<(Vec<NoteBlock>, Vec<i64>), StorageError> {
             let order: Option<i64> = self
                 .conn
                 .query_row(
@@ -1782,31 +2087,56 @@ impl Storage {
                     rusqlite::params![todo_id, last],
                 )?;
             }
-            Ok(part_ids)
+            let saved = self.note_blocks(todo_id)?;
+            Ok((saved, part_ids))
         })();
-        let part_ids = match result {
-            Ok(part_ids) => {
+        match result {
+            Ok((saved, part_ids)) => {
                 if let Err(err) = self.commit_transaction("多段粘贴") {
-                    self.sweep_after_failed_write(images_dir);
+                    if owns_files {
+                        self.sweep_after_failed_write(images_dir);
+                    }
                     return Err(err);
                 }
-                part_ids
+                Ok((saved, part_ids))
             }
             Err(err) => {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("多段粘贴事务回滚失败：{rollback}"));
                 }
-                self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
-                return Err(err);
+                if owns_files {
+                    self.sweep_after_failed_write(images_dir); // PATCH002.46 补偿：刚落下的图不留孤儿
+                }
+                Err(err)
             }
-        };
-        Ok((self.note_blocks(todo_id)?, part_ids))
+        }
+    }
+
+    /// FIX017.5：后台图前先锁内确认占位仍匹配（锁外准备文件前）。
+    pub(crate) fn pending_note_image_matches(
+        &self,
+        todo_id: i64,
+        block_id: i64,
+        expected_url: &str,
+    ) -> Result<bool, StorageError> {
+        let current: Option<(String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT text, source_url FROM note_blocks
+                 WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND deleted_at IS NULL",
+                rusqlite::params![block_id, todo_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(current.is_some_and(|(text, source)| {
+            text == PENDING_NOTE_IMAGE_TEXT && source.as_deref() == Some(expected_url)
+        }))
     }
 
     /// 后台下载成功（PATCH002.76）：占位文本块 → 图块。条件更新（文本仍为占位、
     /// source_url 仍匹配）防用户已编辑/删除；失败返回 None，文件由补偿清扫回收。
     #[allow(clippy::too_many_arguments)]
-    pub fn complete_pending_note_image(
+    pub(crate) fn complete_pending_note_image(
         &self,
         images_dir: &Path,
         todo_id: i64,
@@ -1816,6 +2146,7 @@ impl Storage {
         orig_name: Option<&str>,
         preview: Option<&[u8]>,
         stamp: &str,
+        prepared: Option<&PreparedImageFile>,
     ) -> Result<Option<NoteBlock>, StorageError> {
         let current: Option<(String, Option<String>)> = self
             .conn
@@ -1832,14 +2163,18 @@ impl Storage {
         if text != PENDING_NOTE_IMAGE_TEXT || source.as_deref() != Some(expected_url) {
             return Ok(None);
         }
-        let (hash, rel) =
+        let owns_files = prepared.is_none();
+        let (hash, rel) = if let Some(file) = prepared {
+            (file.hash.clone(), file.rel.clone())
+        } else {
             match self.write_note_image_prepared(images_dir, bytes, orig_name, stamp, preview) {
                 Ok(pair) => pair,
                 Err(err) => {
                     self.sweep_after_failed_write(images_dir);
                     return Err(err);
                 }
-            };
+            }
+        };
         let changed = match self.conn.execute(
             "UPDATE note_blocks SET kind = 'image', text = '',
                  image_hash = ?3, image_file = ?4, source_url = ?5, deleted_at = NULL
@@ -1856,18 +2191,26 @@ impl Storage {
         ) {
             Ok(changed) => changed,
             Err(err) => {
-                self.sweep_after_failed_write(images_dir);
+                if owns_files {
+                    self.sweep_after_failed_write(images_dir);
+                }
                 return Err(StorageError::Sqlite(err));
             }
         };
         if changed == 0 {
-            self.sweep_after_failed_write(images_dir);
+            if owns_files {
+                self.sweep_after_failed_write(images_dir);
+            }
             return Ok(None);
         }
-        Ok(self
-            .note_blocks(todo_id)?
-            .into_iter()
-            .find(|block| block.id == block_id))
+        // 更新已成功：直接按已知值构造返回，不再做一次可能失败的读回；
+        // 否则“更新成功但读回失败”会让调用方误判为未提交并清理已引用文件。
+        Ok(Some(NoteBlock {
+            id: block_id,
+            kind: NoteBlockKind::Image,
+            text: String::new(),
+            image_file: Some(rel),
+        }))
     }
 
     /// 后台下载失败（PATCH002.76）：占位文本块 → URL 文本；保留 `source_url` 供
@@ -1994,7 +2337,35 @@ impl Storage {
             orig_name,
             stamp,
             preview.as_deref(),
+            None,
         )
+    }
+
+    /// FIX017.5：按内容 hash 判断气泡图是否已存在（锁内只读）。
+    pub(crate) fn bubble_image_hash_exists(&self, hash: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM bubbles WHERE kind = 'image' AND image_hash = ?1",
+            [hash],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// FIX017.11：按 hash 取已有气泡图相对路径（duplicate 自愈用）。
+    pub(crate) fn bubble_image_rel_by_hash(
+        &self,
+        hash: &str,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT image_file FROM bubbles
+                 WHERE kind = 'image' AND image_hash = ?1 AND image_file IS NOT NULL
+                 LIMIT 1",
+                [hash],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// 新增图片气泡（PL025 落盘化）：算内容哈希（FNV-1a）→ 查重（同 hash 已在库返
@@ -2002,7 +2373,8 @@ impl Storage {
     /// 写入锁外预生成的预览 → UPDATE image_file（**相对路径含子目录**）。排头插入同 add_bubble。
     /// `orig_name` = 文件来源原名（None = 截图）；bytes 须先过
     /// clipboard_image::validate_image_bytes（格式嗅探执行点在命令层）。
-    pub fn add_image_bubble_prepared(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_image_bubble_prepared(
         &self,
         images_dir: &Path,
         text: &str,
@@ -2010,6 +2382,7 @@ impl Storage {
         orig_name: Option<&str>,
         stamp: &str,
         preview: Option<&[u8]>,
+        prepared: Option<&PreparedImageFile>,
     ) -> Result<BubbleAddOutcome, StorageError> {
         let hash = fnv1a_hex(bytes);
         let dup: i64 = self.conn.query_row(
@@ -2025,11 +2398,33 @@ impl Storage {
         } else {
             "screenshot"
         };
-        let folder = next_seq_folder(images_dir, "bubble", stamp);
-        let seq = folder.rsplit('_').next().unwrap_or("1");
-        let inner = image_inner_name(orig_name, stamp, seq);
-        let dir = images_dir.join(&folder);
-        self.conn.execute_batch("BEGIN")?;
+        let owns_files = prepared.is_none();
+        let (inner, dir, rel) = if let Some(file) = prepared {
+            (
+                file.rel
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("image.png")
+                    .to_string(),
+                images_dir.join(&file.folder),
+                file.rel.clone(),
+            )
+        } else {
+            let folder = next_seq_folder(images_dir, "bubble", stamp)?;
+            let seq = folder.rsplit('_').next().unwrap_or("1");
+            let inner = image_inner_name(orig_name, stamp, seq);
+            (
+                inner.clone(),
+                images_dir.join(&folder),
+                format!("{folder}/{inner}"),
+            )
+        };
+        if let Err(err) = self.conn.execute_batch("BEGIN") {
+            if owns_files {
+                Self::cleanup_failed_image_folder(&dir);
+            }
+            return Err(err.into());
+        }
         let result = (|| -> Result<BubbleAddOutcome, StorageError> {
             self.conn.execute(
                 "INSERT INTO bubbles(text, kind, image_hash, image_source, sort_order)
@@ -2038,15 +2433,16 @@ impl Storage {
                 rusqlite::params![text, hash, source],
             )?;
             let id = self.conn.last_insert_rowid();
-            std::fs::create_dir_all(&dir)?;
-            std::fs::write(dir.join(&inner), bytes)?;
-            // 大图预览（失败降级不阻断——详情退回原图；preview 已由调用方在锁外生成）
-            if let Some(preview) = preview {
-                if let Err(err) = std::fs::write(dir.join("preview.png"), preview) {
-                    crate::diag::warn_diag(&format!("图片预览写入失败（降级用原图）：{err}"));
+            if owns_files {
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join(&inner), bytes)?;
+                // 大图预览（失败降级不阻断——详情退回原图；preview 已由调用方在锁外生成）
+                if let Some(preview) = preview {
+                    if let Err(err) = write_atomic(&dir.join("preview.png"), preview) {
+                        crate::diag::warn_diag(&format!("图片预览写入失败（降级用原图）：{err}"));
+                    }
                 }
             }
-            let rel = format!("{folder}/{inner}");
             self.conn.execute(
                 "UPDATE bubbles SET image_file = ?1 WHERE id = ?2",
                 rusqlite::params![rel, id],
@@ -2061,7 +2457,9 @@ impl Storage {
             Ok(outcome) => match self.commit_transaction("图片气泡入库") {
                 Ok(()) => Ok(outcome),
                 Err(err) => {
-                    Self::cleanup_failed_image_folder(&dir);
+                    if owns_files {
+                        Self::cleanup_failed_image_folder(&dir);
+                    }
                     Err(err)
                 }
             },
@@ -2069,7 +2467,9 @@ impl Storage {
                 if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
                     crate::diag::warn_diag(&format!("图片入库事务回滚失败：{rollback}"));
                 }
-                Self::cleanup_failed_image_folder(&dir);
+                if owns_files {
+                    Self::cleanup_failed_image_folder(&dir);
+                }
                 Err(err)
             }
         }
@@ -2279,6 +2679,51 @@ mod tests {
         assert!(indexes
             .iter()
             .any(|name| name == "idx_note_blocks_image_file"));
+    }
+
+    #[test]
+    fn max_seq_reports_read_dir_errors_and_next_folder_skips_collisions() {
+        // FIX017.7：read_dir 失败不得静默回 0；create_dir 撞名递增。
+        let dir = temp_images_dir();
+        let missing = dir.join("missing");
+        assert!(matches!(
+            max_seq(&missing, "note", "261024000000"),
+            Err(StorageError::Io(_))
+        ));
+        let first = next_seq_folder(&dir, "note", "261024000000").expect("占位必须成功");
+        let second = next_seq_folder(&dir, "note", "261024000000").expect("占位必须成功");
+        assert_ne!(first, second, "撞名必须递增，不得复用");
+        assert!(dir.join(&first).is_dir());
+        assert!(dir.join(&second).is_dir());
+    }
+
+    #[test]
+    fn preview_atomic_write_and_existing_file_repair() {
+        // FIX017.8：0 字节预览不可用；原子写后可解码；同 hash 缺预览可补建。
+        let dir = temp_images_dir();
+        let p = dir.join("preview.png");
+        std::fs::write(&p, b"").expect("写空预览");
+        assert!(!preview_is_usable(&p), "0 字节预览必须判坏");
+        let valid = valid_png();
+        write_atomic(&p, &valid).expect("原子写预览");
+        assert!(preview_is_usable(&p));
+
+        let prepared = prepare_note_image_file(&dir, &valid, None, "261024000000", Some(&valid))
+            .expect("准备图片");
+        let preview = dir.join(&prepared.folder).join("preview.png");
+        std::fs::remove_file(&preview).expect("删预览模拟缺失");
+        ensure_existing_note_image(&dir, &prepared.rel, &valid, Some(&valid));
+        assert!(preview_is_usable(&preview), "同 hash 命中必须补建预览");
+    }
+
+    /// 1×1 有效 PNG（仅测试用）。
+    fn valid_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("生成 PNG");
+        out
     }
 
     #[test]
@@ -2528,13 +2973,15 @@ mod tests {
 
     /// 临时图片目录（测试用，落系统临时目录，禁触真实 data/images）
     fn temp_images_dir() -> std::path::PathBuf {
+        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "capsule-todo-images-{}-{}",
+            "capsule-todo-images-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).expect("临时图片目录必须可建");
         dir
@@ -2552,6 +2999,7 @@ mod tests {
                 b"fake-bubble-image",
                 None,
                 "261024000000",
+                None,
                 None,
             )
             .expect("气泡入库必须成功")
@@ -2666,6 +3114,27 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("bubble_"))
             .count();
         assert_eq!(folders, 0, "回滚后不得残留 bubble_* 夹");
+    }
+
+    #[test]
+    fn image_bubble_begin_failure_cleans_created_folder() {
+        // FIX017.7：next_seq_folder 已 create_dir，BEGIN 失败也必须收回空夹。
+        let st = storage();
+        let dir = temp_images_dir();
+        st.conn.execute_batch("BEGIN").expect("外层事务必须可开");
+        let err = st
+            .add_image_bubble(&dir, "🖼️ 图片", &png_bytes(), None, "261024000010")
+            .expect_err("嵌套 BEGIN 必须失败");
+        assert!(matches!(err, StorageError::Sqlite(_)));
+        st.conn
+            .execute_batch("ROLLBACK")
+            .expect("外层事务必须可回滚");
+        let folders = std::fs::read_dir(&dir)
+            .expect("目录可读")
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("bubble_"))
+            .count();
+        assert_eq!(folders, 0, "BEGIN 失败不得留下 bubble_* 空夹");
     }
 
     #[test]
@@ -3892,6 +4361,100 @@ mod tests {
     }
 
     #[test]
+    fn purge_deleted_note_blocks_uses_one_reference_query() {
+        // FIX017.5 / N-3：启动清理必须复用一次引用查询，不能逐夹全表 DISTINCT。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("清理").expect("写入必须成功");
+        for (i, folder) in ["note_a", "note_b", "note_c"].iter().enumerate() {
+            st.conn
+                .execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text,
+                         image_file, deleted_at)
+                     VALUES (?1, ?2, 'image', '', ?3, 1)",
+                    rusqlite::params![item.id, i as i64, format!("{folder}/1.png")],
+                )
+                .expect("插入软删除图块必须成功");
+        }
+
+        reset_note_ref_query_calls();
+        let deleted = st
+            .purge_deleted_note_blocks(&dir, None)
+            .expect("启动清理必须成功");
+        assert_eq!(deleted, 3);
+        assert_eq!(note_ref_query_calls(), 1, "三个待释放夹只允许一次引用查询");
+    }
+
+    #[test]
+    fn delete_release_keeps_folder_referenced_after_collect() {
+        // FIX016.1：收集后、释放前新增引用，释放必须重新查引用并保留文件夹。
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(storage()));
+        let dir = temp_images_dir();
+        let (a, b, rel, folder) = {
+            let st = shared.lock().expect("锁必须可用");
+            let a = st.add("甲").expect("写入必须成功");
+            let b = st.add("乙").expect("写入必须成功");
+            let base = st
+                .set_note_blocks(&dir, a.id, &[nb_text(0, "甲文")])
+                .expect("写块必须成功");
+            let with_img = st
+                .add_note_image_block(
+                    &dir,
+                    a.id,
+                    base[0].id,
+                    "",
+                    "",
+                    &png_bytes(),
+                    None,
+                    "261025000001",
+                )
+                .expect("插图必须成功");
+            let rel = with_img
+                .iter()
+                .find(|block| block.kind == NoteBlockKind::Image)
+                .and_then(|block| block.image_file.clone())
+                .expect("图块必须有文件");
+            let folder = dir.join(rel.rsplit_once('/').expect("含子目录").0);
+            (a.id, b.id, rel, folder)
+        };
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker = {
+            let shared = std::sync::Arc::clone(&shared);
+            let dir = dir.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let st = shared.lock().expect("锁必须可用");
+                let folders = st
+                    .remove_and_collect_note_folders(a)
+                    .expect("删除并收集必须成功");
+                drop(st);
+                barrier.wait(); // 已收集，尚未释放
+                barrier.wait(); // 等主线程新增引用
+                let st = shared.lock().expect("锁必须可用");
+                st.release_note_folders_if_unreferenced(&dir, &folders)
+                    .expect("释放必须成功");
+            })
+        };
+
+        barrier.wait();
+        {
+            let st = shared.lock().expect("锁必须可用");
+            st.conn
+                .execute(
+                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text, image_file)
+                     VALUES (?1, 0, 'image', '', ?2)",
+                    rusqlite::params![b, rel],
+                )
+                .expect("新增引用必须成功");
+        }
+        barrier.wait();
+        worker.join().expect("释放线程不得 panic");
+
+        assert!(folder.is_dir(), "释放前新增引用必须保留文件夹");
+    }
+
+    #[test]
     fn pending_image_placeholder_upgrades_and_keeps_text_block() {
         let st = storage();
         let dir = temp_images_dir();
@@ -3928,6 +4491,7 @@ mod tests {
                 Some("pasted.png"),
                 None,
                 "261022000000",
+                None,
             )
             .expect("后台落库必须成功")
             .expect("占位仍在，必须升级");
@@ -3966,6 +4530,7 @@ mod tests {
             Some("pasted.png"),
             None,
             "261022000001",
+            None,
         )
         .expect("后台落库")
         .expect("必须升级");
@@ -4094,6 +4659,7 @@ mod tests {
                 Some("pasted.png"),
                 None,
                 "261022000003",
+                None,
             )
             .expect("后台任务不得报错");
         assert!(result.is_none(), "用户已改过 → 不覆盖");
@@ -4473,6 +5039,38 @@ mod tests {
         st.release_note_folder_if_unreferenced(&dir, &folder_name)
             .expect("释放必须成功");
         assert!(!folder.is_dir(), "引用归零后文件夹消失");
+    }
+
+    #[test]
+    fn release_note_folders_batch_keeps_referenced_and_removes_orphans() {
+        // FIX017.5：批量入口一次引用查询；有引用保留，无引用才删。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let keep = dir.join("note_261024_keep");
+        let orphan = dir.join("note_261024_orphan");
+        std::fs::create_dir_all(&keep).expect("建保留夹");
+        std::fs::create_dir_all(&orphan).expect("建孤儿夹");
+        std::fs::write(keep.join("1.png"), b"x").expect("写保留图");
+        std::fs::write(orphan.join("1.png"), b"x").expect("写孤儿图");
+        st.conn
+            .execute(
+                "INSERT INTO note_blocks(todo_id, sort_order, kind, text, image_file)
+                 VALUES (?1, 0, 'image', '', 'note_261024_keep/1.png')",
+                rusqlite::params![item.id],
+            )
+            .expect("插引用块");
+
+        st.release_note_folders_if_unreferenced(
+            &dir,
+            &[
+                "note_261024_keep".to_string(),
+                "note_261024_orphan".to_string(),
+            ],
+        )
+        .expect("批量释放必须成功");
+        assert!(keep.is_dir(), "有引用必须保留");
+        assert!(!orphan.is_dir(), "无引用必须删除");
     }
 
     #[test]

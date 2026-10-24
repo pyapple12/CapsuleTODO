@@ -99,30 +99,88 @@ fn is_tag_boundary(bytes: &[u8], at: usize) -> bool {
         .unwrap_or(true)
 }
 
-/// FIX016.6：查找真正的 `<img` / `<image>` 标签起点；跳过 `<img-foo>`、
-/// `<imgsomething>` 等同前缀自定义标签。`<image>` 是 HTML 的 `<img` 别名。
+/// FIX017.4：引号感知的 `<` 扫描器。HTML 属性值里的 `<img>`/`</p>`/`<br>`/
+/// `<script>` 不是标签；扫描器只在引号外产出 `<` 位置。
+struct UnquotedLt<'a> {
+    bytes: &'a [u8],
+    at: usize,
+    quote: Option<u8>,
+    in_tag: bool,
+}
+
+impl<'a> UnquotedLt<'a> {
+    fn new(html: &'a str) -> Self {
+        Self {
+            bytes: html.as_bytes(),
+            at: 0,
+            quote: None,
+            in_tag: false,
+        }
+    }
+
+    fn next(&mut self) -> Option<usize> {
+        while self.at < self.bytes.len() {
+            let byte = self.bytes[self.at];
+            if self.in_tag {
+                match self.quote {
+                    Some(q) if byte == q => self.quote = None,
+                    Some(_) => {}
+                    None if matches!(byte, b'"' | b'\'') => self.quote = Some(byte),
+                    None if byte == b'>' => self.in_tag = false,
+                    None => {}
+                }
+            } else if byte == b'<' {
+                // FIX017.4：只有像标签起点的 `<` 才进入 in_tag；正文里的裸 `<`
+                // （如 `1 < 2 <img>`）不能把后续真实标签一起吞掉。
+                let next = self.bytes.get(self.at + 1).copied();
+                let starts_tag = next
+                    .is_some_and(|b| b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?'));
+                if starts_tag {
+                    let found = self.at;
+                    self.at += 1;
+                    self.in_tag = true;
+                    return Some(found);
+                }
+            }
+            self.at += 1;
+        }
+        None
+    }
+}
+
+/// FIX017.3：查找真正的 `<img` / `<image>` 标签起点。大小写不敏感，标签名后必须
+/// 是空白、`/`、`>`；`<img-a>`/`<imgxx>`/`<imgx>`/EOF 的 `<img` 均不算图片。
+/// 单次字节扫描，避免旧实现每轮重搜剩余串的 O(N²)。
 fn find_img_tag(haystack: &str) -> Option<usize> {
     let bytes = haystack.as_bytes();
-    let mut from = 0usize;
-    while from < haystack.len() {
-        let img = find_ci(&haystack[from..], "<img").map(|rel| from + rel);
-        let image = find_ci(&haystack[from..], "<image").map(|rel| from + rel);
-        let at = match (img, image) {
-            (Some(a), Some(b)) => a.min(b),
-            (Some(a), None) => a,
-            (None, Some(b)) => b,
-            (None, None) => return None,
-        };
-        // 同一位置优先尝试更长的 <image> 别名；失败后再按 <img 边界判断。
-        if haystack[at..].len() >= 6 && is_tag_boundary(bytes, at + 6) {
-            return Some(at);
+    let mut scan = UnquotedLt::new(haystack);
+    while let Some(i) = scan.next() {
+        let rest = &bytes[i + 1..];
+        // 先试更长的 <image>，再试 <img>；两者都要求边界字符存在（EOF 不算边界）。
+        if rest.len() >= 5
+            && rest[..5].eq_ignore_ascii_case(b"image")
+            && i + 6 < bytes.len()
+            && is_img_tag_boundary(bytes, i + 6)
+        {
+            return Some(i);
         }
-        if haystack[at..].len() >= 4 && is_tag_boundary(bytes, at + 4) {
-            return Some(at);
+        if rest.len() >= 3
+            && rest[..3].eq_ignore_ascii_case(b"img")
+            && i + 4 < bytes.len()
+            && is_img_tag_boundary(bytes, i + 4)
+        {
+            return Some(i);
         }
-        from = at + 1;
     }
     None
+}
+
+/// 图片开标签名边界：空白 / `/` / `>`；`at` 越界（EOF）返回 false。
+fn is_img_tag_boundary(bytes: &[u8], at: usize) -> bool {
+    bytes
+        .get(at)
+        .map(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+        .unwrap_or(false)
 }
 
 /// FIX015.17：查找带标签名边界的闭合标签起点（`</script` / `</style`）。
@@ -154,10 +212,8 @@ enum NonContent {
 /// 避免大量注释/脚本把解析拖成二次方）。
 fn find_non_content(html: &str) -> Option<(usize, NonContent)> {
     let bytes = html.as_bytes();
-    for (i, _) in bytes.iter().enumerate() {
-        if bytes[i] != b'<' {
-            continue;
-        }
+    let mut scan = UnquotedLt::new(html);
+    while let Some(i) = scan.next() {
         let tail = &bytes[i..];
         if tail.starts_with(b"<!--") {
             return Some((i, NonContent::Comment));
@@ -252,34 +308,37 @@ fn split_blocks(chunk: &str) -> Vec<String> {
 /// 把 `<br ...>` 变体整体替换为换行；属性/大小写/自闭合斜杠都吃掉。
 fn replace_br_tags(chunk: &str) -> String {
     let mut out = String::with_capacity(chunk.len());
-    let mut rest = chunk;
-    while let Some(at) = find_ci(rest, "<br") {
-        let after = &rest[at..];
+    let mut scan = UnquotedLt::new(chunk);
+    let mut last = 0usize;
+    while let Some(at) = scan.next() {
+        let after = &chunk[at..];
         let next = after.as_bytes().get(3).copied();
         let is_br = next.is_some_and(|b| b.is_ascii_whitespace() || b == b'/' || b == b'>');
         if !is_br {
-            out.push_str(&rest[..at + 3]);
-            rest = &after[3..];
             continue;
         }
-        out.push_str(&rest[..at]);
+        out.push_str(&chunk[last..at]);
         let Some(end) = find_tag_end(after) else {
             // 未闭合 `<br`：保持原样，交给后续 strip_tags 兜底
-            out.push_str(after);
+            out.push_str(&chunk[last..]);
             return out;
         };
         out.push('\n');
-        rest = &after[end + 1..];
+        last = at + end + 1;
+        scan.at = last;
+        scan.quote = None;
+        scan.in_tag = false;
     }
-    out.push_str(rest);
+    out.push_str(&chunk[last..]);
     out
 }
 
 /// 单次扫描找最近的块级闭合标签起点（FIX014.47：避免每个标签都重新扫全部 11 个前缀）。
 fn find_next_block_tag(chunk: &str) -> Option<usize> {
     let bytes = chunk.as_bytes();
-    for (i, _) in bytes.iter().enumerate() {
-        if bytes[i] != b'<' || bytes.get(i + 1) != Some(&b'/') {
+    let mut scan = UnquotedLt::new(chunk);
+    while let Some(i) = scan.next() {
+        if bytes.get(i + 1) != Some(&b'/') {
             continue;
         }
         let tail = &bytes[i + 2..];
@@ -591,6 +650,88 @@ mod tests {
             parse("<IMG SRC='x.png'>"),
             vec![HtmlPart::Image("x.png".to_string())]
         );
+    }
+
+    #[test]
+    fn find_img_tag_rejects_prefix_boundaries_and_eof() {
+        // FIX017.3：<img-a>/<imgxx>/<imgx>/EOF 不是图片；<image> 是合法别名。
+        assert_eq!(find_img_tag("<img src='x'>"), Some(0));
+        assert_eq!(find_img_tag("<image src='x'>"), Some(0));
+        assert_eq!(find_img_tag("<IMG SRC='x'>"), Some(0));
+        assert_eq!(find_img_tag("<image/>"), Some(0));
+        assert_eq!(find_img_tag("<img/>"), Some(0));
+        assert_eq!(find_img_tag("<img-a src='x'>"), None);
+        assert_eq!(find_img_tag("<imgxx src='x'>"), None);
+        assert_eq!(find_img_tag("<imgx>"), None);
+        assert_eq!(find_img_tag("<img"), None);
+        assert_eq!(find_img_tag("<image"), None);
+    }
+
+    #[test]
+    fn parse_does_not_create_image_for_img_prefix_custom_tag() {
+        // FIX017.3：<img-a>/<imgxx> 带 src 也不得产出图片段。
+        assert_eq!(
+            parse("<p>甲<img-a src='x.png'>乙</p>"),
+            vec![HtmlPart::Text("甲乙".to_string())]
+        );
+        assert_eq!(
+            parse("<p>甲<imgxx src='x.png'>乙</p>"),
+            vec![HtmlPart::Text("甲乙".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_ignores_tag_like_text_inside_quoted_attributes() {
+        // FIX017.4：属性值里的 <img>/</p>/<br>/<script> 不是标签。
+        assert_eq!(
+            parse("<p title=\"<img src='x.png'>\">正文</p>"),
+            vec![HtmlPart::Text("正文".to_string())]
+        );
+        assert_eq!(
+            parse("<p title=\"</p>\">甲</p>"),
+            vec![HtmlPart::Text("甲".to_string())]
+        );
+        assert_eq!(
+            parse("<p title=\"<br>\">甲</p>"),
+            vec![HtmlPart::Text("甲".to_string())]
+        );
+        assert_eq!(
+            parse("<p title=\"<script>\">甲</p>"),
+            vec![HtmlPart::Text("甲".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_bare_lt_does_not_swallow_following_tags() {
+        // FIX017.4：正文裸 `<`（如 1 < 2）不是标签起点，后续图片/脚本仍要被识别。
+        let parts = parse("<p>1 < 2 <img src='x.png'></p>");
+        assert!(parts
+            .iter()
+            .any(|part| matches!(part, HtmlPart::Image(src) if src == "x.png")));
+        let parts = parse("1 < 2 <script>alert(1)</script>甲");
+        assert!(!parts.iter().any(|part| matches!(
+            part,
+            HtmlPart::Text(text) if text.contains("alert")
+        )));
+        assert!(parts
+            .iter()
+            .any(|part| matches!(part, HtmlPart::Text(text) if text.contains('甲'))));
+    }
+
+    #[test]
+    fn parse_unclosed_quote_does_not_misread_following_img() {
+        // FIX017.4：未闭合引号内的 <img> 不能产出图段（宁可当文本，不误贴图）。
+        let parts = parse("<p title=\"<img src='x.png'>正文");
+        assert!(!parts.iter().any(|part| matches!(part, HtmlPart::Image(_))));
+    }
+
+    #[test]
+    fn parse_text_apostrophe_does_not_swallow_following_img() {
+        // FIX017.4：正文里的单引号不是属性引号，不能把后续 <img> 吞掉。
+        let parts = parse("<p>don't <img src='x.png'></p>");
+        assert!(parts
+            .iter()
+            .any(|part| matches!(part, HtmlPart::Image(src) if src == "x.png")));
     }
 
     #[test]

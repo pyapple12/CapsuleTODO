@@ -11,6 +11,15 @@ use crate::bubble::BubbleError;
 /// CF_HDROP 源文件字节上限（防呆闸口：读盘前按元数据长度拦截，PL024.8b，可调）
 pub const MAX_SOURCE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
+/// FIX017.5：PNG/CF_DIB 分支的原始/编码字节上限（对齐文件来源上限，防无界写盘）。
+pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+/// FIX017.5：剪贴板 PNG/DIB 载荷长度闸门（测试可直测，不分配大缓冲）。
+#[cfg(any(target_os = "windows", test))]
+fn clipboard_len_within_limit(len: usize) -> bool {
+    len <= MAX_CLIPBOARD_IMAGE_BYTES
+}
+
 /// 认可的图像文件扩展名（CF_HDROP 文件分支；表驱动 + 小写比对，PL024.8b）
 const IMAGE_FILE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
@@ -137,17 +146,48 @@ fn preview_from_image(img: &image::DynamicImage, byte_len: usize) -> Option<Vec<
     Some(out)
 }
 
-/// 气泡捕获专用：一次完整解码同时完成可用性校验与预览生成（FIX016.2）。
+// FIX017.12：只在 `prepare_image` 内计数解码次数（测试用，线程本地避免并发串扰）。
+#[cfg(test)]
+std::thread_local! {
+    static PREPARE_DECODE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// FIX017.12：统一解码入口；测试注入计数，生产直通 image crate。
+fn decode_for_prepare(bytes: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
+    #[cfg(test)]
+    PREPARE_DECODE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    image::load_from_memory(bytes)
+}
+
+/// FIX017.12：测试专用——清零本线程解码计数。
+#[cfg(test)]
+fn reset_prepare_decode_calls() {
+    PREPARE_DECODE_CALLS.with(|calls| calls.set(0));
+}
+
+/// FIX017.12：测试专用——读取本线程解码计数。
+#[cfg(test)]
+fn prepare_decode_calls() -> usize {
+    PREPARE_DECODE_CALLS.with(std::cell::Cell::get)
+}
+
+/// FIX017.12：一次解码同时完成可用性校验与预览生成（note/HTML/远端图统一复用）。
 /// 校验口径与 `validate_image_bytes` 一致（格式 + PNG 结构 + 完整解码）。
-pub(crate) fn prepare_captured_image(bytes: &[u8]) -> Result<Option<Vec<u8>>, BubbleError> {
+pub(crate) fn prepare_image(bytes: &[u8]) -> Result<Option<Vec<u8>>, BubbleError> {
     let Some(ext) = image_extension(bytes) else {
         return Err(BubbleError::UnsupportedFormat);
     };
     if ext == "png" && !png_structure_usable(bytes) {
         return Err(BubbleError::UnsupportedFormat);
     }
-    let img = image::load_from_memory(bytes).map_err(|_| BubbleError::UnsupportedFormat)?;
+    let img = decode_for_prepare(bytes).map_err(|_| BubbleError::UnsupportedFormat)?;
     Ok(preview_from_image(&img, bytes.len()))
+}
+
+/// 气泡捕获专用：一次完整解码同时完成可用性校验与预览生成（FIX016.2）。
+/// FIX017.12 起与 note/HTML/远端图共用 `prepare_image`。
+pub(crate) fn prepare_captured_image(bytes: &[u8]) -> Result<Option<Vec<u8>>, BubbleError> {
+    prepare_image(bytes)
 }
 
 /// 构造 CF_HDROP 数据块（DROPFILES 头 + 宽字符路径表 + 双 NUL 终止，PL025 文件图复制回）：
@@ -632,15 +672,19 @@ mod win {
         let png = if has_png {
             // FIX014.45：PNG 格式存在不代表字节可用（空/截断/错标）；坏字节必须
             // 继续回退 CF_DIB / CF_HDROP，不能提前返回一个必然校验失败的载荷。
-            copy_format(png_fmt).filter(|bytes| super::png_payload_is_valid(bytes))
+            copy_format(png_fmt).filter(|bytes| {
+                super::clipboard_len_within_limit(bytes.len()) && super::png_payload_is_valid(bytes)
+            })
         } else {
             None
         };
         if has_png && png.is_none() {
-            crate::diag::warn_diag("剪贴板图片读取：PNG 取数失败或字节非法，回退 CF_DIB/文件");
+            crate::diag::warn_diag(
+                "剪贴板图片读取：PNG 取数失败、字节非法或超上限，回退 CF_DIB/文件",
+            );
         }
         let dib = if png.is_none() {
-            copy_format(CF_DIB)
+            copy_format(CF_DIB).filter(|bytes| super::clipboard_len_within_limit(bytes.len()))
         } else {
             None
         };
@@ -659,7 +703,7 @@ mod win {
         }
         if let Some(dib) = dib {
             match super::encode_png_from_dib(&dib) {
-                Ok(png) => {
+                Ok(png) if super::clipboard_len_within_limit(png.len()) => {
                     return Some(super::CapturedImage {
                         bytes: png,
                         file_name: None,
@@ -668,6 +712,9 @@ mod win {
                 Err(err) => {
                     crate::diag::warn_diag(&format!("剪贴板图片读取：CF_DIB 编码失败（{err}）"));
                     // DIB 失败后仍继续走文件引用，不能因中间格式失败吞掉最后一级。
+                }
+                Ok(_) => {
+                    crate::diag::warn_diag("剪贴板图片读取：CF_DIB 编码结果超上限，回退文件引用");
                 }
             }
         }
@@ -1126,6 +1173,14 @@ mod tests {
         assert!(!source_file_within_limit(MAX_SOURCE_FILE_BYTES + 1));
     }
 
+    #[test]
+    fn clipboard_payload_limit_boundary() {
+        // FIX017.5 / N-4：PNG/CF_DIB 原始与编码结果 20MB 边界。
+        assert!(clipboard_len_within_limit(0));
+        assert!(clipboard_len_within_limit(MAX_CLIPBOARD_IMAGE_BYTES));
+        assert!(!clipboard_len_within_limit(MAX_CLIPBOARD_IMAGE_BYTES + 1));
+    }
+
     // —— PL025 格式嗅探 + CF_HDROP 数据块（纯逻辑面）——
 
     #[test]
@@ -1142,14 +1197,17 @@ mod tests {
 
     #[test]
     fn prepare_captured_image_validates_once_and_small_has_no_preview() {
-        // FIX016.2：捕获路径一次解码；小图不生成预览，坏字节仍严格拒绝。
+        // FIX016.2 / FIX017.12：捕获路径一次解码；小图不生成预览，坏字节仍严格拒绝。
+        reset_prepare_decode_calls();
         assert!(prepare_captured_image(&fixture_png())
             .expect("合法小图必须通过")
             .is_none());
+        assert_eq!(prepare_decode_calls(), 1, "合法图只允许一次完整解码");
         assert!(matches!(
             prepare_captured_image(b"<html>not an image</html>"),
             Err(BubbleError::UnsupportedFormat)
         ));
+        assert_eq!(prepare_decode_calls(), 1, "格式嗅探失败不得解码");
     }
 
     #[test]
@@ -1163,9 +1221,11 @@ mod tests {
         ))
         .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
         .expect("大图夹具编码必须成功");
+        reset_prepare_decode_calls();
         let preview = prepare_captured_image(&out)
             .expect("合法大图必须通过")
             .expect("大图必须生成预览");
+        assert_eq!(prepare_decode_calls(), 1, "大图也只允许一次完整解码");
         let dims = image::ImageReader::new(std::io::Cursor::new(&preview))
             .with_guessed_format()
             .expect("预览格式必须可猜")

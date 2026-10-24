@@ -78,6 +78,25 @@ describe("useBoardRead 贴底状态（FIX015.7）", () => {
     expect(scroller.scrollTop).toBe(320);
   });
 
+  it("RO 回调在 pin 覆盖期内结算不回底", () => {
+    // FIX017.11：覆盖期应由 RO 按用户当前位置结算，而不是等 300ms 定时器。
+    vi.useFakeTimers();
+    setGeometry(scroller, 100, 300);
+    scroller.scrollTop = 200;
+    kit = useBoardRead(scroller);
+    kit.setPinned(true);
+
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event("scroll"));
+    setGeometry(scroller, 100, 400);
+    CapturingResizeObserver.latest?.callback(
+      [],
+      CapturingResizeObserver.latest as unknown as ResizeObserver,
+    );
+
+    expect(scroller.scrollTop).toBe(0);
+  });
+
   it("pin 覆盖期结束后按用户当前滚动位置重算", () => {
     vi.useFakeTimers();
     setGeometry(scroller, 100, 300);

@@ -116,6 +116,13 @@ describe("mock 命令覆盖（FIX014.27）", () => {
     await expect(
       mockInvoke("settings_set_bubble_hotkey", { combo: "Ctrl+Ctrl+A" }),
     ).rejects.toBeTruthy();
+    // FIX017.10：CONTROL/SUPER 别名与 Rust parse 对齐。
+    expect(await mockInvoke("settings_set_bubble_hotkey", { combo: "Control+Alt+C" })).toBe(
+      "Ctrl+Alt+C",
+    );
+    expect(await mockInvoke("settings_set_bubble_hotkey", { combo: "Super+Shift+F12" })).toBe(
+      "Shift+Win+F12",
+    );
     await mockInvoke("settings_set_max_bubbles", { value: 0 });
     expect(await mockInvoke("settings_get_max_bubbles")).toBe(1);
   });
@@ -139,5 +146,96 @@ describe("mock 命令覆盖（FIX014.27）", () => {
     expect(out.outcome.status).toBe("image");
     expect(out.outcome.blocks.filter((block) => block.kind === "Image")).toHaveLength(2);
     expect(out.pending).toEqual([]);
+  });
+
+  it("HTML 图片判定与共享 helper 一致（FIX017.3）", async () => {
+    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock img tags" });
+    const saved = await mockInvoke<Array<{ id: number }>>("note_blocks_save", {
+      todoId: item.id,
+      blocks: [{ id: 0, kind: "Text", text: "正文" }],
+    });
+
+    const fake = await mockInvoke<{ outcome: { status: string } }>("note_paste_html", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "",
+      after: "",
+      html: '<img-foo src="a">',
+    });
+    expect(fake.outcome.status).toBe("no_image");
+
+    const alias = await mockInvoke<{
+      outcome: { status: string; blocks: Array<{ kind: string }> };
+    }>("note_paste_html", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "",
+      after: "",
+      html: '<IMAGE SRC="a">',
+    });
+    expect(alias.outcome.status).toBe("image");
+    expect(alias.outcome.blocks.filter((block) => block.kind === "Image")).toHaveLength(1);
+  });
+
+  it("mock 空 before 顶替原块且末图补空文本（FIX017.10）", async () => {
+    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock tail" });
+    const saved = await mockInvoke<Array<{ id: number }>>("note_blocks_save", {
+      todoId: item.id,
+      blocks: [{ id: 0, kind: "Text", text: "正文" }],
+    });
+    const out = await mockInvoke<{
+      blocks: Array<{ id: number; kind: string; text: string }>;
+    }>("note_paste_image", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "",
+      after: "",
+    });
+    expect(out.blocks[0]).toMatchObject({ id: saved[0].id, kind: "Image" });
+    expect(out.blocks[out.blocks.length - 1]).toMatchObject({ kind: "Text", text: "" });
+  });
+
+  it("mock 块保存拒绝重复 id、支持删图撤销与深拷贝（FIX017.10）", async () => {
+    const item = await mockInvoke<{ id: number }>("todo_add", { text: "mock blocks" });
+    const saved = await mockInvoke<Array<{ id: number }>>("note_blocks_save", {
+      todoId: item.id,
+      blocks: [{ id: 0, kind: "Text", text: "正文" }],
+    });
+    await expect(
+      mockInvoke("note_blocks_save", {
+        todoId: item.id,
+        blocks: [
+          { id: saved[0].id, kind: "Text", text: "甲" },
+          { id: saved[0].id, kind: "Text", text: "乙" },
+        ],
+      }),
+    ).rejects.toBeTruthy();
+
+    const pasted = await mockInvoke<{
+      blocks: Array<{ id: number; kind: string; text: string }>;
+    }>("note_paste_image", {
+      todoId: item.id,
+      blockId: saved[0].id,
+      before: "前",
+      after: "后",
+    });
+    const image = pasted.blocks.find((block) => block.kind === "Image");
+    expect(image).toBeTruthy();
+
+    // 删图（软删除）→ 撤销（旧 id 复活）
+    const without = pasted.blocks.filter((block) => block.kind !== "Image");
+    await mockInvoke("note_blocks_save", { todoId: item.id, blocks: without });
+    const revived = await mockInvoke<Array<{ id: number; kind: string }>>("note_blocks_save", {
+      todoId: item.id,
+      blocks: pasted.blocks,
+    });
+    expect(revived.some((block) => block.id === image!.id && block.kind === "Image")).toBe(true);
+
+    // 返回深拷贝：改返回值不得污染 mock 状态
+    pasted.blocks[0].text = "被改坏";
+    const listed = await mockInvoke<Array<{ text: string }>>("note_blocks_list", {
+      todoId: item.id,
+    });
+    expect(listed[0].text).not.toBe("被改坏");
   });
 });

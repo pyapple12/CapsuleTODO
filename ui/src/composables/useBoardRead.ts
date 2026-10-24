@@ -204,6 +204,8 @@ export function useBoardRead(
    * RO 回调在 **paint 之前**执行 ⇒ 贴底补偿**零可见帧**（治"拉回旧底再弹回"）。
    */
   const ro = new ResizeObserver(() => {
+    // FIX017.11：先按当前 scrollTop 结算覆盖期（用户上滚后 RO 不得再按旧 pinned 拉底）。
+    releasePinOverride();
     const sh = el.scrollHeight;
     if (!el.clientHeight || !sh) return;
     const scrollable = sh > el.clientHeight + 1;
@@ -214,7 +216,6 @@ export function useBoardRead(
       }
       el.scrollTop = sh;
     }
-    releasePinOverride(); // 本批增长已结算 ⇒ 交回滚动判定并按当前 scrollTop 重算
   });
   /** 重绑观察目标（**增量**：只 observe 新增、unobserve 移除——整体 disconnect 会丢同帧回调 ✗） */
   const observed = new Set<Element>();

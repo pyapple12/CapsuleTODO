@@ -6,6 +6,8 @@
 // 内存种子沿 design/assets/js/state.js 实验场定案（8 清单含归档 + 5 气泡 + 长文白板），
 // 使冒烟断言可与实验场形态互相印证。
 
+import { htmlHasImage, htmlImageCount } from "../composables/htmlImage";
+
 /** 待办条目（镜像 ui/types.ts TodoItem：PL010 三字段扩容后契约对齐；PL027 退役 note） */
 interface MockTodo {
   id: number;
@@ -25,6 +27,8 @@ interface MockNoteBlock {
   kind: "Text" | "Image";
   text: string;
   image_path: string | null;
+  /** 软删除墓碑（FIX017.10）：图块删除后保留行，Ctrl+Z 可按 id 复活 */
+  deleted_at?: number | null;
 }
 
 /** 详情图块 mock 图（data URL 直用，前端 resolveImageSrc 放行 data: 前缀） */
@@ -117,12 +121,21 @@ function splitLines(text: string): MockNoteBlock[] {
   }));
 }
 
+/** 当前条目的全部块（含软删除墓碑；仅保存/撤销内部使用） */
+function allNoteBlocks(todoId: number): MockNoteBlock[] {
+  return state.noteBlocks.get(todoId) ?? [];
+}
+
+/** 当前条目的活跃块（过滤墓碑；列表/粘贴/重排/红点使用） */
+function activeNoteBlocks(todoId: number): MockNoteBlock[] {
+  return allNoteBlocks(todoId).filter((block) => !block.deleted_at);
+}
+
 /** has_note 重算（镜像 Rust：任一块非空——图块或 trim 非空文本块） */
 function recomputeHasNote(todoId: number): void {
   const item = state.todos.find((x) => x.id === todoId);
   if (!item) return;
-  const list = state.noteBlocks.get(todoId) ?? [];
-  item.has_note = list.some((b) => b.kind === "Image" || b.text.trim() !== "");
+  item.has_note = activeNoteBlocks(todoId).some((b) => b.kind === "Image" || b.text.trim() !== "");
 }
 
 /** 种子装载（装载时快照 Date.now，断言可复现） */
@@ -254,7 +267,7 @@ const handlers: Record<string, CommandHandler> = {
   note_blocks_list: (args) => {
     const todoId = Number(args.todoId);
     // FIX015.35：Rust `note_blocks` 对不存在 todo 返回空数组，mock 不再抛错。
-    return (state.noteBlocks.get(todoId) ?? []).map((block) => ({ ...block }));
+    return activeNoteBlocks(todoId).map((block) => ({ ...block }));
   },
   note_blocks_save: (args) => {
     const todoId = Number(args.todoId);
@@ -266,126 +279,188 @@ const handlers: Record<string, CommandHandler> = {
     }>;
     const validationError = validateMockNoteBlocks(input);
     if (validationError) throw validationError;
-    const old = state.noteBlocks.get(todoId) ?? [];
+    const old = allNoteBlocks(todoId);
     const seen = new Set<number>();
     for (const block of input) {
-      if (block.id > 0 && !seen.add(block.id)) throw `详情块 id 重复：${block.id}`;
       if (block.id > 0) {
-        const owner = state.noteBlocks;
-        const ownerTodo = [...owner.entries()].find(([, list]) =>
+        if (seen.has(block.id)) throw `详情块 id 重复：${block.id}`;
+        seen.add(block.id);
+        const ownerTodo = [...state.noteBlocks.entries()].find(([, list]) =>
           list.some((item) => item.id === block.id),
         )?.[0];
-        if (ownerTodo != null && ownerTodo !== todoId) throw `详情块 id 属于其他条目：${block.id}`;
+        if (ownerTodo != null && ownerTodo !== todoId) {
+          throw `详情块 id 属于其他条目：${block.id}`;
+        }
       }
       if (block.kind === "Image" && block.id <= 0) {
         throw "图块必须来自已落盘图块（id > 0）";
       }
       if (block.kind === "Image") {
         const prev = old.find((item) => item.id === block.id);
-        if (!prev || prev.kind !== "Image") throw `图块 id 不是有效图块：${block.id}`;
+        if (!prev || prev.kind !== "Image" || !prev.image_path) {
+          throw `图块 id 不是有效图块：${block.id}`;
+        }
       }
     }
+    const keep = new Set(input.filter((b) => b.id > 0).map((b) => b.id));
+    const saved: MockNoteBlock[] = [];
+    // 图块删除先软删除保留行；文本块直接删除（镜像 Rust set_note_blocks）。
+    for (const prev of old) {
+      if (keep.has(prev.id)) continue;
+      if (prev.kind === "Image") {
+        saved.push({ ...prev, deleted_at: prev.deleted_at ?? Date.now() });
+      }
+    }
+    for (const block of input) {
+      const prev = block.id > 0 ? old.find((item) => item.id === block.id) : undefined;
+      if (block.kind === "Image") {
+        saved.push({
+          ...prev!,
+          text: "",
+          image_path: prev!.image_path,
+          deleted_at: null,
+        });
+        continue;
+      }
+      if (prev?.kind === "Image") {
+        // 本地图块不能原地降级为文本（镜像 Rust FIX015.2）。
+        throw `本地图块不能原地降级为文本块：${block.id}`;
+      }
+      saved.push({
+        id: prev ? prev.id : ++state.noteBlockSeq,
+        kind: "Text",
+        text: block.text,
+        image_path: null,
+        deleted_at: null,
+      });
+    }
     // PATCH002.8：空块规则是"显示/保存点"规则（前端归一化）——DB 侧不校验（编辑期允许中间态）
-    const saved: MockNoteBlock[] = input.map((b) => {
-      const prev = old.find((x) => x.id === b.id);
-      return {
-        id: b.id > 0 ? b.id : ++state.noteBlockSeq,
-        kind: b.kind,
-        text: b.text,
-        image_path: b.kind === "Image" ? (prev?.image_path ?? MOCK_NOTE_IMAGE) : null,
-      };
-    });
     state.noteBlocks.set(todoId, saved);
     recomputeHasNote(todoId);
-    return saved.map((block) => ({ ...block }));
+    return activeNoteBlocks(todoId).map((block) => ({ ...block }));
   },
-  note_blocks_purge_deleted: (): void => {
-    // DEV mock 无真实文件引用；软删除收口为 no-op
+  note_blocks_purge_deleted: (args): void => {
+    const todoId = Number(args.todoId);
+    const list = allNoteBlocks(todoId).filter((block) => !block.deleted_at);
+    state.noteBlocks.set(todoId, list);
+    recomputeHasNote(todoId);
   },
   note_paste_image: (args) => {
     const todoId = Number(args.todoId);
     const blockId = Number(args.blockId);
-    const list = state.noteBlocks.get(todoId) ?? [];
+    const list = activeNoteBlocks(todoId);
     const idx = list.findIndex((b) => b.id === blockId);
     if (idx < 0) throw `详情块不存在：${blockId}`;
     const before = String(args.before ?? "");
     const after = String(args.after ?? "");
+    const keepBefore = before.trim() !== "";
     const keepAfter = after.trim() !== "";
     const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
-    next[idx].text = before;
-    next.splice(idx + 1, 0, {
-      id: ++state.noteBlockSeq,
-      kind: "Image",
-      text: "",
-      image_path: MOCK_NOTE_IMAGE,
-    });
+    if (!keepBefore) {
+      // 镜像 Rust：上段为空 → 原块顶替为图块（不再留一个空文本块）。
+      next[idx] = {
+        id: next[idx].id,
+        kind: "Image",
+        text: "",
+        image_path: MOCK_NOTE_IMAGE,
+        deleted_at: null,
+      };
+    } else {
+      next[idx].text = before;
+      next.splice(idx + 1, 0, {
+        id: ++state.noteBlockSeq,
+        kind: "Image",
+        text: "",
+        image_path: MOCK_NOTE_IMAGE,
+        deleted_at: null,
+      });
+    }
+    const imageIdx = keepBefore ? idx + 1 : idx;
     if (keepAfter) {
-      next.splice(idx + 2, 0, {
+      next.splice(imageIdx + 1, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
         text: after,
         image_path: null,
+        deleted_at: null,
       });
-    } else if (!next.some((block) => block.kind === "Text")) {
-      // 镜像 Rust 末图补空文本块：不能因 mock 把合法图粘贴误拒。
+    } else if (next[next.length - 1]?.kind === "Image") {
+      // 镜像 Rust 末图补空文本块：图成为最后一块时必须可继续输入。
       next.push({
         id: ++state.noteBlockSeq,
         kind: "Text",
         text: "",
         image_path: null,
+        deleted_at: null,
       });
     }
     const validationError = validateMockNoteBlocks(next);
     if (validationError) throw validationError;
-    state.noteBlocks.set(todoId, next);
+    const tombstones = allNoteBlocks(todoId).filter((block) => block.deleted_at);
+    state.noteBlocks.set(todoId, [...tombstones, ...next]);
     recomputeHasNote(todoId);
-    return { status: "image", blocks: next };
+    // FIX017.10：返回深拷贝，不把内部数组交给调用方。
+    return { status: "image", blocks: next.map((block) => ({ ...block })) };
   },
   note_paste_html: (args) => {
     // FIX014.27：DEV 最小镜像——只处理单图 + 前后文本；远端图不入 mock 下载链。
     const todoId = Number(args.todoId);
     const blockId = Number(args.blockId);
     const html = String(args.html ?? "");
-    const list = state.noteBlocks.get(todoId) ?? [];
+    const list = activeNoteBlocks(todoId);
     const idx = list.findIndex((b) => b.id === blockId);
     if (idx < 0) throw `详情块不存在：${blockId}`;
-    if (!html.toLowerCase().includes("<img")) {
+    if (!htmlHasImage(html)) {
       return { outcome: { status: "no_image" }, pending: [] };
     }
     const before = String(args.before ?? "");
     const after = String(args.after ?? "");
+    const keepBefore = before.trim() !== "";
     const keepAfter = after.trim() !== "";
-    const imageCount = (html.match(/<img\b/gi) ?? []).length || 1;
+    const imageCount = htmlImageCount(html);
     const next: MockNoteBlock[] = list.map((block) => ({ ...block }));
-    next[idx].text = before;
-    for (let i = 0; i < imageCount; i += 1) {
-      next.splice(idx + 1 + i, 0, {
-        id: ++state.noteBlockSeq,
-        kind: "Image",
-        text: "",
-        image_path: MOCK_NOTE_IMAGE,
-      });
+    const images: MockNoteBlock[] = Array.from({ length: imageCount }, () => ({
+      id: ++state.noteBlockSeq,
+      kind: "Image" as const,
+      text: "",
+      image_path: MOCK_NOTE_IMAGE,
+      deleted_at: null,
+    }));
+    if (!keepBefore) {
+      // 上段为空：首图顶替原块，其余图顺延。
+      next[idx] = { ...images[0], id: next[idx].id };
+      next.splice(idx + 1, 0, ...images.slice(1));
+    } else {
+      next[idx].text = before;
+      next.splice(idx + 1, 0, ...images);
     }
+    const cursor = (keepBefore ? idx + 1 : idx) + imageCount;
     if (keepAfter) {
-      next.splice(idx + 1 + imageCount, 0, {
+      next.splice(cursor, 0, {
         id: ++state.noteBlockSeq,
         kind: "Text",
         text: after,
         image_path: null,
+        deleted_at: null,
       });
-    } else if (!next.some((block) => block.kind === "Text")) {
+    } else if (next[next.length - 1]?.kind === "Image") {
       next.push({
         id: ++state.noteBlockSeq,
         kind: "Text",
         text: "",
         image_path: null,
+        deleted_at: null,
       });
     }
     const validationError = validateMockNoteBlocks(next);
     if (validationError) throw validationError;
-    state.noteBlocks.set(todoId, next);
+    const tombstones = allNoteBlocks(todoId).filter((block) => block.deleted_at);
+    state.noteBlocks.set(todoId, [...tombstones, ...next]);
     recomputeHasNote(todoId);
-    return { outcome: { status: "image", blocks: next }, pending: [] };
+    return {
+      outcome: { status: "image", blocks: next.map((block) => ({ ...block })) },
+      pending: [],
+    };
   },
   note_copy_selection: () => null,
   note_fetch_pending_images: () => null,
@@ -398,11 +473,12 @@ const handlers: Record<string, CommandHandler> = {
   note_reorder: (args) => {
     const todoId = Number(args.todoId);
     const ids = (args.ids ?? []) as number[];
-    const list = state.noteBlocks.get(todoId) ?? [];
+    const list = activeNoteBlocks(todoId);
     const byId = new Map(list.map((b) => [b.id, b]));
     const reordered = ids.map((id) => byId.get(id)).filter((b): b is MockNoteBlock => b != null);
     if (reordered.length !== list.length) throw "重排 id 集合不合法：详情块集";
-    state.noteBlocks.set(todoId, reordered);
+    const tombstones = allNoteBlocks(todoId).filter((block) => block.deleted_at);
+    state.noteBlocks.set(todoId, [...tombstones, ...reordered]);
     return null;
   },
   note_open_image: () => null,
@@ -563,13 +639,21 @@ const handlers: Record<string, CommandHandler> = {
   settings_get_bubble_hotkey: () => MOCK_BUBBLE_HOTKEY,
   settings_set_bubble_hotkey: (args) => {
     const combo = String(args.combo ?? "");
+    const aliases = new Map([
+      ["CTRL", "CTRL"],
+      ["CONTROL", "CTRL"],
+      ["ALT", "ALT"],
+      ["SHIFT", "SHIFT"],
+      ["WIN", "WIN"],
+      ["SUPER", "WIN"],
+    ]);
     const mods = ["CTRL", "ALT", "SHIFT", "WIN"];
     const parts = combo
       .toUpperCase()
       .split("+")
       .map((p) => p.trim());
-    const modParts = parts.filter((p) => mods.includes(p));
-    const main = parts.filter((p) => !mods.includes(p));
+    const modParts = parts.filter((p) => aliases.has(p)).map((p) => aliases.get(p) as string);
+    const main = parts.filter((p) => !aliases.has(p));
     if (new Set(modParts).size !== modParts.length) throw `热键组合含重复修饰键：${combo}`;
     const modOk = modParts.length >= 1;
     const mainOk =
@@ -579,7 +663,9 @@ const handlers: Record<string, CommandHandler> = {
     // FIX016.19：只排序修饰键，主键单独追加；主键不能参与 mods.indexOf 排序。
     const ordered = [...mods.filter((mod) => modParts.includes(mod)), ...main];
     MOCK_BUBBLE_HOTKEY = ordered
-      .map((p) => (p === "CTRL" ? "Ctrl" : p.charAt(0) + p.slice(1).toLowerCase()))
+      .map((p) =>
+        p === "CTRL" ? "Ctrl" : p === "WIN" ? "Win" : p.charAt(0) + p.slice(1).toLowerCase(),
+      )
       .join("+");
     return MOCK_BUBBLE_HOTKEY;
   },

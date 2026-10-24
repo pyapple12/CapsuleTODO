@@ -57,6 +57,7 @@ pub fn wait_clipboard_capture(
     wait_clipboard_capture_with_sequence(
         before_text,
         before_image,
+        None,
         timeout_ms,
         step_ms,
         now_ms,
@@ -66,12 +67,21 @@ pub fn wait_clipboard_capture(
     )
 }
 
-/// FIX016.9：带剪贴板序号的捕获轮询。序号未变时不重复完整读图/读文件；
-/// Windows 用 `GetClipboardSequenceNumber`，无序号平台回落旧语义。
+/// 剪贴板序号 0 视为不可用：Windows `GetClipboardSequenceNumber` 失败返回 0，
+/// 合法序号从 1 开始；映射为 `None` 后由等待循环按“无法判断”处理。
+#[cfg(any(target_os = "windows", test))]
+fn nonzero_sequence(raw: u32) -> Option<u32> {
+    (raw != 0).then_some(raw)
+}
+
+/// FIX017.1：带剪贴板序号的捕获轮询。`baseline_sequence` 由调用方在合成
+/// Ctrl+C **之前**读取；首拍强制读一次图，之后序号未变不重复读图。
+/// 读图失败不推进序号，下一拍重试；超时仅在序号未变/未知时回旧快照。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wait_clipboard_capture_with_sequence(
     before_text: Option<&str>,
     before_image: Option<&[u8]>,
+    baseline_sequence: Option<u32>,
     timeout_ms: u64,
     step_ms: u64,
     mut now_ms: impl FnMut() -> u64,
@@ -80,22 +90,30 @@ pub(crate) fn wait_clipboard_capture_with_sequence(
     mut read_image: impl FnMut() -> Option<CapturedImage>,
 ) -> Option<CaptureHit> {
     let deadline = now_ms() + timeout_ms;
-    let mut last_sequence = read_sequence();
+    let mut last_sequence = baseline_sequence;
+    let mut need_first_read = true;
+    let mut sequence_changed = false;
     loop {
         let sequence = read_sequence();
-        let image_changed = match (last_sequence, sequence) {
-            (None, _) | (_, None) => true,
-            (Some(prev), Some(curr)) => prev != curr,
-        };
-        last_sequence = sequence;
-        if image_changed {
+        let differs = matches!(
+            (last_sequence, sequence),
+            (Some(prev), Some(curr)) if prev != curr
+        );
+        if differs {
+            sequence_changed = true;
+        }
+        if need_first_read || differs || last_sequence.is_none() || sequence.is_none() {
             if let Some(img) = read_image() {
+                last_sequence = sequence;
+                need_first_read = false;
                 if before_image != Some(img.bytes.as_slice()) {
                     return Some(CaptureHit::Image {
                         bytes: img.bytes,
                         file_name: img.file_name,
                     });
                 }
+            } else {
+                need_first_read = false;
             }
         }
         if let Some(text) = read_text() {
@@ -105,7 +123,11 @@ pub(crate) fn wait_clipboard_capture_with_sequence(
             }
         }
         if now_ms() >= deadline {
-            // 兜底：无新内容但快照已有图 → 收快照图（截图场景）；快照图无来源名
+            // 序号变过但未读到新图 → 不回旧快照（避免错误“旧图”气泡）；
+            // 序号未变/未知才保留截图场景的兜底。
+            if sequence_changed {
+                return None;
+            }
             return before_image.map(|b| CaptureHit::Image {
                 bytes: b.to_vec(),
                 file_name: None,
@@ -176,10 +198,11 @@ mod win {
         }
     }
 
-    /// FIX016.9：剪贴板内容序号（每次 SetClipboardData/EmptyClipboard 递增）；
-    /// 轮询只比这个 u32，不复制图片字节。
+    /// FIX017.1：剪贴板内容序号（每次 SetClipboardData/EmptyClipboard 递增）；
+    /// 轮询只比这个 u32，不复制图片字节。0 = API 失败（合法序号从 1 开始），
+    /// 映射 `None` 交等待循环按“无法判断”处理。
     pub fn clipboard_sequence() -> Option<u32> {
-        Some(unsafe { GetClipboardSequenceNumber() })
+        super::nonzero_sequence(unsafe { GetClipboardSequenceNumber() })
     }
 
     #[link(name = "user32")]
@@ -363,13 +386,14 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_sequence_skips_repeated_image_reads() {
-        // FIX016.9：序号不变时不得每轮复制整图。
+    fn clipboard_sequence_reads_at_most_once_when_unchanged() {
+        // FIX017.1：首拍强制读一次；序号不变后不再重复读图。
         let mut clock = Clock(0);
         let mut reads = 0u32;
         let got = super::wait_clipboard_capture_with_sequence(
             None,
             None,
+            Some(7),
             100,
             0,
             || clock.tick(50),
@@ -377,21 +401,22 @@ mod tests {
             || None,
             || {
                 reads += 1;
-                Some(cap(vec![1, 2, 3]))
+                None
             },
         );
         assert!(got.is_none());
-        assert_eq!(reads, 0, "序号未变化时不应调用完整图片读取");
+        assert_eq!(reads, 1, "首拍读一次，序号不变后不得重复");
     }
 
     #[test]
     fn clipboard_sequence_change_reads_image_once() {
         let mut clock = Clock(0);
-        let mut sequence = 0u32;
+        let mut sequence = 1u32;
         let mut reads = 0u32;
         let got = super::wait_clipboard_capture_with_sequence(
             None,
             None,
+            Some(0),
             100,
             0,
             || clock.tick(50),
@@ -408,6 +433,84 @@ mod tests {
         );
         assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![9]));
         assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn baseline_equal_sequence_still_reads_new_image() {
+        // FIX017.1：即使基线已经等于当前序号，首拍也必须读一次图，
+        // 保证“基线已是新序号但确有新图”不会漏捕。
+        let mut clock = Clock(0);
+        let before = vec![1u8];
+        let mut reads = 0u32;
+        let got = super::wait_clipboard_capture_with_sequence(
+            None,
+            Some(&before),
+            Some(7),
+            100,
+            0,
+            || clock.tick(50),
+            || Some(7),
+            || None,
+            || {
+                reads += 1;
+                Some(cap(vec![2]))
+            },
+        );
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![2]));
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn sequence_change_read_failure_retries_next_tick() {
+        // FIX017.1：序号变化当拍读图失败，不推进 last_sequence，下一拍重试。
+        let mut clock = Clock(0);
+        let mut reads = 0u32;
+        let got = super::wait_clipboard_capture_with_sequence(
+            None,
+            None,
+            Some(5),
+            100,
+            0,
+            || clock.tick(50),
+            || Some(6),
+            || None,
+            || {
+                reads += 1;
+                if reads == 1 {
+                    None
+                } else {
+                    Some(cap(vec![2]))
+                }
+            },
+        );
+        assert!(matches!(got, Some(CaptureHit::Image { bytes, .. }) if bytes == vec![2]));
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn sequence_changed_timeout_does_not_return_stale_snapshot() {
+        // FIX017.1：序号变过但始终没读到新图，超时不得回旧快照。
+        let mut clock = Clock(0);
+        let before = vec![1u8];
+        let got = super::wait_clipboard_capture_with_sequence(
+            None,
+            Some(&before),
+            Some(5),
+            100,
+            0,
+            || clock.tick(50),
+            || Some(6),
+            || None,
+            || None,
+        );
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn sequence_zero_is_unavailable() {
+        // FIX017.1：GetClipboardSequenceNumber 失败返回 0；0 不是合法序号。
+        assert_eq!(super::nonzero_sequence(0), None);
+        assert_eq!(super::nonzero_sequence(1), Some(1));
     }
 
     #[test]

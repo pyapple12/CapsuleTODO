@@ -77,3 +77,52 @@ jobs:
 
       - name: prettier 格式检查
         run: npx prettier --check AGENTS.md README.md x.progress.md z.plan.md package.json vite.config.ts vitest.config.ts .github/workflows/ci.yml scripts/tauri.mjs "ui/**/*.{ts,vue,css}"
+
+  # FIX017.13：非 Windows 代码路径只靠 cargo check/clippy 暴露 unused/cfg 问题；
+  # Windows job 永远看不到，故单列 Linux 编译门禁。
+  linux-check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: 安装 Tauri Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: npm ci
+        run: npm ci
+
+      # generate_context! 编译期读取 frontendDist，先产出 dist/
+      - name: 前端构建
+        run: npm run build
+
+      - name: cargo check（Linux all-targets）
+        run: cargo check --all-targets --locked
+        working-directory: core
+
+      - name: cargo clippy（Linux -D warnings）
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: core
