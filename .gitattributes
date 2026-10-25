@@ -1,0 +1,13 @@
+# 统一文本换行：仓库存储 LF，Windows/macOS 检出也保持 LF。
+# 目的：避免 Windows CI 以 CRLF 检出后 Prettier --check 全仓失败。
+* text=auto eol=lf
+
+# 二进制资源保持原样
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.exe binary
