@@ -928,6 +928,44 @@ fn validate_final_blocks(
         .iter()
         .position(|block| block.id == block_id)
         .ok_or_else(|| CommandError::Storage(format!("目标块不存在：{block_id}")))?;
+    // FIX020.1：pending 占位不可拆分；预览按“原占位保留 + 新内容整段前/后插”构造。
+    if storage.pending_note_image_target(todo_id, block_id)? {
+        let insert_before = before.trim().is_empty();
+        let target = current[index].clone();
+        let mut final_blocks: Vec<NoteBlock> = current[..index].to_vec();
+        if insert_before {
+            final_blocks.extend(parts.iter().map(|part| NoteBlock {
+                id: 0,
+                kind: part.kind,
+                text: part.text.clone(),
+                image_file: None,
+            }));
+            final_blocks.push(target.clone());
+        } else {
+            final_blocks.push(target.clone());
+            final_blocks.extend(parts.iter().map(|part| NoteBlock {
+                id: 0,
+                kind: part.kind,
+                text: part.text.clone(),
+                image_file: None,
+            }));
+        }
+        final_blocks.extend_from_slice(&current[index + 1..]);
+        // 原占位升级为图块后若没有其他文本块，按存储层同一口径补空文本块。
+        if !final_blocks
+            .iter()
+            .any(|block| block.kind == NoteBlockKind::Text && block.id != target.id)
+        {
+            final_blocks.push(NoteBlock {
+                id: 0,
+                kind: NoteBlockKind::Text,
+                text: String::new(),
+                image_file: None,
+            });
+        }
+        return validate_note_blocks(&final_blocks)
+            .map_err(|err| CommandError::Todo(err.to_string()));
+    }
     let follows = current.len().saturating_sub(index + 1);
     let keep_before = !before.trim().is_empty();
     let keep_after = !after.trim().is_empty();
@@ -1254,9 +1292,20 @@ fn run_pending_image_jobs(
                 continue;
             }
         };
-        let Ok(true) = matches else {
-            continue;
-        };
+        match matches {
+            Ok(true) => {}
+            Ok(false) => {
+                // FIX020.1：占位已变化（用户编辑/删除/旧路径拆分）时不再静默丢弃；
+                // 条件降级命中则写回 URL，未命中至少落日志并发失败事件供前端自判。
+                degrade_pending_image(&app, ctx.inner(), todo_id, &job, "占位已变化");
+                continue;
+            }
+            Err(err) => {
+                crate::diag::warn_diag(&format!("图片后台任务匹配占位失败（{}）：{err}", job.url));
+                emit_note_image_failed(&app, todo_id, job.block_id, &job.url);
+                continue;
+            }
+        }
         let existing_rel = match ctx.lock_storage() {
             Ok(storage) => match storage.note_image_rel_by_hash(&hash) {
                 Ok(rel) => rel,
@@ -2272,6 +2321,56 @@ mod tests {
         );
         assert!(blocks.iter().any(|b| b.text == "前"));
         assert!(blocks.iter().any(|b| b.text == "后"));
+    }
+
+    #[test]
+    fn html_paste_around_pending_keeps_original_block() {
+        // FIX020.1：在 pending 占位起点粘贴 HTML 文本，原 block_id/source_url 必须保留。
+        let ctx = test_context();
+        let dir = temp_images_dir();
+        let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");
+        let saved =
+            note_blocks_save_core(item.id, &[input(0, NoteBlockKind::Text, "")], &dir, &ctx)
+                .expect("保存必须成功");
+        let first = note_paste_html_core(
+            item.id,
+            saved[0].id,
+            "",
+            "",
+            "<img src=\"https://example.com/pending.png\">",
+            &dir,
+            &ctx,
+        )
+        .expect("远端占位必须成功");
+        let pending = first.pending.first().expect("应有 pending 任务").clone();
+        let placeholder_id = pending.block_id;
+
+        note_paste_html_core(
+            item.id,
+            placeholder_id,
+            "",
+            crate::storage::PENDING_NOTE_IMAGE_TEXT,
+            "<p>插入文本</p>",
+            &dir,
+            &ctx,
+        )
+        .expect("占位起点粘贴必须成功");
+
+        let storage = ctx.lock_storage().expect("取库必须成功");
+        let matches = storage
+            .pending_note_image_matches(item.id, placeholder_id, &pending.url)
+            .expect("匹配查询必须成功");
+        assert!(matches, "旧 pending block_id 必须仍可匹配");
+        assert!(
+            storage
+                .note_blocks(item.id)
+                .expect("读块必须成功")
+                .iter()
+                .any(|block| block.id == placeholder_id
+                    && block.kind == NoteBlockKind::Text
+                    && block.text == crate::storage::PENDING_NOTE_IMAGE_TEXT),
+            "原占位块文本必须保持"
+        );
     }
 
     #[test]

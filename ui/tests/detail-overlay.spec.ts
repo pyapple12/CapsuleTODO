@@ -52,6 +52,12 @@ const IMAGE_FIRST_BLOCKS: NoteBlock[] = [
   { id: 32, kind: "Text", text: "尾", image_path: null },
 ];
 
+const PENDING_TEXT = "🖼 下载中…";
+const PENDING_BLOCKS: NoteBlock[] = [
+  { id: 71, kind: "Text", text: PENDING_TEXT, image_path: null },
+  { id: 72, kind: "Text", text: "尾", image_path: null },
+];
+
 /** 安装读取/保存 mock；保存按入参回填 id，模拟 Rust 侧。 */
 function mockNoteInvoke(blocks: NoteBlock[]): void {
   invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
@@ -212,6 +218,58 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     await flushPromises();
 
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "note_paste_html")).toBe(true);
+  });
+
+  it("占位起点粘贴单行文本不拆占位（FIX020.1）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, PENDING_BLOCKS);
+
+    const pending = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    pending.element.focus();
+    pending.element.setSelectionRange(0, 0);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? "插" : ""),
+      },
+    });
+    pending.element.dispatchEvent(paste);
+    await flushPromises();
+
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual(["插", PENDING_TEXT, "尾"]);
+    expect(paste.defaultPrevented).toBe(true);
+  });
+
+  it("占位中间粘贴单行文本不拆占位（FIX020.1）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, PENDING_BLOCKS);
+
+    const pending = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    pending.element.focus();
+    pending.element.setSelectionRange(3, 3);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? "插" : ""),
+      },
+    });
+    pending.element.dispatchEvent(paste);
+    await flushPromises();
+
+    const values = wrapper
+      .findAll<HTMLTextAreaElement>("textarea.note-block-text")
+      .map((el) => el.element.value);
+    expect(values).toEqual([PENDING_TEXT, "插", "尾"]);
+    expect(paste.defaultPrevented).toBe(true);
   });
 
   it("非图片文件 no_image + 空 plain 不删除选中文字", async () => {

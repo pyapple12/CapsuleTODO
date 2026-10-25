@@ -21,6 +21,7 @@
 - **归档自动清理**：已完成条目在归档中保留 7 天，超时自动删除（不可恢复）；
 - **修改标题**：双击条目直接在行内编辑；
 - **查看详情 / 写笔记**：单击条目正文打开详情板；**有笔记的行左上角常显红点**；单条笔记请控制在约 **10,000 字符 / 100 块**以内（超出属非正常使用，不保证保存）；粘贴内容会超过上限时会静默失败（Ctrl+V 无反应，原文保持不变）；
+- **图文详情**：详情板按段落成块，`Ctrl+V` 可直接粘贴截图 / 图片；图块可拖动排序，`Ctrl+Enter` 保存并关板；
 - **删除**：条目右侧删除钮，点两次确认；
 - **调整顺序**：按住条目拖动。
 
@@ -58,7 +59,7 @@
 
 - `configs\config.json`——窗口位置、气泡上限、热键等设置；
 - `data\todo.db`——待办、归档、气泡、白板的全部内容；
-- `data\images\`——图片气泡的图片文件（每个气泡一个小文件夹）。
+- `data\images\`——图片气泡与详情图块的文件（每个图片一个小文件夹）。
 
 **备份** = 把这两个文件夹复制走；**恢复** = 覆盖回来。
 
@@ -79,6 +80,36 @@
 **系统要求？** Windows 10 / 11（64 位）。
 
 ## 更新日志
+
+### v0.2.3
+
+**新增**
+
+- 📝 **详情图文混排**：详情板从纯文本升级为「段落 / 图块」序列，文字与图片可混排；
+- 📋 **直接粘贴图片**：在详情板 `Ctrl+V` 粘贴截图或图片，自动落盘到 `data\images\`，图块可拖动调序；
+- 🌐 **远端图片**：粘贴网页图片时先显示「下载中…」占位，后台下载成功后替换为图片，失败自动降级为链接；
+- 🧷 **多段粘贴与复制**：支持 HTML 多图粘贴、文本 + 图片多格式复制、图块拖拽排序与撤销；
+- 🪟 **按需毛玻璃**：仅详情板 / 浮板打开且窗口聚焦时挂 Windows 亚克力，收板 / 失焦立即恢复透明；
+- 🎨 **应用图标更新**：正式版图标替换，并修正任务栏 / Alt+Tab 图标清晰度。
+
+**优化**
+
+- 详情编辑：段落拆合、跨块选区、方向键跨块、输入法组字、全选替换与空块归一化统一收口；
+- 滚动与拖拽：详情板贴底、顶部软边、浮板裁剪、图块拖拽换位与滚动锁定统一；
+- 图片链路：同内容复用、落盘预览、坏图回退、远端下载预算与锁外 I/O 加固；
+- 托盘与窗口：左右键 / hover 预览互斥、按需背板、单实例唤前与位置记忆收口。
+
+**修复**
+
+- 修复详情粘贴在空笔记、切源、选区替换和撤销时的内容丢失 / 错位；
+- 修复详情图块删除后撤销、图块拖拽落点、详情板滚动跳动与贴底回弹；
+- 修复远端图占位、过期保存与图片任务竞态导致的内容不一致；
+- 修复图片气泡复制 / 详情大图 / 坏 PNG / DIB alpha / 剪切板多格式写入问题；
+- 修复输入法 Enter、全选、退格、方向键与跨块选区在详情中的按键冲突；
+- 修复归档板、气泡板、设置板和托盘菜单的罩死、滑杆、点击穿透与状态刷新问题；
+- 修复主题切换 / DWM 背板 / 单实例 / 窗口拖动焦点闪烁等平台观感问题；
+- 修复 HTML 粘解析边界、块数 / 字符上限校验与失败恢复路径；
+- 修复前端 DEV mock、诊断构建、CI 与前端测试门禁的一致性问题。
 
 ### v0.2.2
 
@@ -116,7 +147,7 @@
 
 ---
 
-CapsuleTODO V0.2.2 · 仅供学习交流使用
+CapsuleTODO V0.2.3 · 仅供学习交流使用
 
 ---
 
@@ -141,6 +172,7 @@ A glassy desktop Todo board that stays in a corner of your desktop — jot and t
 - **Auto-cleanup**: finished items stay in the archive for 7 days, then are deleted automatically;
 - **Rename**: double-click a row to edit inline;
 - **Details / notes**: click a row to open the detail panel; **rows with a note show a red dot**; keep a note under about **10,000 characters / 100 blocks** (beyond that is outside normal use and is not guaranteed to save); a paste that would exceed the limit fails silently (Ctrl+V does nothing and the original content is kept);
+- **Rich-text details**: paragraphs and image blocks live together; press `Ctrl+V` in the detail panel to paste screenshots or images; drag image blocks to reorder; `Ctrl+Enter` saves and closes;
 - **Delete**: the delete button on the right — click twice to confirm;
 - **Reorder**: drag a row.
 
@@ -178,7 +210,7 @@ A scratch pad that saves as you type — just switch to its tab.
 
 - `configs\config.json` — window position, bubble limit, hotkey, etc.;
 - `data\todo.db` — todos, archive, bubbles and whiteboard;
-- `data\images\` — image files for image bubbles (one folder per bubble).
+- `data\images\` — image files for image bubbles and detail image blocks (one folder per image).
 
 Back up = copy these two folders; restore = copy them back.
 
@@ -199,6 +231,36 @@ Right-click the tray icon → **Exit** to quit (saves the window position); doub
 **Requirements?** Windows 10 / 11 (64-bit).
 
 ## Changelog
+
+### v0.2.3
+
+**Added**
+
+- 📝 **Rich-text details**: the detail panel is now a sequence of paragraph and image blocks, mixing text and images freely;
+- 📋 **Paste images directly**: press `Ctrl+V` in the detail panel to paste a screenshot or image; files are stored under `data\images\` and image blocks can be dragged to reorder;
+- 🌐 **Remote images**: pasting an image from a web page shows a "Downloading…" placeholder first, then replaces it when the background download succeeds; failures gracefully fall back to a link;
+- 🧷 **Multi-part paste / copy**: HTML multi-image paste, mixed text + image copy, drag reordering and undo for image blocks;
+- 🪟 **On-demand acrylic**: Windows Acrylic is attached only while a detail / floating board is open and focused, and removed on close or blur;
+- 🎨 **New app icon**: refreshed release icon and sharper taskbar / Alt+Tab rendering.
+
+**Improved**
+
+- Detail editing: paragraph split/merge, cross-block selection, arrow-key navigation, IME composition, select-all replacement and empty-block normalization;
+- Scrolling and dragging: sticky-bottom detail panel, top fade, floating-board clipping, image-block reorder and scroll locking;
+- Image pipeline: content reuse, on-disk previews, corrupt-image fallback, remote download budgets and off-lock I/O;
+- Tray and window: left/right-click and hover-preview mutual exclusion, on-demand backdrop, single-instance activation and position persistence.
+
+**Fixed**
+
+- Fixed detail paste losing or misplacing content in empty notes, when switching items, during selection replacement, and after undo;
+- Fixed detail image-block delete/undo, image drag drop targets, detail scrolling jitter and bottom bounce;
+- Fixed remote-image placeholders, stale saves and image-job races causing inconsistent content;
+- Fixed image-bubble copy, detail large image, corrupt PNG, DIB alpha and clipboard multi-format writes;
+- Fixed IME Enter, select-all, Backspace, arrow keys and cross-block selection conflicts in details;
+- Fixed archive / bubble / settings / tray menu masking, sliders, click-through and refresh issues;
+- Fixed theme switching / DWM backdrop / single-instance / drag focus flicker;
+- Fixed HTML paste parsing boundaries, block/character limit checks and failure recovery;
+- Fixed DEV mock, diagnostics builds, CI and frontend test-gate consistency.
 
 ### v0.2.2
 
@@ -236,4 +298,4 @@ Right-click the tray icon → **Exit** to quit (saves the window position); doub
 
 ---
 
-CapsuleTODO V0.2.2 · For learning and exchange only
+CapsuleTODO V0.2.3 · For learning and exchange only

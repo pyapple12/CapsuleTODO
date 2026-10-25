@@ -1090,3 +1090,11 @@
 - [x] FIX019.16 [收尾] 第17轮审计修复收尾验证 —— **2026-10-25 收口**：`cargo fmt --check`、clippy（默认/dev-diag，`-D warnings`）、`cargo test`（默认/dev-diag，324 lib + 4 integration）、`cargo doc --no-deps`、`cargo check --release --locked`、`npm test`（164/30）、`npm run build`、`npm run build:diag`、prettier 全部通过；A019 状态回填为已闭环；T43–T48/P49–P51 豁免保留、未重开。验证：全量门禁稳定绿 + A019 清单闭环。
 
 > **2026-10-25 实施记录（FIX019.1/.2/.3/.6/.12/.15）**：详情保存按发送快照采纳服务端 kind/text，follow-up 上限 2；文本聚焦清图片选中；两处平台 cfg 收死代码；存储层 pending 图升级事务内保证 active Text，前端 loadBlocks 对归一化差异强制回写；详情 deep watch 改结构键、打字只 autosize 当前块、新增 dirty 标记避免每键全表签名；插图 doc/测试名与 A018 测试声明修正。验证：`cargo test` 324 lib + 4 integration（默认/dev-diag）、`npm test` 164/30、`npm run build`/`build:diag`、clippy（默认/dev-diag）、`cargo fmt --check` 通过。FIX019.11/.13/.14 按用户定案豁免；FIX019.16 收尾完成。
+
+### FIX020: 第18轮审计修复 [audit#A020]
+
+> 报告见 z.plan.md 附录 A020（P3 ×2，P0/P1/P2 无）；FIX020.1/.2 已修，FIX020.3 已收口；观察项已整合至 §四 P52–P61 / T49–T60，F-01 提升为 FIX020.2（2026-10-25 用户定案）；历史报告不补号；T14/P43/T33–T60 等既有豁免不重开。
+
+- [x] FIX020.1 [P3] 远端图占位被粘贴拆分后任务静默丢失 —— `core/src/storage.rs`：新增 `pending_note_image_target` 与 `ensure_text_block_after_pending`；`add_note_image_block_prepared` / `insert_note_parts_prepared` 遇到 pending 目标时只在前/后插入新内容，原 `block_id`、`text`、`source_url` 保持不动；`core/src/commands/todo.rs::validate_final_blocks` 同步按 pending 原子语义预览，`run_pending_image_jobs` 失配改为降级 + 失败事件；`DetailOverlay.vue` 接管 pending 的单行/多行文本粘贴，插在整段占位前/后而不改写原块。补单图起点/中间、HTML 起点、文本中间、单行前端粘贴用例。验证：`cargo test`（329 lib + 4 integration，默认/dev-diag）、`npm test`（166/30）、`npm run build`/`build:diag`、clippy（默认/dev-diag）、fmt/doc/release check 通过（2026-10-25 已验证）。
+- [x] FIX020.2 [P3] 贴边吸附使用工作区而非整屏 —— `core/src/lib.rs::snap_if_needed` 改用 `monitor.work_area()` 的 `position/size`；`core/src/snap.rs` 补工作区底部任务栏 40px 用例，断言落位 `1040 - 400 - 5`。验证：`cargo test`（329 lib + 4 integration，默认/dev-diag）通过；live 目验按用户定案不做（2026-10-25 完成）。
+- [x] FIX020.3 [收尾] 第18轮审计修复收尾验证 —— **2026-10-25 收口**：`cargo fmt --check`、clippy（默认/dev-diag，`-D warnings`）、`cargo test`（默认/dev-diag，329 lib + 4 integration）、`cargo doc --no-deps`、`cargo check --release --locked`、`npm test`（166/30）、`npm run build`、`npm run build:diag`、prettier 全部通过；A020 状态回填为已收口；P52–P61 / T49–T60 保留。验证：全量门禁稳定绿；FIX020.2 live 目验按用户定案不做。

@@ -1793,80 +1793,87 @@ impl Storage {
                 rusqlite::params![todo_id, order],
                 |row| row.get(0),
             )?;
-            // PATCH002 建块规则：上段为空 → 原块**改图块**（顶替，不留前导空块）；
-            // 下段为空 → 不留尾块，**但图成为整条最后一块时补一个空文本块**（否则图后无法输入）
-            let keep_before = !before.trim().is_empty();
-            let keep_after = !after.trim().is_empty();
-            let tail_blank = !keep_after && follows == 0;
-            let shift = i64::from(keep_before) + i64::from(keep_after) + i64::from(tail_blank);
-            // 该块之后的块后移（腾出新增块的位置）
-            self.conn.execute(
-                "UPDATE note_blocks SET sort_order = sort_order + ?3
-                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
-                rusqlite::params![todo_id, order, shift],
-            )?;
-            let mut next = order + 1;
-            if keep_before {
-                // 原块保留为「上段」文本块，图块插在其后；若它仍是下载中占位，保留 source_url
-                self.conn.execute(
-                    "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL,
-                         source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
-                                           THEN source_url ELSE NULL END,
-                         deleted_at = NULL
-                     WHERE id = ?1",
-                    rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
-                )?;
+            // FIX020.1：pending 占位是后台任务的 block_id 锚点，禁止顶替/切分/清 source_url。
+            // 新图整体插在整段占位前（before 为空）或后（其余情况），原占位保持原样。
+            if self.pending_note_image_target(todo_id, block_id)? {
+                let insert_before = before.trim().is_empty();
+                if insert_before {
+                    self.conn.execute(
+                        "UPDATE note_blocks SET sort_order = sort_order + 1
+                         WHERE todo_id = ?1 AND sort_order >= ?2 AND deleted_at IS NULL",
+                        rusqlite::params![todo_id, order],
+                    )?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE note_blocks SET sort_order = sort_order + 1
+                         WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
+                        rusqlite::params![todo_id, order],
+                    )?;
+                }
+                let image_order = if insert_before { order } else { order + 1 };
                 self.conn.execute(
                     "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
                      VALUES (?1, ?2, 'image', ?3, ?4)",
-                    rusqlite::params![todo_id, next, hash, rel],
+                    rusqlite::params![todo_id, image_order, hash, rel],
                 )?;
-                next += 1;
+                self.ensure_text_block_after_pending(todo_id, 1)?;
             } else {
-                // 上段为空：原块直接变图块（顶替，不留前导空块）
+                // PATCH002 建块规则：上段为空 → 原块**改图块**（顶替，不留前导空块）；
+                // 下段为空 → 不留尾块，**但图成为整条最后一块时补一个空文本块**（否则图后无法输入）
+                let keep_before = !before.trim().is_empty();
+                let keep_after = !after.trim().is_empty();
+                let tail_blank = !keep_after && follows == 0;
+                let shift = i64::from(keep_before) + i64::from(keep_after) + i64::from(tail_blank);
+                // 该块之后的块后移（腾出新增块的位置）
                 self.conn.execute(
-                    "UPDATE note_blocks SET kind = 'image', text = '',
-                         image_hash = ?2, image_file = ?3, source_url = NULL,
-                         deleted_at = NULL
-                     WHERE id = ?1",
-                    rusqlite::params![block_id, hash, rel],
+                    "UPDATE note_blocks SET sort_order = sort_order + ?3
+                     WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
+                    rusqlite::params![todo_id, order, shift],
                 )?;
-            }
-            if keep_after {
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', ?3)",
-                    rusqlite::params![todo_id, next, after],
-                )?;
-                next += 1;
-            }
-            if tail_blank {
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', '')",
-                    rusqlite::params![todo_id, next],
-                )?;
-            }
-            // 保底：结果无文本块 → 补一个空文本块（"至少一个文本块"不变量）
-            let texts: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks
-                 WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL",
-                [todo_id],
-                |row| row.get(0),
-            )?;
-            if texts == 0 {
-                let last: i64 = self.conn.query_row(
-                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks
-                     WHERE todo_id = ?1 AND deleted_at IS NULL",
-                    [todo_id],
-                    |row| row.get(0),
-                )?;
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', '')",
-                    rusqlite::params![todo_id, last],
-                )?;
+                let mut next = order + 1;
+                if keep_before {
+                    // 原块保留为「上段」文本块，图块插在其后；若它仍是下载中占位，保留 source_url
+                    self.conn.execute(
+                        "UPDATE note_blocks SET text = ?2, kind = 'text',
+                             image_hash = NULL, image_file = NULL,
+                             source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                               THEN source_url ELSE NULL END,
+                             deleted_at = NULL
+                         WHERE id = ?1",
+                        rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
+                    )?;
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                         VALUES (?1, ?2, 'image', ?3, ?4)",
+                        rusqlite::params![todo_id, next, hash, rel],
+                    )?;
+                    next += 1;
+                } else {
+                    // 上段为空：原块直接变图块（顶替，不留前导空块）
+                    self.conn.execute(
+                        "UPDATE note_blocks SET kind = 'image', text = '',
+                             image_hash = ?2, image_file = ?3, source_url = NULL,
+                             deleted_at = NULL
+                         WHERE id = ?1",
+                        rusqlite::params![block_id, hash, rel],
+                    )?;
+                }
+                if keep_after {
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, ?2, 'text', ?3)",
+                        rusqlite::params![todo_id, next, after],
+                    )?;
+                    next += 1;
+                }
+                if tail_blank {
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, ?2, 'text', '')",
+                        rusqlite::params![todo_id, next],
+                    )?;
+                }
+                self.ensure_text_block_after_pending(todo_id, 0)?;
             }
             self.note_blocks(todo_id)
         })();
@@ -2050,145 +2057,182 @@ impl Storage {
                 rusqlite::params![todo_id, order],
                 |row| row.get(0),
             )?;
-            let keep_before = !before.trim().is_empty();
-            let keep_after = !after.trim().is_empty();
-            // 远端占位在“升级后”会变图块 → 末块/文本块兜底按图段口径算
-            let last_is_image = matches!(
-                parts.last(),
-                Some(NotePastePart::Image { .. } | NotePastePart::PendingImage { .. })
-            );
-            let pending_count = parts
-                .iter()
-                .filter(|part| matches!(part, NotePastePart::PendingImage { .. }))
-                .count() as i64;
-            let tail_blank = !keep_after && follows == 0 && last_is_image;
-            let shift = i64::from(keep_before)
-                + i64::from(keep_after)
-                + i64::from(tail_blank)
-                + parts.len() as i64;
-            self.conn.execute(
-                "UPDATE note_blocks SET sort_order = sort_order + ?3
-                 WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
-                rusqlite::params![todo_id, order, shift],
-            )?;
-            let mut next = order + 1;
             // PATCH002.76：与 parts 同序的块 id——后台任务按 id 精准定位占位块，
             // 不靠 URL 文本反查（重复 URL 会歧义）
             let mut part_ids: Vec<i64> = Vec::with_capacity(parts.len());
-            if keep_before {
-                // FIX018.6：占位上下文中插入图片时，上段仍是占位则保留 source_url。
-                self.conn.execute(
-                    "UPDATE note_blocks SET text = ?2, kind = 'text',
-                         image_hash = NULL, image_file = NULL,
-                         source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
-                                           THEN source_url ELSE NULL END,
-                         deleted_at = NULL
-                     WHERE id = ?1",
-                    rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
-                )?;
-            }
-            for (i, part) in parts.iter().enumerate() {
-                // 上段为空时原块顶替为序列首段（不留前导空块）——文本 / 图 / 远端占位三态同款
-                let reuse_original = !keep_before && i == 0;
-                match part {
-                    NotePastePart::Text(text) => {
-                        if reuse_original {
+            // FIX020.1：pending 占位是后台任务锚点，粘贴只在其前后插入，绝不改写原块。
+            if self.pending_note_image_target(todo_id, block_id)? {
+                let insert_before = before.trim().is_empty();
+                let shift = parts.len() as i64;
+                if insert_before {
+                    self.conn.execute(
+                        "UPDATE note_blocks SET sort_order = sort_order + ?3
+                         WHERE todo_id = ?1 AND sort_order >= ?2 AND deleted_at IS NULL",
+                        rusqlite::params![todo_id, order, shift],
+                    )?;
+                } else {
+                    self.conn.execute(
+                        "UPDATE note_blocks SET sort_order = sort_order + ?3
+                         WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
+                        rusqlite::params![todo_id, order, shift],
+                    )?;
+                }
+                let mut next = if insert_before { order } else { order + 1 };
+                for (i, part) in parts.iter().enumerate() {
+                    match part {
+                        NotePastePart::Text(text) => {
                             self.conn.execute(
-                                "UPDATE note_blocks SET kind = 'text', text = ?2,
-                                     image_hash = NULL, image_file = NULL,
-                                     source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
-                                                       THEN source_url ELSE NULL END
-                                 WHERE id = ?1",
-                                rusqlite::params![block_id, text, PENDING_NOTE_IMAGE_TEXT],
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                                 VALUES (?1, ?2, 'text', ?3)",
+                                rusqlite::params![todo_id, next, text],
                             )?;
-                            part_ids.push(block_id);
-                            continue;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
                         }
-                        self.conn.execute(
-                            "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                             VALUES (?1, ?2, 'text', ?3)",
-                            rusqlite::params![todo_id, next, text],
-                        )?;
-                        part_ids.push(self.conn.last_insert_rowid());
-                        next += 1;
-                    }
-                    NotePastePart::Image { .. } => {
-                        let (hash, rel) = images[i].clone().unwrap_or_default();
-                        if reuse_original {
+                        NotePastePart::Image { .. } => {
+                            let (hash, rel) = images[i].clone().unwrap_or_default();
                             self.conn.execute(
-                                "UPDATE note_blocks SET kind = 'image', text = '',
-                                     image_hash = ?2, image_file = ?3, source_url = NULL,
-                                     deleted_at = NULL
-                                 WHERE id = ?1",
-                                rusqlite::params![block_id, hash, rel],
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                                 VALUES (?1, ?2, 'image', ?3, ?4)",
+                                rusqlite::params![todo_id, next, hash, rel],
                             )?;
-                            part_ids.push(block_id);
-                            continue;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
                         }
-                        self.conn.execute(
-                            "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
-                             VALUES (?1, ?2, 'image', ?3, ?4)",
-                            rusqlite::params![todo_id, next, hash, rel],
-                        )?;
-                        part_ids.push(self.conn.last_insert_rowid());
-                        next += 1;
-                    }
-                    NotePastePart::PendingImage { url } => {
-                        if reuse_original {
+                        NotePastePart::PendingImage { url } => {
                             self.conn.execute(
-                                "UPDATE note_blocks SET kind = 'text', text = ?2,
-                                     image_hash = NULL, image_file = NULL, source_url = ?3
-                                 WHERE id = ?1",
-                                rusqlite::params![block_id, PENDING_NOTE_IMAGE_TEXT, url],
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, text, source_url)
+                                 VALUES (?1, ?2, 'text', ?3, ?4)",
+                                rusqlite::params![todo_id, next, PENDING_NOTE_IMAGE_TEXT, url],
                             )?;
-                            part_ids.push(block_id);
-                            continue;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
                         }
-                        self.conn.execute(
-                            "INSERT INTO note_blocks(todo_id, sort_order, kind, text, source_url)
-                             VALUES (?1, ?2, 'text', ?3, ?4)",
-                            rusqlite::params![todo_id, next, PENDING_NOTE_IMAGE_TEXT, url],
-                        )?;
-                        part_ids.push(self.conn.last_insert_rowid());
-                        next += 1;
                     }
                 }
-            }
-            if keep_after {
+                let pending_to_upgrade = 1 + parts
+                    .iter()
+                    .filter(|part| matches!(part, NotePastePart::PendingImage { .. }))
+                    .count() as i64;
+                self.ensure_text_block_after_pending(todo_id, pending_to_upgrade)?;
+            } else {
+                let keep_before = !before.trim().is_empty();
+                let keep_after = !after.trim().is_empty();
+                // 远端占位在“升级后”会变图块 → 末块/文本块兜底按图段口径算
+                let last_is_image = matches!(
+                    parts.last(),
+                    Some(NotePastePart::Image { .. } | NotePastePart::PendingImage { .. })
+                );
+                let pending_count = parts
+                    .iter()
+                    .filter(|part| matches!(part, NotePastePart::PendingImage { .. }))
+                    .count() as i64;
+                let tail_blank = !keep_after && follows == 0 && last_is_image;
+                let shift = i64::from(keep_before)
+                    + i64::from(keep_after)
+                    + i64::from(tail_blank)
+                    + parts.len() as i64;
                 self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', ?3)",
-                    rusqlite::params![todo_id, next, after],
+                    "UPDATE note_blocks SET sort_order = sort_order + ?3
+                     WHERE todo_id = ?1 AND sort_order > ?2 AND deleted_at IS NULL",
+                    rusqlite::params![todo_id, order, shift],
                 )?;
-                next += 1;
-            }
-            if tail_blank {
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', '')",
-                    rusqlite::params![todo_id, next],
-                )?;
-            }
-            let texts: i64 = self.conn.query_row(
-                "SELECT COUNT(*) FROM note_blocks
-                 WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL",
-                [todo_id],
-                |row| row.get(0),
-            )?;
-            // PATCH002.76：远端占位升级后会从文本块中消失 → 按“升级后”口径兜底，
-            // 否则整条只有远程图时后台成功后会变成零文本块，下一次保存被校验拒绝
-            if texts - pending_count <= 0 {
-                let last: i64 = self.conn.query_row(
-                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks
-                     WHERE todo_id = ?1 AND deleted_at IS NULL",
-                    [todo_id],
-                    |row| row.get(0),
-                )?;
-                self.conn.execute(
-                    "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
-                     VALUES (?1, ?2, 'text', '')",
-                    rusqlite::params![todo_id, last],
-                )?;
+                let mut next = order + 1;
+                if keep_before {
+                    // FIX018.6：占位上下文中插入图片时，上段仍是占位则保留 source_url。
+                    self.conn.execute(
+                        "UPDATE note_blocks SET text = ?2, kind = 'text',
+                             image_hash = NULL, image_file = NULL,
+                             source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                               THEN source_url ELSE NULL END,
+                             deleted_at = NULL
+                         WHERE id = ?1",
+                        rusqlite::params![block_id, before, PENDING_NOTE_IMAGE_TEXT],
+                    )?;
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    // 上段为空时原块顶替为序列首段（不留前导空块）——文本 / 图 / 远端占位三态同款
+                    let reuse_original = !keep_before && i == 0;
+                    match part {
+                        NotePastePart::Text(text) => {
+                            if reuse_original {
+                                self.conn.execute(
+                                    "UPDATE note_blocks SET kind = 'text', text = ?2,
+                                         image_hash = NULL, image_file = NULL,
+                                         source_url = CASE WHEN ?2 = ?3 AND source_url IS NOT NULL
+                                                           THEN source_url ELSE NULL END
+                                     WHERE id = ?1",
+                                    rusqlite::params![block_id, text, PENDING_NOTE_IMAGE_TEXT],
+                                )?;
+                                part_ids.push(block_id);
+                                continue;
+                            }
+                            self.conn.execute(
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                                 VALUES (?1, ?2, 'text', ?3)",
+                                rusqlite::params![todo_id, next, text],
+                            )?;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
+                        }
+                        NotePastePart::Image { .. } => {
+                            let (hash, rel) = images[i].clone().unwrap_or_default();
+                            if reuse_original {
+                                self.conn.execute(
+                                    "UPDATE note_blocks SET kind = 'image', text = '',
+                                         image_hash = ?2, image_file = ?3, source_url = NULL,
+                                         deleted_at = NULL
+                                     WHERE id = ?1",
+                                    rusqlite::params![block_id, hash, rel],
+                                )?;
+                                part_ids.push(block_id);
+                                continue;
+                            }
+                            self.conn.execute(
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, image_hash, image_file)
+                                 VALUES (?1, ?2, 'image', ?3, ?4)",
+                                rusqlite::params![todo_id, next, hash, rel],
+                            )?;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
+                        }
+                        NotePastePart::PendingImage { url } => {
+                            if reuse_original {
+                                self.conn.execute(
+                                    "UPDATE note_blocks SET kind = 'text', text = ?2,
+                                         image_hash = NULL, image_file = NULL, source_url = ?3
+                                     WHERE id = ?1",
+                                    rusqlite::params![block_id, PENDING_NOTE_IMAGE_TEXT, url],
+                                )?;
+                                part_ids.push(block_id);
+                                continue;
+                            }
+                            self.conn.execute(
+                                "INSERT INTO note_blocks(todo_id, sort_order, kind, text, source_url)
+                                 VALUES (?1, ?2, 'text', ?3, ?4)",
+                                rusqlite::params![todo_id, next, PENDING_NOTE_IMAGE_TEXT, url],
+                            )?;
+                            part_ids.push(self.conn.last_insert_rowid());
+                            next += 1;
+                        }
+                    }
+                }
+                if keep_after {
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, ?2, 'text', ?3)",
+                        rusqlite::params![todo_id, next, after],
+                    )?;
+                    next += 1;
+                }
+                if tail_blank {
+                    self.conn.execute(
+                        "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+                         VALUES (?1, ?2, 'text', '')",
+                        rusqlite::params![todo_id, next],
+                    )?;
+                }
+                self.ensure_text_block_after_pending(todo_id, pending_count)?;
             }
             let saved = self.note_blocks(todo_id)?;
             Ok((saved, part_ids))
@@ -2213,6 +2257,27 @@ impl Storage {
                 Err(err)
             }
         }
+    }
+
+    /// FIX020.1：判断目标块是否仍是待下载占位（文本 + 哨兵 + source_url 三条件）。
+    /// 粘贴与保存路径据此把 pending 块当作不可拆分原子，避免后台任务按旧 block_id 失配。
+    pub(crate) fn pending_note_image_target(
+        &self,
+        todo_id: i64,
+        block_id: i64,
+    ) -> Result<bool, StorageError> {
+        let current: Option<(String, String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT kind, text, source_url FROM note_blocks
+                 WHERE id = ?1 AND todo_id = ?2 AND deleted_at IS NULL",
+                rusqlite::params![block_id, todo_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        Ok(current.is_some_and(|(kind, text, source)| {
+            kind == "text" && text == PENDING_NOTE_IMAGE_TEXT && source.is_some()
+        }))
     }
 
     /// FIX017.5：后台图前先锁内确认占位仍匹配（锁外准备文件前）。
@@ -2258,6 +2323,36 @@ impl Storage {
             "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
              VALUES (?1, ?2, 'text', '')",
             rusqlite::params![todo_id, next_order],
+        )?;
+        Ok(())
+    }
+
+    /// FIX020.1：事务内校验“至少一个文本块”，并按 **升级后** 口径扣除 pending 文本块。
+    /// `pending_to_upgrade` = 本次会被后台任务改成图块的文本行数；普通保存传 0。
+    fn ensure_text_block_after_pending(
+        &self,
+        todo_id: i64,
+        pending_to_upgrade: i64,
+    ) -> Result<(), StorageError> {
+        let texts: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM note_blocks
+             WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL",
+            [todo_id],
+            |row| row.get(0),
+        )?;
+        if texts - pending_to_upgrade > 0 {
+            return Ok(());
+        }
+        let last: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks
+             WHERE todo_id = ?1 AND deleted_at IS NULL",
+            [todo_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+             VALUES (?1, ?2, 'text', '')",
+            rusqlite::params![todo_id, last],
         )?;
         Ok(())
     }
@@ -4983,6 +5078,135 @@ mod tests {
             "261025000011",
         )
         .expect("占位中插图必须成功");
+
+        let source: Option<String> = st
+            .conn
+            .query_row(
+                "SELECT source_url FROM note_blocks WHERE id = ?1",
+                [placeholder_id],
+                |row| row.get(0),
+            )
+            .expect("查 source_url");
+        assert_eq!(source.as_deref(), Some(url.as_str()));
+        assert!(st
+            .pending_note_image_matches(item.id, placeholder_id, &url)
+            .expect("匹配查询必须成功"));
+    }
+
+    #[test]
+    fn pending_source_survives_image_paste_at_start() {
+        // FIX020.1：在占位起点粘贴图片，原 pending 行必须原样保留。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/start.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000020")
+            .expect("占位插入必须成功");
+        let placeholder_id = ids[0];
+
+        st.add_note_image_block(
+            &dir,
+            item.id,
+            placeholder_id,
+            "",
+            PENDING_NOTE_IMAGE_TEXT,
+            &png_bytes(),
+            None,
+            "261025000021",
+        )
+        .expect("起点插图必须成功");
+
+        let source: Option<String> = st
+            .conn
+            .query_row(
+                "SELECT source_url FROM note_blocks WHERE id = ?1",
+                [placeholder_id],
+                |row| row.get(0),
+            )
+            .expect("查 source_url");
+        assert_eq!(source.as_deref(), Some(url.as_str()));
+        assert!(st
+            .pending_note_image_matches(item.id, placeholder_id, &url)
+            .expect("匹配查询必须成功"));
+        let blocks = st.note_blocks(item.id).expect("读块必须成功");
+        assert!(blocks.iter().any(|b| b.id == placeholder_id
+            && b.kind == NoteBlockKind::Text
+            && b.text == PENDING_NOTE_IMAGE_TEXT));
+    }
+
+    #[test]
+    fn pending_source_survives_image_paste_at_middle() {
+        // FIX020.1：在占位中间粘贴图片，原 pending 行必须原样保留。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/middle-image.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000024")
+            .expect("占位插入必须成功");
+        let placeholder_id = ids[0];
+
+        st.add_note_image_block(
+            &dir,
+            item.id,
+            placeholder_id,
+            "🖼",
+            " 下载中…",
+            &png_bytes(),
+            None,
+            "261025000025",
+        )
+        .expect("中间插图必须成功");
+
+        let source: Option<String> = st
+            .conn
+            .query_row(
+                "SELECT source_url FROM note_blocks WHERE id = ?1",
+                [placeholder_id],
+                |row| row.get(0),
+            )
+            .expect("查 source_url");
+        assert_eq!(source.as_deref(), Some(url.as_str()));
+        assert!(st
+            .pending_note_image_matches(item.id, placeholder_id, &url)
+            .expect("匹配查询必须成功"));
+    }
+
+    #[test]
+    fn pending_source_survives_text_paste_at_middle() {
+        // FIX020.1：在占位中间粘贴文本（多段路径），原 pending 行不得被改写。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/middle.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "", "", &parts, "261025000022")
+            .expect("占位插入必须成功");
+        let placeholder_id = ids[0];
+
+        st.insert_note_parts(
+            &dir,
+            item.id,
+            placeholder_id,
+            "🖼",
+            " 下载中…",
+            &[NotePastePart::Text("中间插入".to_string())],
+            "261025000023",
+        )
+        .expect("中间文本粘贴必须成功");
 
         let source: Option<String> = st
             .conn

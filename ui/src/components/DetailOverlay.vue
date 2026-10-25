@@ -211,6 +211,11 @@ const blockStructureKey = computed(() =>
 );
 watch(blockStructureKey, () => void nextTick(() => autosizeAll()));
 
+/** FIX020.1：远端图占位块是后台任务锚点，粘贴时不得改写。 */
+function isPendingImageBlock(block: LocalBlock): boolean {
+  return block.kind === "Text" && block.text === PENDING_IMAGE_TEXT;
+}
+
 /** 图块 src（绝对路径 → asset 协议 URL；data: 直用——mock 环境） */
 function blockSrc(block: LocalBlock): string {
   if (!block.image_path) return "";
@@ -1053,6 +1058,13 @@ async function onBlockPaste(index: number, e: ClipboardEvent): Promise<void> {
     return;
   }
   const text = plainClip;
+  // FIX020.1：单行文本原本会走浏览器原生粘贴并直接改写占位 textarea；
+  // 这里连同多行一起接管，插在整段占位前/后，保持 pending block_id 与 source_url。
+  if (isPendingImageBlock(block) && text.length > 0) {
+    e.preventDefault();
+    pasteTextLines(index, start, end, text);
+    return;
+  }
   if (text.includes("\n") || text.includes("\r")) {
     e.preventDefault();
     pasteTextLines(index, start, end, text);
@@ -1227,6 +1239,25 @@ function pasteTextLines(
 ): void {
   const block = blocks.value[index];
   if (!block) return;
+  // FIX020.1：pending 占位不拆、不改；文本整体插在占位前（光标在块首）或后（其余位置）。
+  if (isPendingImageBlock(block)) {
+    if (text.length === 0) return;
+    if (push) pushUndo();
+    const lines = normalizePasteNewlines(text).split("\n");
+    const created: LocalBlock[] = lines.map((line) => ({
+      id: 0,
+      kind: "Text",
+      text: line,
+      image_path: null,
+      _key: localKey(),
+    }));
+    const at = start === 0 ? index : index + 1;
+    blocks.value.splice(at, 0, ...created);
+    scheduleSave();
+    const last = created[created.length - 1];
+    focusBlock(last._key, last.text.length);
+    return;
+  }
   if (push) pushUndo();
   const head = block.text.slice(0, start);
   const tail = block.text.slice(end);

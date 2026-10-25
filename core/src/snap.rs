@@ -78,6 +78,13 @@ mod tests {
         w: 1920,
         h: 1080,
     };
+    /// FIX020.2：底部任务栏 40px 后的工作区，用于验证吸附不会落到任务栏后面。
+    const WORK: RectI32 = RectI32 {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1040,
+    };
 
     fn snap_at(x: i32, y: i32) -> (i32, i32) {
         snap_position(RectI32 { x, y, ..WIN }, MON)
@@ -103,6 +110,20 @@ mod tests {
     #[test]
     fn snaps_to_bottom_edge() {
         assert_eq!(snap_at(500, 1080 - 400 - 40), (500, 1080 - 400 - 5));
+    }
+
+    #[test]
+    fn snaps_to_work_area_bottom_above_taskbar() {
+        // FIX020.2：工作区 1040（底部任务栏 40px）→ 下缘落在 635，而不是整屏 675。
+        let (x, y) = snap_position(
+            RectI32 {
+                x: 500,
+                y: 1040 - 400 - 40,
+                ..WIN
+            },
+            WORK,
+        );
+        assert_eq!((x, y), (500, 1040 - 400 - 5));
     }
 
     #[test]

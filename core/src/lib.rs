@@ -131,8 +131,10 @@ fn snap_if_needed(window: &tauri::Window) {
     let Ok(vsize) = window.inner_size() else {
         return;
     };
-    let mp = monitor.position();
-    let ms = monitor.size();
+    // FIX020.2：吸附基准必须是工作区（排除任务栏），整屏矩形会把窗口吸到任务栏后面。
+    let work = monitor.work_area();
+    let mp = work.position;
+    let ms = work.size;
     let (sx, sy) = snap::snap_position(
         snap::RectI32 {
             x: inner.x,
