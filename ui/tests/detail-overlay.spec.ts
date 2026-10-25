@@ -543,6 +543,35 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(last.some((block) => block.kind === "Text")).toBe(true);
   });
 
+  it("图片选中后方向键进入文本，Ctrl+C 不再复制旧图（FIX019.2）", async () => {
+    wrapper = mount(DetailOverlay, {
+      attachTo: document.body,
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, IMAGE_BLOCKS);
+
+    const imageBlock = wrapper.find(".note-block-image");
+    await imageBlock.trigger("click");
+    await flushPromises();
+    expect(imageBlock.classes()).toContain("note-block-selected");
+
+    await imageBlock.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+    const texts = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    expect(document.activeElement).toBe(texts[1].element);
+    expect(imageBlock.classes()).not.toContain("note-block-selected");
+
+    texts[1].element.setSelectionRange(0, 1);
+    const copyCalls = () =>
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "note_copy_selection").length;
+    const before = copyCalls();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    await flushPromises();
+    expect(copyCalls()).toBe(before);
+  });
+
   it("单图块 Ctrl+A→Delete 删除后不留图片块", async () => {
     // FIX017.11 / A017 P3-6：全选后 Delete 必须落到图块选择，而不是只动文本。
     wrapper = mount(DetailOverlay, {
@@ -601,6 +630,21 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "note_blocks_list").length).toBe(
       listCalls,
     );
+  });
+
+  it("打开仅图块历史数据时自动补空文本块（FIX019.6）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, [{ id: 21, kind: "Image", text: "", image_path: "C:/tmp/a.png" }]);
+    await flushPromises();
+
+    const saves = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saves).toHaveLength(1);
+    expect(saves[0].map((block) => block.kind)).toEqual(["Image", "Text"]);
+    expect(saves[0][1].text).toBe("");
   });
 
   it("标题 Ctrl+A / Backspace 只作用于标题，不删除笔记", async () => {
@@ -806,6 +850,122 @@ describe("DetailOverlay 组件级交互（FIX014.35）", () => {
       .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
     expect(saves.length).toBeGreaterThanOrEqual(2);
     expect(saves[saves.length - 1][0]?.text).toBe("abcY");
+  });
+
+  it("保存响应把占位 Text 规范化为 Image 时同步 kind/text（FIX019.1）", async () => {
+    const pending: NoteBlock[] = [
+      { id: 51, kind: "Text", text: "🖼 下载中…", image_path: null },
+      { id: 52, kind: "Text", text: "尾", image_path: null },
+    ];
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, pending);
+    vi.useFakeTimers();
+    let saveCalls = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") return pending;
+      if (cmd === "note_blocks_save") {
+        saveCalls += 1;
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        return input.map((block) =>
+          block.id === 51
+            ? { ...block, kind: "Image", text: "", image_path: "C:/tmp/done.png" }
+            : block,
+        );
+      }
+      return undefined;
+    });
+
+    const texts = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    await texts[1].setValue("尾2");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    await flushPromises();
+
+    expect(saveCalls).toBe(1);
+    expect(wrapper.findAll(".note-block-image")).toHaveLength(1);
+    expect(wrapper.find<HTMLTextAreaElement>("textarea.note-block-text").element.value).toBe("尾2");
+    const saves = invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "note_blocks_save")
+      .map(([, args]) => (args as { blocks: NoteBlock[] }).blocks);
+    expect(saves).toHaveLength(1);
+  });
+
+  it("保存响应不覆盖用户已改的占位文本（FIX019.1）", async () => {
+    const pending: NoteBlock[] = [
+      { id: 61, kind: "Text", text: "🖼 下载中…", image_path: null },
+      { id: 62, kind: "Text", text: "尾", image_path: null },
+    ];
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, pending);
+    vi.useFakeTimers();
+    let saveCalls = 0;
+    let resolveFirst: (() => void) | undefined;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "note_blocks_list") return Promise.resolve(pending);
+      if (cmd === "note_blocks_save") {
+        saveCalls += 1;
+        const input = (args?.blocks ?? []) as NoteBlock[];
+        if (saveCalls === 1) {
+          return new Promise<NoteBlock[]>((resolve) => {
+            resolveFirst = () =>
+              resolve(
+                input.map((block) =>
+                  block.id === 61
+                    ? { ...block, kind: "Image", text: "", image_path: "C:/tmp/done.png" }
+                    : block,
+                ),
+              );
+          });
+        }
+        return Promise.resolve(input);
+      }
+      return undefined;
+    });
+
+    const texts = wrapper.findAll<HTMLTextAreaElement>("textarea.note-block-text");
+    await texts[1].setValue("尾2");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(saveCalls).toBe(1);
+
+    await texts[0].setValue("用户改");
+    vi.clearAllTimers();
+    resolveFirst?.();
+    await flushPromises();
+    await flushPromises();
+
+    expect(saveCalls).toBe(2);
+    expect(texts[0].element.value).toBe("用户改");
+    expect(wrapper.findAll(".note-block-image")).toHaveLength(0);
+  });
+
+  it("保存 follow-up 最多补 2 次，不无限循环（FIX019.1）", async () => {
+    wrapper = mount(DetailOverlay, {
+      props: { todo: null, bubble: null, anchor: null },
+    });
+    await openDetail(wrapper, TEXT_BLOCKS);
+    vi.useFakeTimers();
+    let saveCalls = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "note_blocks_list") return TEXT_BLOCKS;
+      if (cmd === "note_blocks_save") {
+        saveCalls += 1;
+        return [];
+      }
+      return undefined;
+    });
+
+    const first = wrapper.find<HTMLTextAreaElement>("textarea.note-block-text");
+    await first.setValue("abcX");
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    await flushPromises();
+
+    expect(saveCalls).toBe(3);
   });
 
   it("IME 229 无 composition 时超时补保存（FIX018.10）", async () => {

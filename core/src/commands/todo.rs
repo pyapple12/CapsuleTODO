@@ -488,8 +488,9 @@ pub fn note_paste_image_core(
     }
 }
 
-/// 插图核心（**可注入字节直测**）：格式校验 → 最终块集校验 → 存储层落盘/复用 + 切分插入。
-/// `before` / `after` 由前端按光标/选区本地切好（免 UTF-16 ↔ 字节换算）
+/// 插图核心（**可注入字节直测**）：格式校验/预览 → 锁外准备文件 → 最终块集校验 →
+/// 存储层写入/复用 + 切分插入。`before` / `after` 由前端按光标/选区本地切好
+/// （免 UTF-16 ↔ 字节换算）。
 pub fn note_insert_image_core(
     todo_id: i64,
     block_id: i64,
@@ -2092,8 +2093,8 @@ mod tests {
     }
 
     #[test]
-    fn note_insert_image_rejects_overlong_final_blocks_before_write() {
-        // FIX014.52：单图路径共用最终块集校验，超长必须在写盘/写库前拒绝。
+    fn note_insert_image_rejects_overlong_final_blocks_without_db_change() {
+        // FIX014.52：单图路径共用最终块集校验；超长在 DB 写入前拒绝，预写文件由错误路径清理。
         let ctx = test_context();
         let dir = temp_images_dir();
         let item = todo_add_core("任务", &ctx).expect("合法文本必须成功");

@@ -46,6 +46,8 @@ pub fn image_extension(bytes: &[u8]) -> Option<&'static str> {
 
 /// FIX014.45 / FIX015.14：PNG 载荷可用性校验。仅看 `image_extension` 的 8 字节魔数会把
 /// “只有签名 / 截断 IHDR / 缺 IDAT”的坏字节放行；这里进一步检查结构并读头部尺寸。
+/// 仅 Windows 生产路径与单元测试使用，非 Windows lib 不编译该函数。
+#[cfg(any(target_os = "windows", test))]
 fn png_payload_is_valid(bytes: &[u8]) -> bool {
     if image_extension(bytes) != Some("png") {
         return false;

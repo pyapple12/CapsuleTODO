@@ -96,8 +96,10 @@ function setTextEl(key: string, el: unknown): void {
 /** 最近一次获得焦点的文本块 key（PATCH002.77：焦点已丢时提升原生选区锚点的兜底） */
 let lastTextKey = "";
 
-/** 文本块获得焦点：记下最近聚焦块（PATCH002.77） */
+/** 文本块获得焦点：记下最近聚焦块（PATCH002.77）；FIX019.2 同步退出图片选中态，
+ * 否则键盘从图块进入文本后 Ctrl+C 仍会命中旧图片。 */
 function onTextFocus(key: string): void {
+  selection.clearImage();
   lastTextKey = key;
 }
 
@@ -201,9 +203,13 @@ function autosizeAll(): void {
   textEls.forEach((el) => autosize(el));
 }
 
-/** PATCH002.13：**结构性变更**（拆块/合并/粘贴拆行/插图/归一化/撤销）后新块立即撑开——
- * 此前只在 `@input` 与聚焦块上重算，新块停在单行高、要等光标移过去才长开 */
-watch(blocks, () => void nextTick(() => autosizeAll()), { deep: true });
+/** PATCH002.13 / FIX019.12：只在**结构性变更**（拆块/合并/粘贴拆行/插图/载入/撤销）后
+ * 全量撑开。观察 `_key + kind` 结构键而不是 deep watch 文本：打字只由 onBlockInput
+ * 对当前块 autosize，避免每键遍历所有 textarea 强制布局。 */
+const blockStructureKey = computed(() =>
+  blocks.value.map((block) => `${block._key}:${block.kind}`).join("|"),
+);
+watch(blockStructureKey, () => void nextTick(() => autosizeAll()));
 
 /** 图块 src（绝对路径 → asset 协议 URL；data: 直用——mock 环境） */
 function blockSrc(block: LocalBlock): string {
@@ -229,6 +235,8 @@ function onBlockImageError(block: LocalBlock): void {
 let savedSignature = "";
 let savedTodoId: number | null = null;
 let saveTimer: number | undefined;
+/** FIX019.12：模型脏标记。打字/结构变更只置位，不在每键计算全表签名。 */
+let dirty = false;
 
 /** 块签名（id/kind/text；不含 _key/image_path——后者由服务端定） */
 function signature(list: LocalBlock[]): string {
@@ -256,11 +264,12 @@ function idsOf(list: LocalBlock[]): string {
 /** 排入防抖保存（无变更/未开板直接跳过）。**捕获** {todoId, list} 再排定（PATCH002.47）：
  * 切源会整体换数组 → 捕获引用即"那一条目的那一份"（同条目内 v-model 原地改仍取到最新文本） */
 function scheduleSave(): void {
+  // FIX019.12：置脏后不在此处计算全表签名；真正的签名比对只在保存入口做一次。
+  dirty = true;
   if (pasteInFlight > 0 || editInFlight > 0) return; // PATCH002.72 C5：粘贴窗口内不排保存（最终态由收尾统一写）
   clearTimeout(saveTimer);
   const todo = props.todo;
   if (todo == null) return;
-  if (signature(blocks.value) === savedSignature) return;
   const todoId = todo.id;
   const list = blocks.value;
   saveTimer = window.setTimeout(() => {
@@ -273,6 +282,9 @@ function scheduleSave(): void {
   }, 300);
 }
 
+/** 详情保存 follow-up 上限：初始请求之外最多补 2 次，防止服务端规范化/竞态形成无限保存链。 */
+const MAX_SAVE_FOLLOWUPS = 2;
+
 /** 立即落库**指定条目**的块列表（防抖到点 / 关板 / 切源 / 粘贴前调用）；失败落 console
  * （详情板不设提示行，UI 静默）。**按入参而非当前 props 落库**——切源后仍能把旧条目的
  * 未决编辑写回旧 id（PATCH002.47）；`force` 绕开签名比对（给本地独有的 id=0 块拿 id，
@@ -283,10 +295,15 @@ async function saveBlocksForCore(
   todoId: number,
   list: LocalBlock[],
   force = false,
+  followUp = 0,
 ): Promise<boolean> {
+  if (!force && !dirty) return true;
   if (!force && savedTodoId !== todoId) return true;
   const sig = signature(list);
-  if (!force && sig === savedSignature && savedTodoId === todoId) return true;
+  if (!force && sig === savedSignature && savedTodoId === todoId) {
+    dirty = false;
+    return true;
+  }
   // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：构建载荷**之前**的本地末块 + **签名指纹**
   // （PATCH002.72：指纹用于比对"这次要保存的是不是刚才那一代"）
   const preLast = list[list.length - 1];
@@ -296,16 +313,15 @@ async function saveBlocksForCore(
     );
   }
   const sentKeys = list.map((b) => b._key);
-  const sentContent = JSON.stringify(
-    list.map((b) => ({ key: b._key, kind: b.kind, text: b.text })),
-  );
+  const sentByKey = new Map<string, { kind: LocalBlock["kind"]; text: string }>();
+  for (const block of list) sentByKey.set(block._key, { kind: block.kind, text: block.text });
   const payload = list.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
   try {
     const saved = await invoke<NoteBlock[]>("note_blocks_save", { todoId, blocks: payload });
     // 仅当该列表仍是"当前列表"才回填本地状态；切源后 list 已被换掉 → 只落库、不动当前条目态
     if (blocks.value !== list) return true;
-    // FIX018.9：按 _key 回填而非按下标。在飞期间拆块/合并会改变数组长度，下标回填
-    // 会把响应 id 写到错误块上；key 缺失时保留 id=0，交给下一次保存补写。
+    // FIX018.9 / FIX019.1：按 _key 回填而非按下标。只有发送后本地未改动的块才采纳
+    // 服务端的 kind/text；后台图完成等规范化不能覆盖用户正在编辑的内容。
     const savedByKey = new Map<string, NoteBlock>();
     sentKeys.forEach((key, i) => {
       const savedBlock = saved[i];
@@ -314,31 +330,38 @@ async function saveBlocksForCore(
     for (const local of list) {
       const savedBlock = savedByKey.get(local._key);
       if (!savedBlock) continue;
+      const sent = sentByKey.get(local._key);
+      const unchanged = sent != null && local.kind === sent.kind && local.text === sent.text;
       local.id = savedBlock.id;
-      local.kind = savedBlock.kind;
       local.image_path = savedBlock.image_path;
+      if (unchanged) {
+        local.kind = savedBlock.kind;
+        local.text = savedBlock.text;
+      }
     }
     const currentKeys = list.map((b) => b._key);
     const sameOrder =
       currentKeys.length === sentKeys.length && currentKeys.every((key, i) => key === sentKeys[i]);
-    const sameContent =
-      JSON.stringify(list.map((b) => ({ key: b._key, kind: b.kind, text: b.text }))) ===
-      sentContent;
+    const allInSync = list.every((local) => {
+      const savedBlock = savedByKey.get(local._key);
+      return savedBlock != null && local.kind === savedBlock.kind && local.text === savedBlock.text;
+    });
     const complete =
-      saved.length === list.length &&
-      savedByKey.size === sentKeys.length &&
-      sameOrder &&
-      sameContent;
+      saved.length === list.length && savedByKey.size === sentKeys.length && sameOrder && allInSync;
     if (complete) {
       savedTodoId = todoId;
       savedSignature = signature(list);
+      dirty = false;
     } else if (pasteInFlight > 0 || editInFlight > 0) {
       // 编辑窗口内不能强写中间态；交给收尾 flush，保持原有 T28 语义。
       scheduleSave();
+    } else if (followUp >= MAX_SAVE_FOLLOWUPS) {
+      console.error(`详情保存未收敛：连续 ${followUp + 1} 次响应仍与本地不一致`);
+      return false;
     } else {
       // 本轮响应只覆盖发送时那一代；当前列表仍有结构/文本变化，不能标成已保存。
       // FIX018.9：立即把 follow-up 登记进 noteSavesInFlight，拖拽/关板才能等到它。
-      return await saveBlocksFor(todoId, list, true);
+      return await saveBlocksFor(todoId, list, true, followUp + 1);
     }
     // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：送出的块数 / 服务端回来数 / **采纳后的签名指纹**
     // （PATCH002.72：与 `pre-save` 行配对读——两行指纹相同 = 服务端没改块集 ✓）
@@ -360,8 +383,13 @@ async function saveBlocksForCore(
 
 /** 登记在飞保存（PATCH002.84 / S2）：拖拽 commit 前统一等待，防旧序 save 晚于 reorder。
  * 只登记、不改语义；核心实现见 `saveBlocksForCore`。返回是否成功（FIX014.9 失败回滚用） */
-function saveBlocksFor(todoId: number, list: LocalBlock[], force = false): Promise<boolean> {
-  const task = saveBlocksForCore(todoId, list, force);
+function saveBlocksFor(
+  todoId: number,
+  list: LocalBlock[],
+  force = false,
+  followUp = 0,
+): Promise<boolean> {
+  const task = saveBlocksForCore(todoId, list, force, followUp);
   noteSavesInFlight.add(task);
   void task.then(
     () => noteSavesInFlight.delete(task),
@@ -389,13 +417,21 @@ async function loadBlocks(todoId: number, ghost: HTMLElement | null = null): Pro
     // PATCH002.82：占位符与新列表**同一任务交接**——先撤 ghost 再赋值；浏览器只在任务结束后
     // paint，因此不会出现"新列表 + ghost"或"矮一截"的中间帧
     ghost?.remove();
-    blocks.value = normalizeBlocks(serverList);
+    const normalized = normalizeBlocks(serverList);
+    blocks.value = normalized;
     if (DIAG) dragDiagDetailed("loadBlocks:done"); // 临时诊断（抖动定位，dev-diag 保留 / release 剔除）：重拉赋值后的本地列表
     savedTodoId = todoId;
+    dirty = false;
     // PATCH002.56 修正：**基准必须反映服务端真实状态**（归一化**之前**的列表）——
     // 否则"库里有、本地被归一化掉"的块不算变更 → `saveBlocks` 永远跳过 → 库与本地计数
     // 永久不一致 → `reorder_note_blocks` 的 id 集合校验恒失败（重排被拒、块弹回原位）
     savedSignature = signature(serverList);
+    // FIX019.6：历史/后台升级可能留下“仅图块”的库态；归一化补出的文本块不能只停在
+    // 本地内存，否则关闭板后数据库仍不满足不变量。非空服务端列表一旦发生归一化差异，
+    // 立即强制回写；空列表保持首块懒创建，避免开空板就落库。
+    if (list.length > 0 && signature(normalized) !== savedSignature) {
+      void saveBlocksFor(todoId, normalized, true);
+    }
     // PATCH002.72：**撤销快照不得跨"重新载入"生效** —— 载入后 id / _key 全换，旧快照与库
     // 已无对应关系；若仍可恢复，Ctrl+Z 会把模型换回旧状态，再被保存点写回库（实证：
     // 载入 3 块 #611 → focusout 时模型变 1 块 #609 → 落库 1 块）
@@ -1086,6 +1122,7 @@ async function pasteImageAt(
       if (push) pushUndo(); // 结构性操作入栈（仅真插图入栈；文本回落由 pasteTextLines 按同一 push 决定）
       blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
       savedSignature = signature(blocks.value);
+      dirty = false;
       brokenKeys.value = [];
       void nextTick(() => autosizeAll());
       emit("changed");
@@ -1151,6 +1188,7 @@ async function pasteHtmlAt(
       if (push) pushUndo();
       blocks.value = normalizeBlocks(reconcileLocal(outcome.blocks));
       savedSignature = signature(blocks.value);
+      dirty = false;
       brokenKeys.value = [];
       void nextTick(() => autosizeAll());
       emit("changed");
@@ -1306,6 +1344,7 @@ function normalizeBlocks(list: LocalBlock[]): LocalBlock[] {
  * 落库、不回写当前板，且**强制落库**（此时 `savedTodoId` 可能已被切源改写，PATCH002.47） */
 async function normalizeAndFlush(todoId?: number, list?: LocalBlock[]): Promise<void> {
   clearTimeout(saveTimer);
+  dirty = true; // 保存点即使当前签名相同，也允许走一次入口做最终比对
   // 临时诊断（.72 排查）：哪个保存入口
   if (DIAG)
     undoLog(
@@ -2629,6 +2668,17 @@ function applyNoteImageReady(payload: { todoId: number; block: NoteBlock; url: s
   const index = blocks.value.findIndex((block) => block.id === payload.block.id);
   if (index < 0) return;
   const current = blocks.value[index];
+  // FIX019.6 / 响应先于事件的竞态：保存响应可能已把本地块采纳为 Image，但
+  // 后端升级事务补出的空文本块尚未回填。仍做一次归一化，缺文本块则补回并保存。
+  if (current.kind === "Image") {
+    const normalized = normalizeBlocks(blocks.value);
+    if (normalized.length !== blocks.value.length) {
+      blocks.value = normalized;
+      void nextTick(() => autosizeAll());
+      scheduleSave();
+    }
+    return;
+  }
   if (current.kind !== "Text" || current.text !== PENDING_IMAGE_TEXT) return;
   // 该块若在跨块选区内，先复位，避免选区端点指向已变图的块
   if (selRange.value && index >= selRange.value.from.index && index <= selRange.value.to.index) {

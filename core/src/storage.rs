@@ -2236,6 +2236,32 @@ impl Storage {
         }))
     }
 
+    /// FIX019.6：保证 todo 至少有一个 active 文本块。后台图升级后若原占位是唯一文本块，
+    /// 升级会把 DB 留在“仅图块”状态；此处只在明确升级路径补一个空文本块，普通保存仍由
+    /// 前端 `normalizeBlocks` 负责，避免两边重复补块。
+    fn ensure_active_text_block(&self, todo_id: i64) -> Result<(), StorageError> {
+        let has_text: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM note_blocks
+             WHERE todo_id = ?1 AND kind = 'text' AND deleted_at IS NULL)",
+            [todo_id],
+            |row| row.get(0),
+        )?;
+        if has_text {
+            return Ok(());
+        }
+        let next_order: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM note_blocks WHERE todo_id = ?1",
+            [todo_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO note_blocks(todo_id, sort_order, kind, text)
+             VALUES (?1, ?2, 'text', '')",
+            rusqlite::params![todo_id, next_order],
+        )?;
+        Ok(())
+    }
+
     /// 后台下载成功（PATCH002.76）：占位文本块 → 图块。条件更新（文本仍为占位、
     /// source_url 仍匹配）防用户已编辑/删除；失败返回 None，文件由补偿清扫回收。
     #[allow(clippy::too_many_arguments)]
@@ -2281,42 +2307,69 @@ impl Storage {
                 }
             }
         };
-        let changed = match self.conn.execute(
-            "UPDATE note_blocks SET kind = 'image', text = '',
-                 image_hash = ?3, image_file = ?4, source_url = ?5, deleted_at = NULL
-             WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?6
-               AND source_url = ?5 AND deleted_at IS NULL",
-            rusqlite::params![
-                block_id,
-                todo_id,
-                hash,
-                rel,
-                expected_url,
-                PENDING_NOTE_IMAGE_TEXT
-            ],
-        ) {
-            Ok(changed) => changed,
-            Err(err) => {
-                if owns_files {
-                    self.sweep_after_failed_write(images_dir);
-                }
-                return Err(StorageError::Sqlite(err));
-            }
-        };
-        if changed == 0 {
+        if let Err(err) = self.conn.execute_batch("BEGIN") {
             if owns_files {
                 self.sweep_after_failed_write(images_dir);
             }
-            return Ok(None);
+            return Err(StorageError::Sqlite(err));
         }
-        // 更新已成功：直接按已知值构造返回，不再做一次可能失败的读回；
-        // 否则“更新成功但读回失败”会让调用方误判为未提交并清理已引用文件。
-        Ok(Some(NoteBlock {
-            id: block_id,
-            kind: NoteBlockKind::Image,
-            text: String::new(),
-            image_file: Some(rel),
-        }))
+        let result = (|| -> Result<Option<NoteBlock>, StorageError> {
+            let changed = self.conn.execute(
+                "UPDATE note_blocks SET kind = 'image', text = '',
+                     image_hash = ?3, image_file = ?4, source_url = ?5, deleted_at = NULL
+                 WHERE id = ?1 AND todo_id = ?2 AND kind = 'text' AND text = ?6
+                   AND source_url = ?5 AND deleted_at IS NULL",
+                rusqlite::params![
+                    block_id,
+                    todo_id,
+                    hash,
+                    rel,
+                    expected_url,
+                    PENDING_NOTE_IMAGE_TEXT
+                ],
+            )?;
+            if changed == 0 {
+                return Ok(None);
+            }
+            self.ensure_active_text_block(todo_id)?;
+            // 更新已成功：直接按已知值构造返回，不再做一次可能失败的读回；
+            // 否则“更新成功但读回失败”会让调用方误判为未提交并清理已引用文件。
+            Ok(Some(NoteBlock {
+                id: block_id,
+                kind: NoteBlockKind::Image,
+                text: String::new(),
+                image_file: Some(rel),
+            }))
+        })();
+        match result {
+            Ok(Some(block)) => {
+                if let Err(err) = self.commit_transaction("远端图升级") {
+                    if owns_files {
+                        self.sweep_after_failed_write(images_dir);
+                    }
+                    return Err(err);
+                }
+                Ok(Some(block))
+            }
+            Ok(None) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("远端图升级事务回滚失败：{rollback}"));
+                }
+                if owns_files {
+                    self.sweep_after_failed_write(images_dir);
+                }
+                Ok(None)
+            }
+            Err(err) => {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    crate::diag::warn_diag(&format!("远端图升级事务回滚失败：{rollback}"));
+                }
+                if owns_files {
+                    self.sweep_after_failed_write(images_dir);
+                }
+                Err(err)
+            }
+        }
     }
 
     /// 后台下载失败（PATCH002.76）：占位文本块 → URL 文本；保留 `source_url` 供
@@ -4609,6 +4662,65 @@ mod tests {
             )
             .expect("查 source_url");
         assert_eq!(source.as_deref(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn complete_pending_image_adds_missing_text_block() {
+        // FIX019.6：占位是唯一文本块时升级为图块，必须补回空文本块。
+        let st = storage();
+        let dir = temp_images_dir();
+        let item = st.add("任务").expect("写入必须成功");
+        let base = st
+            .set_note_blocks(&dir, item.id, &[nb_text(0, "")])
+            .expect("写块必须成功");
+        let url = "https://example.com/only.png".to_string();
+        let parts = vec![NotePastePart::PendingImage { url: url.clone() }];
+        let (_, part_ids) = st
+            .insert_note_parts(&dir, item.id, base[0].id, "锚", "", &parts, "261025000001")
+            .expect("占位插入必须成功");
+        // 删除其它文本块（上段 + 尾空块），模拟用户把占位留成唯一文本块。
+        st.conn
+            .execute(
+                "DELETE FROM note_blocks WHERE todo_id = ?1 AND id <> ?2",
+                rusqlite::params![item.id, part_ids[0]],
+            )
+            .expect("删除其它文本块必须成功");
+        let before = st.note_blocks(item.id).expect("读块必须成功");
+        assert_eq!(before.len(), 1, "只剩 pending 文本块");
+        assert_eq!(before[0].kind, NoteBlockKind::Text);
+
+        st.complete_pending_note_image(
+            &dir,
+            item.id,
+            part_ids[0],
+            &url,
+            &png_bytes(),
+            Some("only.png"),
+            None,
+            "261025000001",
+            None,
+            None,
+        )
+        .expect("后台落库必须成功")
+        .expect("占位必须升级");
+
+        let after = st.note_blocks(item.id).expect("回读必须成功");
+        let image_count = after
+            .iter()
+            .filter(|block| block.kind == NoteBlockKind::Image)
+            .count();
+        let text: Vec<&NoteBlock> = after
+            .iter()
+            .filter(|block| block.kind == NoteBlockKind::Text && block.text.is_empty())
+            .collect();
+        assert_eq!(image_count, 1, "pending 必须升级为图块");
+        assert_eq!(text.len(), 1, "升级后必须保留一个空文本块");
+        assert!(
+            after
+                .last()
+                .is_some_and(|block| block.kind == NoteBlockKind::Text),
+            "空文本块应排在末尾，便于继续输入"
+        );
     }
 
     #[test]

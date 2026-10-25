@@ -106,7 +106,8 @@ pub fn bubble_capture_image_core(
 }
 
 /// 图片捕获收尾（热键路径）：落盘入库 + 广播；失败静默落日志（反馈静默定案
-/// 与文本路径对齐）
+/// 与文本路径对齐）。仅 Windows 的圈选路径调用，非 Windows 直读路径只处理文本。
+#[cfg(target_os = "windows")]
 fn finish_quiet_capture_image(app: &AppHandle, captured: &crate::clipboard_image::CapturedImage) {
     let ctx = app.state::<AppContext>();
     let images_dir = match crate::paths::images_dir() {
