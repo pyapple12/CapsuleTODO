@@ -136,8 +136,11 @@ fn vk_name(vk: u32) -> String {
 // 命令层同步得知成功/失败——失败由命令层回滚落库旧值）。
 
 /// 全局热键 ID（RegisterHotKey 的 id 参数；单热键应用固定 1）
+#[cfg(target_os = "windows")]
 const HOTKEY_ID: i32 = 1;
+#[cfg(target_os = "windows")]
 const WM_HOTKEY: u32 = 0x0312;
+#[cfg(target_os = "windows")]
 const WM_QUIT: u32 = 0x0012;
 
 /// 热键线程 id（0 = 未运行）；reregister 据此投递 WM_QUIT 杀旧线程
